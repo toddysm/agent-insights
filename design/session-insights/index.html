@@ -1,0 +1,113 @@
+<!doctype html>
+<!-- Offline experience prototype: local assets and synthetic data only. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>Agent Insights</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script defer src="model.js"></script>
+    <script defer src="app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to report</a>
+    <aside class="sidebar" aria-label="Prototype navigation">
+      <a class="brand" href="#report"
+        ><span class="brand-mark" aria-hidden="true">ai</span
+        ><span>agent insights</span></a
+      >
+      <p class="nav-label">YOUR WORK, IN CONTEXT</p>
+      <nav aria-label="Main">
+        <a href="#sessions" data-nav="sessions"
+          ><span aria-hidden="true">01</span> Sessions</a
+        >
+        <a href="#report" data-nav="report"
+          ><span aria-hidden="true">02</span> Session report</a
+        >
+        <a href="#artifacts" data-nav="artifacts"
+          ><span aria-hidden="true">03</span> Artifacts</a
+        >
+        <a href="#prompts" data-nav="prompts"
+          ><span aria-hidden="true">04</span> Prompt coaching</a
+        >
+        <a href="#review" data-nav="review"
+          ><span aria-hidden="true">05</span> Review interpretations</a
+        >
+      </nav>
+      <div class="lab-controls">
+        <p class="nav-label">WALK THROUGH A SCENARIO</p>
+        <label for="scenario">Load a fresh example</label>
+        <select id="scenario">
+          <option value="report">S2 / Understand a session</option>
+          <option value="empty">S1 / Import your first session</option>
+          <option value="steering">S3 / Investigate steering</option>
+          <option value="artifacts">S4 / Inspect the artifacts</option>
+          <option value="usage">S5 / Explain resource usage</option>
+          <option value="prompts">S6 / Improve a prompt</option>
+          <option value="review">S7 / Correct interpretations</option>
+          <option value="partial">S8 / Incomplete evidence</option>
+          <option value="analysis-off">S8 / Analysis not enabled</option>
+          <option value="unsupported">S8 / Unsupported import</option>
+        </select>
+        <p id="scenario-note">
+          Start with outcomes. Every metric leads to its evidence.
+        </p>
+        <button class="sidebar-button" data-action="reset">
+          Reset all demo changes
+        </button>
+      </div>
+      <div class="sidebar-footer">
+        <span class="status-dot" aria-hidden="true"></span> No model. No
+        uploads. No tracking.
+        <a href="README.md">Walkthrough instructions</a>
+        <a
+          href="https://github.com/toddysm/agent-insights/issues/3"
+          target="_blank"
+          rel="noopener noreferrer"
+          >Experience design / issue #3</a
+        >
+      </div>
+    </aside>
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <span class="prototype-tag">DESIGN PROTOTYPE</span>
+          <span class="topbar-note">Synthetic data / revision 1</span>
+        </div>
+        <button class="text-button" data-action="capture-help">
+          Capture help <span aria-hidden="true">?</span>
+        </button>
+      </header>
+      <div class="demo-notice">
+        An interactive sketch, not a working analyzer. Edits stay in this page
+        until reset or reload.
+      </div>
+      <main id="main" tabindex="-1" aria-label="Insights workspace"></main>
+      <footer class="page-footer">
+        <span>Evidence before conclusions.</span
+        ><span
+          >Example project: sample-reports / all content is fictional.</span
+        >
+      </footer>
+    </div>
+    <dialog
+      id="detail"
+      class="detail-dialog"
+      aria-labelledby="detail-title"
+    ></dialog>
+    <div
+      id="announcement"
+      class="announcement"
+      role="status"
+      aria-live="polite"
+    ></div>
+    <noscript
+      >This walkthrough needs JavaScript. It uses only bundled synthetic data
+      and does not make network requests.</noscript
+    >
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "agent-insights-experience-mockups",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline, synthetic experience walkthrough for agent-insights issue 3",
+  "scripts": {
+    "check": "node --check model.js && node --check app.js",
+    "test:unit": "node --test tests/model.test.cjs",
+    "test:browser": "playwright test",
+    "test": "npm run check && npm run test:unit && npm run test:browser"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.64.1"
+  }
+}
