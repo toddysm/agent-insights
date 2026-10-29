@@ -35,6 +35,14 @@ test.afterEach(async ({ page }) => {
   ).toEqual([]);
 });
 
+test("uses only the project name in the page title and brand link", async ({
+  page,
+}) => {
+  await open(page);
+  await expect(page).toHaveTitle("Agent Insights");
+  await expect(page.locator(".brand")).toHaveAccessibleName("agent insights");
+});
+
 test("S2 opens directly from disk and shows reconciled report totals", async ({
   page,
 }) => {

@@ -91,12 +91,6 @@ button:disabled {
     bold 20px Georgia,
     serif;
 }
-.brand small {
-  display: block;
-  font: 9px/2.5 var(--mono);
-  letter-spacing: 2px;
-  color: #b6cdc1;
-}
 .brand-mark {
   display: grid;
   place-items: center;

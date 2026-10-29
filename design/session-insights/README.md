@@ -6,6 +6,9 @@ An interactive, **synthetic design prototype** for
 It is not the production analyzer and does not imply approval of the experience
 or a production technology stack.
 
+Use the approved project name and plain functional labels. Do not introduce
+unapproved product names, lab names, branding, or taglines in future mockups.
+
 ## Open it locally
 
 Open [index.html](index.html) directly in a modern browser. On macOS, from the
