@@ -421,12 +421,29 @@ const InsightsModel = (() => {
     );
   }
 
-  /** Merge distinct active tasks; keep every source record and derive completion from the selected outcomes. */
-  function mergeTasks(state, ids, title) {
-    const selected = [...new Set(ids)].map((id) => taskById(state, id));
-    const value = validatedTitle(title);
+  /** Validate and sort adjacent active ranges before either previewing or mutating a single-range merge. */
+  function mergeSelection(state, ids) {
+    const selected = [...new Set(ids)]
+      .map((id) => taskById(state, id))
+      .sort((a, b) => a.range[0] - b.range[0]);
     if (selected.length < 2 || selected.some((task) => task.excluded))
       throw new RangeError("Select at least two active tasks to merge.");
+    if (
+      selected.some(
+        (task, index) =>
+          index > 0 && selected[index - 1].range[1] + 1 !== task.range[0],
+      )
+    )
+      throw new RangeError(
+        "This single-range mockup can merge only adjacent task ranges. Select contiguous tasks without gaps.",
+      );
+    return selected;
+  }
+
+  /** Merge adjacent active tasks; keep every source record and derive completion from their outcomes. */
+  function mergeTasks(state, ids, title) {
+    const selected = mergeSelection(state, ids);
+    const value = validatedTitle(title);
     const id = `merged-${state.nextTask++}`;
     const merged = {
       id,
@@ -490,7 +507,7 @@ const InsightsModel = (() => {
     return nextId;
   }
 
-  /** Adjust a task's turn range; displaced records become unallocated rather than being discarded. */
+  /** Adjust a non-overlapping active range; reject conflicts atomically and leave displaced records unallocated. */
   function adjustRange(state, id, start, end) {
     const task = taskById(state, id);
     if (
@@ -501,6 +518,16 @@ const InsightsModel = (() => {
       start > end
     )
       throw new RangeError("Use an inclusive turn range between 1 and 28.");
+    if (task.excluded)
+      throw new RangeError("Restore this task before changing its segment.");
+    const overlap = state.tasks.find(
+      (other) =>
+        other.id !== id && start <= other.range[1] && end >= other.range[0],
+    );
+    if (overlap)
+      throw new RangeError(
+        `This range overlaps "${overlap.title}". Keep task ranges separate, including excluded tasks.`,
+      );
     reassign(
       state,
       (record) =>
@@ -575,6 +602,7 @@ const InsightsModel = (() => {
     unionMinutes,
     metrics,
     renameTask,
+    mergeSelection,
     mergeTasks,
     splitTask,
     adjustRange,

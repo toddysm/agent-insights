@@ -448,6 +448,48 @@ test("outcome corrections update the summary without inventing remaining work", 
   ).toBeVisible();
 });
 
+test("correction previews reject disjoint merges and overlapping ranges", async ({
+  page,
+}) => {
+  await open(page, "review");
+  await page
+    .getByRole("checkbox", { name: "Select Add CSV export", exact: true })
+    .check();
+  await page
+    .getByRole("checkbox", {
+      name: "Select Document the workflow",
+      exact: true,
+    })
+    .check();
+  await page.getByRole("button", { name: "Merge selected" }).click();
+  await expect(page.locator("#announcement")).toContainText(
+    "only adjacent task ranges",
+  );
+  await expect(page.locator("#detail")).not.toBeVisible();
+  await page
+    .getByRole("checkbox", {
+      name: "Select Document the workflow",
+      exact: true,
+    })
+    .uncheck();
+  await page.getByRole("button", { name: "Adjust segments" }).click();
+  await page.getByLabel("Last turn, inclusive").fill("20");
+  await page.getByRole("button", { name: "Save corrections" }).click();
+  await expect(page.locator("#detail [role=alert]")).toContainText(
+    'overlaps "Fix date filtering"',
+  );
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator(".table-wrap tbody tr").nth(1)).toContainText(
+    "U15-U22",
+  );
+  await expect(page.locator(".table-wrap tbody tr").nth(1)).toContainText(
+    "Completed",
+  );
+  await expect(page.locator(".table-wrap tbody tr").nth(1)).toContainText(
+    "User-confirmed",
+  );
+});
+
 test("desktop report and evidence drawer screenshots", async ({
   page,
 }, testInfo) => {

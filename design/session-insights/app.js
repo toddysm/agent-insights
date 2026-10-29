@@ -396,7 +396,7 @@
       coverageNotice() +
       `<div class="callout info">Edits are kept only in this page. Session token/tool totals remain recorded; task associations and interpreted counts recalculate. No model call runs automatically.</div>
       <div class="table-wrap"><table><thead><tr><th><span class="sr-only">Select</span></th><th>Task / segments</th><th>Outcome</th><th>Review actions</th></tr></thead><tbody>${state.tasks.map((task) => `<tr><td><input type="checkbox" class="task-selection" value="${h(task.id)}" aria-label="Select ${h(task.title)}" ${selectedTasks.has(task.id) ? "checked" : ""} ${task.excluded ? "disabled" : ""}></td><td><strong>${h(task.title)}</strong><small>U${task.range[0]}-U${task.range[1]} / ${task.excluded ? "excluded; evidence retained" : task.corrected ? "user-corrected" : "inferred grouping"}</small></td><td>${badge(task.status, task.status === "Completed" ? "" : "warning")}<small>${h(task.evidence)}</small></td><td><div class="actions"><button class="text-button" data-action="edit-one" data-op="rename" data-task="${h(task.id)}">Rename</button><button class="text-button" data-action="edit-one" data-op="outcome" data-task="${h(task.id)}">Outcome</button><button class="text-button" data-action="${task.excluded ? "restore" : "edit-one"}" data-op="exclude" data-task="${h(task.id)}">${task.excluded ? "Restore" : "Exclude"}</button></div></td></tr>`).join("")}</tbody></table></div>
-      <div class="actions section-heading"><div class="actions"><button class="secondary" data-action="edit-selected" data-op="merge">Merge selected</button><button class="secondary" data-action="edit-selected" data-op="split">Split selected</button><button class="secondary" data-action="edit-selected" data-op="range">Adjust segments</button></div><span class="small muted">Merge: select two or more. Split/segments: select one.</span></div>
+      <div class="actions section-heading"><div class="actions"><button class="secondary" data-action="edit-selected" data-op="merge">Merge selected</button><button class="secondary" data-action="edit-selected" data-op="split">Split selected</button><button class="secondary" data-action="edit-selected" data-op="range">Adjust segments</button></div><span class="small muted">Merge: select adjacent tasks. Split/segments: select one.</span></div>
       <section class="panel"><p class="eyebrow">BEFORE YOU SAVE</p><h3>See what changes.</h3><p class="small muted">Each edit opens a preview. Excluded or displaced evidence remains available in the session and is identified as unallocated. Changed boundaries require outcome review; affected prompt assessments become stale.</p></section>`
     );
   }
@@ -636,6 +636,7 @@
       .filter(Boolean);
     const task = ids.length ? M.taskById(state, ids[0]) : null;
     if (!task) throw new RangeError("Select a task before editing.");
+    if (operation === "merge") M.mergeSelection(state, ids);
     const title = {
       rename: "Rename the requested outcome",
       merge: "Merge task interpretations",
@@ -651,7 +652,7 @@
     if (operation === "split")
       fields += `<label>New task starts at turn<input name="turn" type="number" min="${task.range[0] + 1}" max="${task.range[1]}" value="${Math.ceil((task.range[0] + task.range[1]) / 2)}" required></label><p class="small muted">Records at or after this turn move to the new task. Both outcomes become uncertain until reviewed.</p>`;
     if (operation === "range")
-      fields += `<label>First turn<input type="number" name="start" min="1" max="28" value="${task.range[0]}" required></label><label>Last turn, inclusive<input type="number" name="end" min="1" max="28" value="${task.range[1]}" required></label><p class="small muted">Records in this range move to this task. Its records outside the range become unallocated; no source record is deleted.</p>`;
+      fields += `<label>First turn<input type="number" name="start" min="1" max="28" value="${task.range[0]}" required></label><label>Last turn, inclusive<input type="number" name="end" min="1" max="28" value="${task.range[1]}" required></label><p class="small muted">The range must not overlap any other task, including excluded tasks. Records outside the new range become unallocated; no source record is deleted.</p>`;
     if (operation === "outcome")
       fields += `<label for="task-outcome">Outcome</label><select id="task-outcome" name="status">${["Completed", "Partial", "Blocked", "Abandoned", "Uncertain"].map((value) => `<option ${value === task.status ? "selected" : ""}>${value}</option>`).join("")}</select><p class="small muted">This will be labeled user-confirmed, not tool-verified.</p>`;
     if (operation === "exclude")
@@ -944,6 +945,7 @@
             ? "Select at least two active tasks to merge."
             : "Select exactly one active task.",
         );
+      if (button.dataset.op === "merge") M.mergeSelection(state, ids);
       openPanel("edit", "", { op: button.dataset.op, ids: ids.join(",") });
     } else if (action === "restore") {
       M.excludeTask(state, task, false);

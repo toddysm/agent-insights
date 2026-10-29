@@ -74,6 +74,9 @@ than opening another task.
 - Arbitrary session datasets or production-grade task segmentation. Segment
   correction uses one inclusive range in the 28-turn synthetic example; the
   product design also allows interrupted/multiple task segments.
+  This single-range mockup rejects nonadjacent merges and range edits that
+  overlap another task (including an excluded task), rather than silently
+  stealing its evidence or misrepresenting disjoint work as one segment.
 
 No page code performs network requests, sends telemetry, loads remote fonts,
 reads captures, or calls a model. A restrictive content security policy blocks

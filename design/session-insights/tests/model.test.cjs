@@ -126,6 +126,37 @@ test("exclude and restore change the interpretation, not the original session to
   assert.equal(M.metrics(state).tasks.length, 3);
 });
 
+test("overlapping range edits preserve every affected task and its outcome", () => {
+  const state = M.createState();
+  const before = structuredClone(state);
+  assert.throws(() => M.adjustRange(state, "t1", 1, 20), /overlaps/);
+  assert.deepEqual(state, before);
+  M.excludeTask(state, "t2", true);
+  const excluded = structuredClone(state);
+  assert.throws(() => M.adjustRange(state, "t1", 1, 20), /overlaps/);
+  assert.deepEqual(state, excluded);
+  assert.throws(() => M.adjustRange(state, "t2", 16, 20), /Restore/);
+});
+
+test("single-range merges reject nonadjacent tasks and gaps without mutation", () => {
+  const state = M.createState();
+  const before = structuredClone(state);
+  assert.throws(
+    () => M.mergeTasks(state, ["t1", "t3"], "Disjoint work"),
+    /adjacent task ranges/,
+  );
+  assert.deepEqual(state, before);
+  M.adjustRange(state, "t1", 1, 12);
+  const gap = structuredClone(state);
+  assert.throws(
+    () => M.mergeTasks(state, ["t1", "t2"], "Work with a gap"),
+    /adjacent task ranges/,
+  );
+  assert.deepEqual(state, gap);
+  const merged = M.mergeTasks(state, ["t3", "t2"], "Adjacent tasks");
+  assert.deepEqual(M.taskById(state, merged).range, [15, 28]);
+});
+
 test("outcome and title corrections are explicitly user-authored", () => {
   const state = M.createState();
   M.renameTask(state, "t3", "Finish the usage guide");
