@@ -57,6 +57,9 @@ than opening another task.
 
 - Local navigation, metric-to-record drill-down, context preservation, and
   keyboard-accessible dialogs.
+- Accessible metric names include values and coverage. Original instruction
+  IDs and turns remain separate from edited task ranges; merged tasks display
+  their source messages separately, and the session prompt stays independent.
 - Synthetic counting rules, purpose/category corrections, task renaming,
   outcome changes, merging, splitting, segment reassignment, exclusion and
   restoration, and resetting.

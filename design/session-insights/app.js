@@ -111,15 +111,31 @@
 
   /** A metric is a real button that opens its definition and exact synthetic contributors. */
   function metric(label, value, note, key, taskId = "", small = false) {
-    return `<button class="metric" id="metric-${h(key)}-${h(taskId || "session")}" data-action="metric" data-metric="${h(key)}" data-task="${h(taskId)}" aria-label="Inspect ${h(label)}${taskId ? " for this task" : ""}">
+    const formatted =
+      typeof value === "number" || value === null
+        ? number(value)
+        : String(value);
+    const scope = taskId ? M.taskById(state, taskId).title : "whole session";
+    return `<button class="metric" id="metric-${h(key)}-${h(taskId || "session")}" data-action="metric" data-metric="${h(key)}" data-task="${h(taskId)}" aria-label="Inspect ${h(label)}: ${h(formatted)}. ${h(note)}. Scope: ${h(scope)}.">
       <span class="metric-arrow" aria-hidden="true">+</span><span class="metric-label">${h(label)}</span>
-      <span class="metric-value ${small || value === null ? "word" : ""}">${h(value === null ? "Unavailable" : value)}</span>
+      <span class="metric-value ${small || value === null ? "word" : ""}">${h(formatted)}</span>
       <span class="metric-note">${h(note)}</span></button>`;
   }
 
   /** Table counts use the same drill-down behavior and counting contract as report cards. */
   function countLink(value, key, taskId) {
-    return `<button class="count-button" id="row-${h(key)}-${h(taskId)}" data-action="metric" data-metric="${h(key)}" data-task="${h(taskId)}" aria-label="Inspect ${h(key)} for ${h(M.taskById(state, taskId).title)}">${h(number(value))}</button>`;
+    const label = key === "tokens" ? "input tokens" : key;
+    return `<button class="count-button" id="row-${h(key)}-${h(taskId)}" data-action="metric" data-metric="${h(key)}" data-task="${h(taskId)}" aria-label="Inspect ${h(label)} for ${h(M.taskById(state, taskId).title)}: ${h(number(value))}.">${h(number(value))}</button>`;
+  }
+
+  /** Render each immutable human instruction separately, retaining its original source ID and turn. */
+  function instructionBlocks(records) {
+    return records
+      .map(
+        (source) =>
+          `<section class="source-instruction" data-source="${h(source.id)}"><p class="eyebrow">Human / U${String(source.turn).padStart(2, "0")} / original source</p><blockquote class="quote">${h(source.text)}</blockquote><p class="small muted">Source: ${h(source.id)}. This anchor does not change with task grouping.</p></section>`,
+      )
+      .join("");
   }
 
   /** Describe incomplete evidence and edited interpretations without overwriting available metrics. */
@@ -257,7 +273,7 @@
       ) +
       `<div class="badge-row">${badge(task.status, task.status === "Completed" ? "" : "warning")}${badge(task.evidence, "neutral")}${badge(task.corrected ? "User-corrected grouping" : "Inferred boundaries", "neutral")}</div>` +
       coverageNotice() +
-      `<div class="panel"><p class="eyebrow">REQUESTED OUTCOME</p><blockquote class="quote">${h(task.prompt)}</blockquote><button class="text-button" data-action="origin" data-task="${h(id)}">Inspect originating instruction and interpretation</button></div>
+      `<div class="panel"><p class="eyebrow">REQUESTED OUTCOME / SOURCE INSTRUCTIONS</p>${instructionBlocks(M.instructionsForTask(state, id))}<button class="text-button" data-action="origin" data-task="${h(id)}">Inspect originating instruction and interpretation</button></div>
       <div class="metrics">${metric("Human steering", values.steering, "Distinct messages, not tags", "steering", id)}${metric("Artifacts", values.artifacts, "Unique within this task", "artifacts", id)}${metric("Tool calls", values.toolCalls, "Recorded invocations", "tools", id)}${metric("Input tokens", values.input, `${number(values.output)} output tokens`, "tokens", id)}</div>
       <div class="two-column"><section class="panel"><p class="eyebrow">OUTCOME BASIS</p><h2>Why this status?</h2><p class="small muted">${task.status === "Completed" ? "Inspect the evidence or confirmation behind this outcome. The label is scoped to what is captured, not a guarantee of perfect correctness." : "An artifact or an agent's statement does not prove that the requested outcome is complete."}</p><ul class="evidence-list"><li>Recorded artifacts<button class="text-button" data-action="metric" data-metric="artifacts" data-task="${h(id)}">Inspect</button></li><li>Recorded tool results<button class="text-button" data-action="metric" data-metric="tools" data-task="${h(id)}">Inspect</button></li><li>Outcome interpretation<button class="text-button" data-action="edit-one" data-op="outcome" data-task="${h(id)}">Correct outcome</button></li></ul></section><section class="panel"><p class="eyebrow">KEEP THE CONTEXT</p><h2>Learn from the instruction.</h2><p class="small muted">The task inherits earlier context. Review the prompt with that context, not as an isolated sentence.</p><a class="button" href="#prompts/${h(id)}">Review task prompt</a></section></div>`
     );
@@ -337,14 +353,15 @@
         )
       );
     const task = id ? M.taskById(state, id) : null;
-    const prompt = task
-      ? task.prompt
-      : "Help me improve reporting in this app.";
+    const sourceInstructions = task
+      ? M.instructionsForTask(state, id)
+      : [state.sessionInstruction];
+    const prompt = sourceInstructions.map((source) => source.text).join("\n\n");
     const isCsv = id === "t1";
     const rewrite = isCsv
       ? "Add CSV export for the currently filtered table rows, preserving their order. Include headers, use the existing CSV utility, and verify escaping in tests."
       : task
-        ? `${task.prompt} Use the existing project conventions, explain any ambiguity before changing behavior, and show evidence that the requested outcome is complete.`
+        ? `${prompt} Use the existing project conventions, explain any ambiguity before changing behavior, and show evidence that the requested outcome is complete.`
         : "Help me improve reporting in this app. We will work through one requested outcome at a time. Confirm each task's scope, preserve existing behavior, and show what was verified and what remains incomplete.";
     return (
       heading(
@@ -361,12 +378,12 @@
         )
         .join("")}</nav>` +
       coverageNotice() +
-      `<div class="prompt-grid"><section class="panel"><p class="eyebrow">THE INSTRUCTION AS SUBMITTED</p><h2>${task ? h(task.title) : "Initial session prompt"}</h2><blockquote class="quote">${h(prompt)}</blockquote>
+      `<div class="prompt-grid"><section class="panel"><p class="eyebrow">ORIGINAL INSTRUCTION EVIDENCE</p><h2>${task ? h(task.title) : "Initial session prompt"}</h2>${instructionBlocks(sourceInstructions)}
       <details><summary>What context was available?</summary><p>The synthetic session concerns an existing reporting table. Earlier accepted instructions remain relevant; a short reference to an agreed design can be sufficient.</p><p>Assessment uses submission-time context. Later clarifications can inform a rewrite but do not establish that the original prompt caused an error.</p></details>
       <p class="eyebrow">ILLUSTRATIVE ASSESSMENT</p><div class="rating">3 / 5 <span>clarity</span> &nbsp; 4 / 5 <span>usefulness</span></div>${badge("Model judgment / illustrative", "warning")}
       <p class="small muted">Example evaluator / draft rubric 1. No model has actually evaluated this page. These are canned ratings, not computed scores for edited prompts.</p></section>
       <section class="panel"><p class="eyebrow">KEEP WHAT WORKED</p><h3>A recognizable outcome.</h3><p class="small muted">The request identifies a capability and connects it to the ongoing work.</p><p class="eyebrow">MAKE THE BOUNDARIES CLEARER</p><h3>${isCsv ? "Which rows should be exported?" : "What would count as complete?"}</h3><p class="small muted">${isCsv ? "All rows versus filtered rows is a meaningful ambiguity. Inspect the later clarification without assuming the prompt caused the agent's decision." : "Make the expected output and verification explicit when they are not already established in the conversation."}</p>
-      <div class="actions"><button class="text-button" data-action="origin" data-task="${h(id || "t1")}">Original instruction</button>${isCsv ? `<button class="text-button" data-action="signal" data-id="u08">Later clarification / U08</button>` : ""}</div>
+      <div class="actions">${task ? `<button class="text-button" data-action="origin" data-task="${h(id)}">Original instruction</button>` : `<button class="text-button" data-action="session-origin">Original session instruction</button>`}${isCsv ? `<button class="text-button" data-action="signal" data-id="u08">Later clarification / U08</button>` : ""}</div>
       <label for="rewrite">Suggested rewrite / synthetic example</label><textarea id="rewrite" readonly>${h(rewrite)}</textarea><div class="actions"><button class="button" data-action="copy-rewrite">Copy suggested rewrite</button></div>
       <p class="small muted">${isCsv ? "This rewrite includes the later filtered-row and utility clarifications." : "Review the suggested constraints before reusing them; they are recommendations, not new requirements."} Copying does not execute the prompt or change source evidence.</p></section></div>`
     );
@@ -458,12 +475,20 @@
         "CAPTURE COVERAGE",
         `<p>The example did not capture message text. No original instruction can be reconstructed from timing alone.</p>`,
       );
+    if (id === "session-origin") {
+      return panelShell(
+        "Session opening instruction",
+        "ORIGINAL SESSION SOURCE / SYNTHETIC",
+        instructionBlocks([state.sessionInstruction]) +
+          `<p class="small muted">This is the session's opening prompt, not a fallback to any task. Task corrections do not change it.</p>`,
+      );
+    }
     if (id.startsWith("origin:")) {
       const task = M.taskById(state, id.slice(7));
       return panelShell(
         "The requested outcome",
         "ORIGINAL INSTRUCTION / SYNTHETIC",
-        `<div class="context-block human"><h3>Human / U${task.range[0]}</h3><p>${h(task.prompt)}</p></div><div class="context-block"><h3>Agent interpretation</h3><p>The agent outlines an approach to this requested outcome. Later instructions and recorded actions belong in the same context, not in isolated prompt scoring.</p></div><p class="small muted">Task boundaries ${task.corrected ? "were corrected by you" : "are inferred"}; a task can span more than one conversation segment in the product design.</p>`,
+        `${instructionBlocks(M.instructionsForTask(state, task.id))}<div class="context-block"><h3>Agent interpretation</h3><p>The agent outlines an approach to this requested outcome. Later instructions and recorded actions belong in the same context, not in isolated prompt scoring.</p></div><p class="small muted">Task boundaries ${task.corrected ? "were corrected by you" : "are inferred"}. A split can inherit an earlier source instruction; a merge retains distinct original messages rather than inventing a combined human turn.</p>`,
       );
     }
     const signal = state.signals.find((item) => item.id === id);
@@ -825,7 +850,12 @@
         );
         throw error;
       }
-      if (current.params.has("panel")) {
+      if (lastBase !== current.base || dirty) {
+        if (dialog.open) dialog.close();
+        main.innerHTML = `<section class="empty"><h1 tabindex="-1">This view is unavailable.</h1><p role="alert">${h(error.message)}</p><a class="button" href="#report">Return to report</a></section>`;
+        lastBase = current.base;
+        dirty = true;
+      } else if (current.params.has("panel")) {
         dialog.innerHTML = panelShell(
           "This detail is unavailable",
           "INVALID OR RESET DEMO LINK",
@@ -916,6 +946,8 @@
       openPanel("interaction", contextTask, { event: id });
     else if (action === "origin")
       openPanel("interaction", "", { event: `origin:${task}` });
+    else if (action === "session-origin")
+      openPanel("interaction", "", { event: "session-origin" });
     else if (["artifact", "tool", "request"].includes(action))
       openPanel(action, contextTask, { id });
     else if (action === "capture-help") openPanel("capture");
@@ -1020,6 +1052,12 @@
 
   document.addEventListener("click", (event) => {
     if (!(event.target instanceof Element)) return;
+    if (event.target.closest(".skip-link")) {
+      event.preventDefault();
+      main.focus();
+      main.scrollIntoView({ block: "start" });
+      return;
+    }
     const button = event.target.closest("[data-action]");
     if (!button) return;
     event.preventDefault();

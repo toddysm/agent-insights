@@ -490,6 +490,139 @@ test("correction previews reject disjoint merges and overlapping ranges", async 
   );
 });
 
+test("accessible metric names include values and missing-data status", async ({
+  page,
+}) => {
+  await open(page);
+  await expect(page.locator("#metric-steering-session")).toHaveAccessibleName(
+    /Inspect Human steering: 4.*inferred categories/,
+  );
+  await expect(page.locator("#row-steering-t1")).toHaveAccessibleName(
+    /Add CSV export: 2/,
+  );
+  await scenario(page, "partial");
+  await expect(page.locator("#metric-tokens-session")).toHaveAccessibleName(
+    /Model tokens: Unavailable.*recorded usage/,
+  );
+  await expect(page.locator("#metric-steering-session")).toHaveAccessibleName(
+    /Human steering: Unavailable.*Not analyzed/,
+  );
+});
+
+test("original instruction drawers keep session and task source anchors after edits", async ({
+  page,
+}) => {
+  await open(page, "review");
+  await page
+    .getByRole("checkbox", { name: "Select Add CSV export", exact: true })
+    .check();
+  await page.getByRole("button", { name: "Split selected" }).click();
+  await page.getByLabel("Task title", { exact: true }).fill("Later CSV work");
+  await page.getByLabel("New task starts at turn").fill("9");
+  await page.getByRole("button", { name: "Save corrections" }).click();
+  await page.getByRole("link", { name: "Back to report", exact: true }).click();
+  await page.getByRole("link", { name: "Later CSV work", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Inspect originating instruction and interpretation",
+    })
+    .click();
+  await expect(page.locator("#detail .source-instruction")).toHaveCount(1);
+  await expect(page.locator("#detail .source-instruction")).toContainText(
+    "Human / U01",
+  );
+  await expect(page.locator("#detail .source-instruction")).not.toContainText(
+    "Human / U09",
+  );
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await page.getByRole("button", { name: "Reset all demo changes" }).click();
+  await scenario(page, "review");
+  await page
+    .getByRole("checkbox", { name: "Select Add CSV export", exact: true })
+    .check();
+  await page
+    .getByRole("checkbox", { name: "Select Fix date filtering", exact: true })
+    .check();
+  await page.getByRole("button", { name: "Merge selected" }).click();
+  await page.getByLabel("Task title", { exact: true }).fill("Reporting work");
+  await page.getByRole("button", { name: "Save corrections" }).click();
+  await page.getByRole("link", { name: "Back to report", exact: true }).click();
+  await page.getByRole("link", { name: "Reporting work", exact: true }).click();
+  await page
+    .getByRole("button", {
+      name: "Inspect originating instruction and interpretation",
+    })
+    .click();
+  await expect(page.locator("#detail .source-instruction")).toHaveCount(2);
+  await expect(
+    page.locator("#detail .source-instruction").nth(0),
+  ).toContainText("Human / U01");
+  await expect(
+    page.locator("#detail .source-instruction").nth(1),
+  ).toContainText("Human / U15");
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await page
+    .getByRole("navigation", { name: "Main", exact: true })
+    .getByRole("link", { name: "Prompt coaching", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Original session instruction", exact: true })
+    .click();
+  await expect(page.locator("#detail")).toContainText(
+    "Help me improve reporting in this app.",
+  );
+  await expect(page.locator("#detail .source-instruction")).toHaveCount(1);
+  await expect(page.locator("#detail .source-instruction")).not.toContainText(
+    "Add CSV export",
+  );
+});
+
+test("invalid base routes recover without stale report content or a blocking drawer", async ({
+  page,
+}) => {
+  await open(page);
+  await page.evaluate(() => {
+    location.hash = "task/missing";
+  });
+  await expect(
+    page.getByRole("heading", { name: "This view is unavailable." }),
+  ).toBeVisible();
+  await page
+    .getByRole("link", { name: "Return to report", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Reporting improvements", exact: true }),
+  ).toBeVisible();
+  await page.locator("#metric-steering-session").click();
+  await page.evaluate(() => {
+    location.hash = "task/missing?panel=tools";
+  });
+  await expect(page.locator("#detail")).not.toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "This view is unavailable." }),
+  ).toBeVisible();
+  await page
+    .getByRole("link", { name: "Return to report", exact: true })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Reporting improvements", exact: true }),
+  ).toBeVisible();
+});
+
+test("the keyboard skip link focuses the current main view without routing to an error", async ({
+  page,
+}) => {
+  await open(page);
+  const skip = page.getByRole("link", { name: "Skip to report", exact: true });
+  await skip.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.locator("#main")).toBeFocused();
+  await expect(page).toHaveURL(/#report$/);
+  await expect(
+    page.getByRole("heading", { name: "Reporting improvements", exact: true }),
+  ).toBeVisible();
+});
+
 test("desktop report and evidence drawer screenshots", async ({
   page,
 }, testInfo) => {

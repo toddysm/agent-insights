@@ -166,6 +166,28 @@ test("outcome and title corrections are explicitly user-authored", () => {
   assert.equal(M.taskById(state, "t3").status, "Blocked");
 });
 
+test("source instruction anchors survive splits, ranges, and merges", () => {
+  const state = M.createState();
+  const source = M.instructionsForTask(state, "t1")[0];
+  assert.equal(source.turn, 1);
+  assert.equal(Object.isFrozen(source), true);
+  const split = M.splitTask(state, "t1", 9, "Later CSV work");
+  assert.equal(M.taskById(state, split).range[0], 9);
+  assert.equal(M.instructionsForTask(state, split)[0].turn, 1);
+  const restored = M.mergeTasks(state, ["t1", split], "CSV work");
+  assert.deepEqual(M.instructionsForTask(state, restored), [source]);
+  const merged = M.mergeTasks(state, [restored, "t2"], "Reporting work");
+  assert.deepEqual(
+    M.instructionsForTask(state, merged).map((item) => item.turn),
+    [1, 15],
+  );
+  assert.equal(
+    state.sessionInstruction.text,
+    "Help me improve reporting in this app.",
+  );
+  assert.equal(state.sessionInstruction.id, "session-opening");
+});
+
 test("invalid inputs fail explicitly and do not mutate a valid fixture", () => {
   const state = M.createState();
   const before = structuredClone(state);

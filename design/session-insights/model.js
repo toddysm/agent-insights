@@ -237,8 +237,27 @@ const InsightsModel = (() => {
       revision: 0,
       analysisStale: false,
       nextTask: 1,
-      tasks: structuredClone(taskSeeds).map((task) => ({
-        ...task,
+      sessionInstruction: Object.freeze({
+        id: "session-opening",
+        turn: 0,
+        text: "Help me improve reporting in this app.",
+      }),
+      instructions: Object.freeze(
+        taskSeeds.map((task) =>
+          Object.freeze({
+            id: `prompt-${task.id}`,
+            turn: task.range[0],
+            text: task.prompt,
+          }),
+        ),
+      ),
+      tasks: taskSeeds.map((task) => ({
+        id: task.id,
+        title: task.title,
+        status: task.status,
+        evidence: task.evidence,
+        range: [...task.range],
+        instructionIds: Object.freeze([`prompt-${task.id}`]),
         excluded: false,
         corrected: false,
       })),
@@ -292,6 +311,16 @@ const InsightsModel = (() => {
         "That task is not present in this demo. It may have been reset or merged.",
       );
     return task;
+  }
+
+  /** Resolve preserved source instructions independently of editable task ranges or titles. */
+  function instructionsForTask(state, id) {
+    return taskById(state, id).instructionIds.map((sourceId) => {
+      const source = state.instructions.find((item) => item.id === sourceId);
+      if (!source)
+        throw new RangeError("The original instruction record is unavailable.");
+      return source;
+    });
   }
 
   /** Label missing, unallocated, or excluded attribution without inventing an active task interpretation. */
@@ -452,7 +481,9 @@ const InsightsModel = (() => {
         ? "Completed"
         : "Partial",
       evidence: "Derived from merged outcomes",
-      prompt: selected.map((task) => task.prompt).join("\n\n"),
+      instructionIds: Object.freeze([
+        ...new Set(selected.flatMap((task) => task.instructionIds)),
+      ]),
       range: [
         Math.min(...selected.map((task) => task.range[0])),
         Math.max(...selected.map((task) => task.range[1])),
@@ -597,6 +628,7 @@ const InsightsModel = (() => {
   return {
     createState,
     taskById,
+    instructionsForTask,
     taskLabel,
     artifactTasks,
     unionMinutes,
