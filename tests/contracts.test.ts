@@ -225,6 +225,7 @@ test("metric units, missing values, contribution scope and stale reads are enfor
     sessionId: "session-fixture",
     key: "tools.calls",
     basis: "calculated",
+    dimension: "tools",
     unit: "count",
     value: 0,
     coverage: { status: "complete" },
@@ -255,7 +256,10 @@ test("metric units, missing values, contribution scope and stale reads are enfor
   ])
     assert.throws(() => parseMetric({ ...metric, ...change }, view));
   assert.equal(
-    parseMetric({ ...metric, unit: "milliseconds", value: 0.25 }, view).value,
+    parseMetric(
+      { ...metric, dimension: "timing", unit: "milliseconds", value: 0.25 },
+      view,
+    ).value,
     0.25,
   );
 });
@@ -319,6 +323,7 @@ test("shared-source metrics reject another session, ambiguous events and undecla
     sessionId: session.id,
     key: "messages",
     basis: "calculated",
+    dimension: "messages",
     unit: "count",
     value: 1,
     coverage: { status: "complete" },
@@ -371,6 +376,90 @@ test("shared-source metrics reject another session, ambiguous events and undecla
     events: [{ ...event, sessionId: null }],
   });
   assert.throws(() => parseMetric(metric, unassigned), /another or ambiguous/);
+});
+
+test("zero anchors require complete relevant evidence, not merely another available dimension", () => {
+  const base = exampleReadView();
+  const source = base.sources[0];
+  const session = base.sessions[0];
+  assert.ok(source && session);
+  const metric = {
+    readId: base.id,
+    sessionId: session.id,
+    key: "tools.calls",
+    basis: "calculated",
+    dimension: "tools",
+    unit: "count",
+    value: 0,
+    coverage: { status: "complete" },
+    contributors: session.references,
+  };
+  const unavailable = { status: "unavailable", reason: "Unsupported input" };
+  const unknown = parseReadView({
+    ...base,
+    sources: [
+      {
+        ...source,
+        format: null,
+        changedDuringRead: null,
+        coverage: {
+          messages: unavailable,
+          timing: unavailable,
+          tools: unavailable,
+          tokens: unavailable,
+        },
+      },
+    ],
+    events: [],
+    issues: [
+      {
+        sourceId: source.id,
+        code: "unsupported-schema",
+        message: unavailable.reason,
+      },
+    ],
+  });
+  assert.throws(() => parseMetric(metric, unknown), /unavailable/);
+  assert.equal(
+    parseMetric({ ...metric, value: null, coverage: unavailable }, unknown)
+      .value,
+    null,
+  );
+  for (const tools of [
+    unavailable,
+    { status: "partial", reason: "Missing tail" },
+  ]) {
+    const incomplete = parseReadView({
+      ...base,
+      sources: [{ ...source, coverage: { ...source.coverage, tools } }],
+      events: [],
+    });
+    assert.throws(
+      () => parseMetric(metric, incomplete),
+      /unavailable|complete evidence/,
+    );
+    assert.throws(() =>
+      parseMetric(
+        { ...metric, coverage: { status: "partial", reason: "Missing tail" } },
+        incomplete,
+      ),
+    );
+  }
+  const missingTools = parseReadView({
+    ...base,
+    sources: [
+      { ...source, coverage: { ...source.coverage, tools: unavailable } },
+    ],
+  });
+  const eventReference = base.events[0]?.references[0];
+  assert.ok(eventReference);
+  assert.throws(
+    () =>
+      parseMetric({ ...metric, contributors: [eventReference] }, missingTools),
+    /unavailable/,
+  );
+  const emptyComplete = parseReadView({ ...base, events: [], issues: [] });
+  assert.equal(parseMetric(metric, emptyComplete).value, 0);
 });
 
 test("many-session reads preserve ID-based event associations", () => {

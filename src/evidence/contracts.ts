@@ -297,6 +297,7 @@ export const metricSchema = z
     sessionId: id,
     key: id,
     basis: z.literal("calculated"),
+    dimension: z.enum(["messages", "timing", "tools", "tokens"]),
     unit: z.enum(["milliseconds", "tokens", "count"]),
     value: milliseconds.nullable(),
     coverage: coverageSchema,
@@ -347,7 +348,7 @@ function referenceKey(reference: EvidenceReference): string {
   ]);
 }
 
-/** Reject stale or misattributed evidence; declared non-event anchors support only zero/unavailable results. */
+/** Reject stale, unavailable or misattributed evidence; zero anchors require complete relevant capture. */
 export function parseMetric(input: unknown, view: ReadView): Metric {
   const metric = metricSchema.parse(input);
   const session = view.sessions.find(
@@ -359,6 +360,9 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     );
   }
   const declaredAnchors = new Set(session.references.map(referenceKey));
+  const sourcesById = new Map(
+    view.sources.map((source) => [source.id, source]),
+  );
   const eventOwners = new Map<string, Set<string | null>>();
   for (const event of view.events) {
     for (const reference of event.references) {
@@ -369,8 +373,16 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     }
   }
   for (const reference of metric.contributors) {
-    if (!session.sourceIds.includes(reference.sourceId)) {
+    const source = sourcesById.get(reference.sourceId);
+    if (
+      source === undefined ||
+      !session.sourceIds.includes(reference.sourceId)
+    ) {
       throw new Error("Metric contributor belongs to an unrelated source");
+    }
+    const availability = source.coverage[metric.dimension];
+    if (metric.value !== null && availability.status === "unavailable") {
+      throw new Error(`Metric evidence is unavailable for ${metric.dimension}`);
     }
     const key = referenceKey(reference);
     const owners = eventOwners.get(key);
@@ -386,6 +398,10 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     ) {
       throw new Error(
         "Metric requires known event evidence or a declared zero/unavailable anchor",
+      );
+    } else if (metric.value !== null && availability.status !== "complete") {
+      throw new Error(
+        "A zero-valued anchor requires complete evidence for its dimension",
       );
     }
   }

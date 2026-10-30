@@ -68,14 +68,18 @@ platform certification.
 
 ## Calculated metrics
 
-`parseMetric` requires the current read/session, a unit, explicit coverage and
+`parseMetric` requires the current read/session, a unit, evidence `dimension`
+(`messages`, `timing`, `tools` or `tokens`), explicit coverage and
 source contributors. Available zero is different from unavailable `null`.
 Known event references must belong unambiguously to the requested session,
 even when multiple sessions share a source. Each session also declares original
 source anchors in `references`. Non-event anchors are accepted only for zero or
-unavailable results; arbitrary undeclared references and another session's events
-are rejected. Even a measured zero needs evidence, such as a declared complete
-source array's root reference.
+unavailable results; a numeric zero requires complete source coverage for the
+selected dimension. Availability of a different dimension is not enough.
+Numeric event contributions also require that dimension to be available.
+Arbitrary undeclared references and another session's events are rejected.
+Even a measured zero needs evidence, such as a declared complete source array's
+root reference. Missing/partial root evidence must not become an observed zero.
 
 Contract validation does not validate arithmetic or establish that a declared
 locator exists in the underlying source; readers/calculators must supply genuine
