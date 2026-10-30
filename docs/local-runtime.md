@@ -71,6 +71,10 @@ The view's read-completion timestamp includes adapter parsing and normalization.
 Authenticated status retains the separate input-capture bounds in `readTiming`,
 so processing latency is not mistaken for newer source observation. Source-change
 checks apply to that input-capture interval, not to later adapter computation.
+The read deadline also uses a monotonic elapsed-time check before publication:
+synchronous parsing cannot publish an overdue result merely because it delayed
+the timeout callback. Cancellation cannot preempt JavaScript that is currently
+blocking the event loop, but its eventual result is rejected.
 
 ## Copilot configuration and remote processing
 

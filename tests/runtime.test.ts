@@ -2,6 +2,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
+  appendFile,
   mkdtemp,
   mkdir,
   open,
@@ -22,6 +23,7 @@ import { spawn } from "node:child_process";
 import { once } from "node:events";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
+import { performance } from "node:perf_hooks";
 import test, { type TestContext } from "node:test";
 import {
   parseReadView,
@@ -413,6 +415,79 @@ test("registered readers produce only a transient current generation", async (t)
   );
 });
 
+test("a source changed during capture downgrades coverage and records the change without altering unavailable fields", async (t) => {
+  const data = await fixture(t);
+  const sources = await SourceAccess.create([data.file]);
+  const target = await realpath(data.file);
+  const originalOpen = fsPromises.open;
+  let changed = false;
+  const mock = t.mock.method(
+    fsPromises,
+    "open",
+    async (...args: Parameters<typeof originalOpen>) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === target) {
+        const readChunk = handle.read.bind(handle);
+        t.mock.method(
+          handle,
+          "read",
+          async (
+            buffer: Buffer,
+            offset: number,
+            length: number,
+            position: number,
+          ) => {
+            const result = await readChunk(buffer, offset, length, position);
+            if (!changed) {
+              await appendFile(data.file, "\nAPPENDED_BY_SYNTHETIC_HARNESS");
+              changed = true;
+            }
+            return result;
+          },
+        );
+      }
+      return handle;
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    const service = new RuntimeService(sources, config([data.file]), [
+      syntheticReader,
+    ]);
+    const view = await service.read(
+      {
+        sourceId: "source-1",
+        relativePath: "",
+        format: syntheticReader.format,
+      },
+      new AbortController().signal,
+    );
+    const source = view.sources[0];
+    assert.ok(source);
+    assert.equal(changed, true);
+    assert.equal(source.changedDuringRead, true);
+    assert.equal(source.coverage.messages.status, "partial");
+    for (const dimension of ["timing", "tools", "tokens"] as const) {
+      assert.deepEqual(source.coverage[dimension], {
+        status: "unavailable",
+        reason: "Synthetic reader has no telemetry",
+      });
+    }
+    assert.ok(
+      view.issues.some(
+        (issue) =>
+          issue.sourceId === "source-1" && issue.code === "source-changed",
+      ),
+    );
+    const message = view.events[0];
+    assert.ok(message?.kind === "message");
+    assert.equal(message.text, "SYNTHETIC_SOURCE_CONTENT");
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
 test("read completion includes adapter work while retaining the actual input observation bounds", async (t) => {
   const data = await fixture(t);
   let adapterStartedAt = 0;
@@ -603,6 +678,37 @@ test("a reader that ignores cancellation is bounded by the runtime deadline", as
   } finally {
     clearInterval(keepAlive);
   }
+  assert.equal(service.view, null);
+});
+
+test("a synchronous reader that passes the monotonic deadline cannot publish before the timer callback", async (t) => {
+  const data = await fixture(t);
+  const sources = await SourceAccess.create([data.file]);
+  let now = 0;
+  let entered = false;
+  t.mock.method(performance, "now", () => now);
+  const reader: EvidenceReader = {
+    format: "vscode-otel-jsonl",
+    read(input) {
+      entered = true;
+      now = 1001;
+      return Promise.resolve(readerView(input, "SYNCHRONOUS_RESULT"));
+    },
+  };
+  const service = new RuntimeService(
+    sources,
+    config([data.file]),
+    [reader],
+    1000,
+  );
+  await assert.rejects(
+    service.read(
+      { sourceId: "source-1", relativePath: "", format: reader.format },
+      new AbortController().signal,
+    ),
+    { code: "READ_TIMEOUT" },
+  );
+  assert.equal(entered, true);
   assert.equal(service.view, null);
 });
 

@@ -1,5 +1,6 @@
 /** One transient read generation and a fixed registry of trusted, application-owned readers. */
 import { randomUUID } from "node:crypto";
+import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import {
   parseReadView,
@@ -118,22 +119,30 @@ export class RuntimeService {
     this.invalidate();
     const id = randomUUID();
     const controller = new AbortController();
+    const deadline = performance.now() + this.timeoutMs;
+    const timeoutError = new RuntimeError(
+      "READ_TIMEOUT",
+      "The read exceeded its time limit.",
+      408,
+    );
     this.active = { id, controller };
     /** External callers cannot inject a sensitive abort reason into the public error. */
     const abort = () => controller.abort(cancelledRead());
     externalSignal.addEventListener("abort", abort, { once: true });
     if (externalSignal.aborted) controller.abort();
     const timeout = setTimeout(
-      () =>
-        controller.abort(
-          new RuntimeError(
-            "READ_TIMEOUT",
-            "The read exceeded its time limit.",
-            408,
-          ),
-        ),
+      () => controller.abort(timeoutError),
       this.timeoutMs,
     );
+    /** A blocked event loop cannot deliver the timer; check elapsed time before publishing too. */
+    const ensureCurrent = () => {
+      if (controller.signal.aborted || this.active?.id !== id)
+        throw cancelledRead(controller.signal);
+      if (performance.now() >= deadline) {
+        controller.abort(timeoutError);
+        throw timeoutError;
+      }
+    };
     timeout.unref();
     try {
       const captured = await abortable(
@@ -144,6 +153,7 @@ export class RuntimeService {
         ),
         controller.signal,
       );
+      ensureCurrent();
       const input = {
         readId: id,
         sourceId: request.sourceId,
@@ -151,8 +161,7 @@ export class RuntimeService {
         bytes: byteChunks(captured.bytes, controller.signal),
       };
       const candidate = await abortable(reader.read(input), controller.signal);
-      if (controller.signal.aborted || this.active?.id !== id)
-        throw cancelledRead(controller.signal);
+      ensureCurrent();
       const view = parseReadView(candidate);
       const firstSource = view.sources[0];
       if (
@@ -228,8 +237,7 @@ export class RuntimeService {
         sources,
         issues,
       });
-      if (controller.signal.aborted || this.active?.id !== id)
-        throw cancelledRead(controller.signal);
+      ensureCurrent();
       const finishedAtMs = Date.now();
       if (
         !Number.isSafeInteger(finishedAtMs) ||
