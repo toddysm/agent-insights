@@ -4,11 +4,12 @@ Capability inventory as of 2026-10-30. This records project delivery status,
 not session data or analysis results.
 
 The code baseline is main at `2f9d85cb4658300279e0a5e2e526b4d6ec62fe74`.
-The current plan is lightweight design revision 4 in
+The current plan is lightweight design revision 5 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
 The user approved the plan, runtime baseline and unattended review/merge scope
-on 2026-10-30. Model-policy decisions remain separately gated.
+on 2026-10-30, followed by configurable Copilot-first analysis and disclosed
+remote processing. Interpretation rules and backend qualification remain gated.
 
 Tracking currently uses GitHub issues and native sub-issues/dependencies.
 GitHub Project access is unavailable; no board status is claimed.
@@ -18,15 +19,15 @@ GitHub Project access is unavailable; no board status is claimed.
 No production session-analysis capability has shipped.
 
 | Capability | Feature slug | Tracking issue | PRD doc | Docs (arch/dev) | Docs (user) | Landed |
-| --- | --- | --- | --- | --- | --- | --- |
+| ---------- | ------------ | -------------- | ------- | --------------- | ----------- | ------ |
 
 Here and below, the template column `PRD doc` means product requirements document
 or, for lightweight planning, the linked issue-backed design.
 
 ### Existing design artifact
 
-| Artifact | Evidence | Documentation | Landed |
-| --- | --- | --- | --- |
+| Artifact                                                                         | Evidence                                                                                                                | Documentation                                                              | Landed     |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- | ---------- |
 | Locally viewable synthetic session-insights prototype; not a production analyzer | [Pull request #4](https://github.com/toddysm/agent-insights/pull/4), [prototype](../design/session-insights/index.html) | [Walkthrough and development checks](../design/session-insights/README.md) | 2026-10-29 |
 
 The prototype demonstrates navigation, numeric summaries, evidence drill-down
@@ -39,19 +40,20 @@ Prototype tests are not validation of production source readers or analysis.
 
 ## In progress
 
-Build initialization is authorized. The runtime baseline is TypeScript,
-Node.js 24 and React on a loopback-only server, with explicit source selection
-and manual refresh. macOS, Windows and Linux are targets, not yet validated
-support claims. No production analysis capability has shipped.
+The runtime baseline is TypeScript, Node.js 24 and React on a loopback-only
+server, with explicit source selection and manual refresh. The
+[local interface](local-runtime.md) and
+[evidence contracts](evidence-contracts.md) are implemented. No real-session
+reader, report or model-analysis capability has shipped.
 
-| Capability | Feature slug | Tracking issue | PRD doc | Docs |
-| --- | --- | --- | --- | --- |
+| Capability                                                                                                                                                                 | Feature slug            | Tracking issue                                           | PRD doc                                                                   | Docs                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Local, read-only analysis of Visual Studio Code Copilot Chat sessions: timing, tools, tokens, tasks/outcomes, steering, artifacts and prompt coaching with source evidence | vscode-session-analysis | [#2](https://github.com/toddysm/agent-insights/issues/2) | [Issue-backed design](https://github.com/toddysm/agent-insights/issues/2) | Capture prerequisites [#1](https://github.com/toddysm/agent-insights/issues/1) and final usage guide [#21](https://github.com/toddysm/agent-insights/issues/21) remain incomplete |
 
 ## Planned
 
 | Capability | Feature slug | Tracking issue | PRD doc | Documentation status |
-| --- | --- | --- | --- | --- |
+| ---------- | ------------ | -------------- | ------- | -------------------- |
 
 No additional production capability is currently scheduled outside this build.
 
@@ -67,22 +69,23 @@ live artifact-verification inputs.
 
 The runtime/source workflow decision in
 [#6](https://github.com/toddysm/agent-insights/issues/6) is approved.
-The model/data/rubric decision in
-[#7](https://github.com/toddysm/agent-insights/issues/7) remains open; no provider,
-credentials or outbound session-data transmission is authorized by this build.
-GitHub-hosted validation is the selected testing mode; no production validation
-has run.
+The provider/data portion of
+[#7](https://github.com/toddysm/agent-insights/issues/7) now approves Copilot first
+and remote processing with explicit user awareness. Its completion/rubric rules
+remain open. Model execution still requires the qualified adapter and user action;
+source selection/refresh does not transmit content. GitHub-hosted validation
+remains the selected testing mode.
 
 ## Deferred / Won't do
 
-| Capability | Feature slug | Tracking issue | Reason |
-| --- | --- | --- | --- |
+| Capability                                             | Feature slug            | Tracking issue                                           | Reason                                                                                                                                 |
+| ------------------------------------------------------ | ----------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Manual corrections to inferred session interpretations | vscode-session-analysis | [#5](https://github.com/toddysm/agent-insights/issues/5) | Deferred standalone idea, not a required child or dependency of the initial read-only feature; no future correction design is approved |
 
 ## Known gaps & debt
 
-| Gap | Evidence and next work |
-| --- | --- |
-| Current prototype still contains superseded editing flows | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements |
-| No production runtime, real-session readers or model analysis yet | Delivery is In progress under [#2](https://github.com/toddysm/agent-insights/issues/2); synthetic examples are not supported-format or platform claims |
-| End-user capture and usage documentation is not complete | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |
+| Gap                                                                      | Evidence and next work                                                                                                                                                                           |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
+| Real-session readers, reports and model analysis are not implemented yet | The local shell reports missing capabilities explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2)                                             |
+| End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |

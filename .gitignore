@@ -222,3 +222,5 @@ __marimo__/
 # Local TypeScript dependencies and generated output
 node_modules/
 .build/
+playwright-report/
+test-results/

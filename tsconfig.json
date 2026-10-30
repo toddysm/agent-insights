@@ -10,7 +10,8 @@
     "forceConsistentCasingInFileNames": true,
     "rootDir": ".",
     "outDir": ".build",
-    "declaration": true
+    "declaration": true,
+    "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "tests/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.tsx", "tests/**/*.ts"]
 }

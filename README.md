@@ -12,9 +12,12 @@ limitations, and validation instructions.
 
 ## Implementation
 
-The first production foundation is the
-[in-memory evidence contract](docs/evidence-contracts.md). Source readers,
-the local application and model analysis are not implemented yet.
+The [local runtime](docs/local-runtime.md) provides a loopback-only source
+interface and read-only access boundary, built on the
+[in-memory evidence contract](docs/evidence-contracts.md).
+Real source readers, report views and model analysis are not installed yet;
+the interface reports those capabilities as unavailable rather than showing
+example data.
 See the [capability inventory](docs/project-state.md) for the current plan.
 
 To validate the contracts with Node.js 24:
@@ -24,3 +27,15 @@ npm ci --ignore-scripts
 npm run check
 npm test
 ```
+
+To open the local interface:
+
+```bash
+npm run build
+npm start -- --source /path/to/private/captures
+```
+
+Open the full, private launch URL printed by the server.
+Copilot is the first planned analysis backend. When enabled, it sends selected
+content to a remote service; a local harness is not on-device inference.
+See the [runtime and privacy guide](docs/local-runtime.md) before using analysis.
