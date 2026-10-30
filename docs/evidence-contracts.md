@@ -77,6 +77,9 @@ source anchors in `references`. Non-event anchors are accepted only for zero or
 unavailable results; a numeric zero requires complete source coverage for the
 selected dimension. Availability of a different dimension is not enough.
 Numeric event contributions also require that dimension to be available.
+Metric coverage cannot be stronger than contributing source coverage: a partial
+capture cannot produce a complete metric. This is intentionally conservative
+while coverage is tracked at the source/dimension level.
 Arbitrary undeclared references and another session's events are rejected.
 Even a measured zero needs evidence, such as a declared complete source array's
 root reference. Missing/partial root evidence must not become an observed zero.

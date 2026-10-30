@@ -436,7 +436,7 @@ test("zero anchors require complete relevant evidence, not merely another availa
     });
     assert.throws(
       () => parseMetric(metric, incomplete),
-      /unavailable|complete evidence/,
+      /unavailable|complete (?:evidence|contributing coverage)/,
     );
     assert.throws(() =>
       parseMetric(
@@ -460,6 +460,47 @@ test("zero anchors require complete relevant evidence, not merely another availa
   );
   const emptyComplete = parseReadView({ ...base, events: [], issues: [] });
   assert.equal(parseMetric(metric, emptyComplete).value, 0);
+});
+
+test("event metrics cannot claim stronger coverage than their contributing sources", () => {
+  const base = exampleReadView();
+  const source = base.sources[0];
+  const reference = base.events[0]?.references[0];
+  assert.ok(source && reference);
+  const partial = { status: "partial", reason: "Truncated capture" };
+  const view = parseReadView({
+    ...base,
+    sources: [
+      { ...source, coverage: { ...source.coverage, messages: partial } },
+    ],
+  });
+  const metric = {
+    readId: view.id,
+    sessionId: "session-fixture",
+    key: "messages",
+    basis: "calculated",
+    dimension: "messages",
+    unit: "count",
+    value: 1,
+    coverage: { status: "complete" },
+    contributors: [reference],
+  };
+  assert.throws(
+    () => parseMetric(metric, view),
+    /complete contributing coverage/,
+  );
+  assert.equal(parseMetric({ ...metric, coverage: partial }, view).value, 1);
+  assert.equal(
+    parseMetric(
+      {
+        ...metric,
+        value: null,
+        coverage: { status: "unavailable", reason: "Insufficient evidence" },
+      },
+      view,
+    ).value,
+    null,
+  );
 });
 
 test("many-session reads preserve ID-based event associations", () => {

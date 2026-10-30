@@ -384,6 +384,14 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     if (metric.value !== null && availability.status === "unavailable") {
       throw new Error(`Metric evidence is unavailable for ${metric.dimension}`);
     }
+    if (
+      metric.coverage.status === "complete" &&
+      availability.status !== "complete"
+    ) {
+      throw new Error(
+        "Complete metrics require complete contributing coverage",
+      );
+    }
     const key = referenceKey(reference);
     const owners = eventOwners.get(key);
     if (owners !== undefined) {
