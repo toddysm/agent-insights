@@ -1,0 +1,4 @@
+{"kind":0,"v":{"version":3,"sessionId":"synthetic-session","creationDate":1760000000000,"initialLocation":"panel","responderUsername":"Synthetic assistant","customTitle":"Draft","requests":[]}}
+{"kind":2,"k":["requests"],"v":[{"requestId":"request-1","message":{"text":"Create a fictional example.","parts":[]},"variableData":{"variables":[]},"timestamp":1760000000000,"response":[]}]}
+{"kind":1,"k":["requests",0,"response"],"v":[{"value":"Created a fictional example."}]}
+{"kind":3,"k":["customTitle"]}
