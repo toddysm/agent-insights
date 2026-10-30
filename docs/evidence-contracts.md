@@ -10,6 +10,8 @@ in-memory views; they must never be serialized into an application session store
 
 - Every read has an independent `id`, wall-clock read-start/read-finish bounds,
   source metadata, sessions, events and visible issues.
+- At least one source must be retained, including for unavailable or unsupported
+  input; a completely empty view must not disguise a failed read.
 - Timestamps are Unix milliseconds. Durations use milliseconds, including
   fractional milliseconds. Tokens/counts are nonnegative safe integers.
   Readers convert producer units, preserving original record locators.
@@ -27,7 +29,8 @@ in-memory views; they must never be serialized into an application session store
   coverage dimensions must remain unavailable.
 - `changedDuringRead: false` means no change was detected by the reader's checks,
   not an atomic-snapshot guarantee. `null` means unverified. A detected change
-  requires reduced coverage and a `source-changed` issue. Refresh creates a new
+  requires reduced coverage and a `source-changed` issue. Conversely, that issue
+  requires the flag to be `true`, not `false` or unverified. Refresh creates a new
   read generation; late results for the previous generation are not current.
 
 `parseReadView` validates normalized structure and reference relationships;
@@ -67,9 +70,15 @@ platform certification.
 
 `parseMetric` requires the current read/session, a unit, explicit coverage and
 source contributors. Available zero is different from unavailable `null`.
-Even a measured zero needs evidence, such as a complete source array's root
-reference. Metric schema validation does not validate arithmetic or establish
-that a referenced source record exists; readers/calculators must supply genuine
+Known event references must belong unambiguously to the requested session,
+even when multiple sessions share a source. Each session also declares original
+source anchors in `references`. Non-event anchors are accepted only for zero or
+unavailable results; arbitrary undeclared references and another session's events
+are rejected. Even a measured zero needs evidence, such as a declared complete
+source array's root reference.
+
+Contract validation does not validate arithmetic or establish that a declared
+locator exists in the underlying source; readers/calculators must supply genuine
 locators and drill-down must report lost/invalid evidence rather than substitute it.
 
 Usage declares per-call, cumulative or unknown accounting. Cache/reasoning

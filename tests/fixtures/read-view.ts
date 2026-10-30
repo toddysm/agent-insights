@@ -34,6 +34,13 @@ export function exampleReadView(): ReadView {
         id: "session-fixture",
         nativeId: "native-session",
         sourceIds: ["source-fixture"],
+        references: [
+          {
+            sourceId: "source-fixture",
+            recordId: "session-header",
+            location: { kind: "jsonl", line: 1, pointer: "/session" },
+          },
+        ],
       },
     ],
     events: [

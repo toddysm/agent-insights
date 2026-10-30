@@ -138,7 +138,7 @@ export const readViewSchema = z
     id,
     startedAtMs: milliseconds,
     finishedAtMs: milliseconds,
-    sources: z.array(sourceSchema).readonly(),
+    sources: z.array(sourceSchema).min(1).readonly(),
     sessions: z
       .array(
         z
@@ -146,6 +146,7 @@ export const readViewSchema = z
             id,
             nativeId: id.nullable(),
             sourceIds: z.array(id).min(1).readonly(),
+            references: z.array(referenceSchema).min(1).readonly(),
           })
           .readonly(),
       )
@@ -173,7 +174,14 @@ export const readViewSchema = z
   })
   .superRefine((view, context) => {
     const sourceIds = new Set(view.sources.map((source) => source.id));
-    const sessionIds = new Set(view.sessions.map((session) => session.id));
+    const sessionsById = new Map(
+      view.sessions.map((session) => [session.id, session]),
+    );
+    const changedSourceIds = new Set(
+      view.issues
+        .filter((issue) => issue.code === "source-changed")
+        .map((issue) => issue.sourceId),
+    );
     if (view.finishedAtMs < view.startedAtMs) {
       context.addIssue({
         code: "custom",
@@ -197,17 +205,28 @@ export const readViewSchema = z
           message: "Session references an absent source",
         });
       }
+      if (
+        session.references.some(
+          (ref) => !session.sourceIds.includes(ref.sourceId),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Session evidence references an unrelated source",
+        });
+      }
     }
     for (const event of view.events) {
-      if (event.sessionId !== null && !sessionIds.has(event.sessionId)) {
+      if (event.sessionId !== null && !sessionsById.has(event.sessionId)) {
         context.addIssue({
           code: "custom",
           message: "Event references an absent session",
         });
       }
-      const session = view.sessions.find(
-        (candidate) => candidate.id === event.sessionId,
-      );
+      const session =
+        event.sessionId === null
+          ? undefined
+          : sessionsById.get(event.sessionId);
       if (
         event.references.some(
           (ref) =>
@@ -242,20 +261,22 @@ export const readViewSchema = z
           message: "Unknown source format cannot claim available coverage",
         });
       }
+      const hasChangeIssue = changedSourceIds.has(source.id);
+      if (hasChangeIssue !== (source.changedDuringRead === true)) {
+        context.addIssue({
+          code: "custom",
+          message: "Source change flag and issue disagree",
+        });
+      }
       if (
         source.changedDuringRead === true &&
-        (Object.values(source.coverage).some(
+        Object.values(source.coverage).some(
           (coverage) => coverage.status === "complete",
-        ) ||
-          !view.issues.some(
-            (issue) =>
-              issue.sourceId === source.id && issue.code === "source-changed",
-          ))
+        )
       ) {
         context.addIssue({
           code: "custom",
-          message:
-            "Changed source requires a visible issue and reduced coverage",
+          message: "Changed source requires reduced coverage",
         });
       }
     }
@@ -315,26 +336,58 @@ export function parseReadView(input: unknown): ReadView {
   return readViewSchema.parse(input);
 }
 
-/** Reject stale-generation or absent-source metric references; arithmetic belongs to the calculator. */
+/** Compare original record identities and locations without delimiter collisions. */
+function referenceKey(reference: EvidenceReference): string {
+  return JSON.stringify([
+    reference.sourceId,
+    reference.recordId,
+    reference.location.kind,
+    reference.location.pointer,
+    reference.location.kind === "jsonl" ? reference.location.line : null,
+  ]);
+}
+
+/** Reject stale or misattributed evidence; declared non-event anchors support only zero/unavailable results. */
 export function parseMetric(input: unknown, view: ReadView): Metric {
   const metric = metricSchema.parse(input);
-  if (
-    metric.readId !== view.id ||
-    !view.sessions.some((session) => session.id === metric.sessionId)
-  ) {
+  const session = view.sessions.find(
+    (candidate) => candidate.id === metric.sessionId,
+  );
+  if (metric.readId !== view.id || session === undefined) {
     throw new Error(
       "Metric belongs to an unavailable read generation or session",
     );
   }
-  const session = view.sessions.find(
-    (candidate) => candidate.id === metric.sessionId,
-  );
-  if (
-    metric.contributors.some(
-      (ref) => !session?.sourceIds.includes(ref.sourceId),
-    )
-  ) {
-    throw new Error("Metric contributor belongs to an unrelated source");
+  const declaredAnchors = new Set(session.references.map(referenceKey));
+  const eventOwners = new Map<string, Set<string | null>>();
+  for (const event of view.events) {
+    for (const reference of event.references) {
+      const key = referenceKey(reference);
+      const owners = eventOwners.get(key) ?? new Set<string | null>();
+      owners.add(event.sessionId);
+      eventOwners.set(key, owners);
+    }
+  }
+  for (const reference of metric.contributors) {
+    if (!session.sourceIds.includes(reference.sourceId)) {
+      throw new Error("Metric contributor belongs to an unrelated source");
+    }
+    const key = referenceKey(reference);
+    const owners = eventOwners.get(key);
+    if (owners !== undefined) {
+      if (owners.size !== 1 || !owners.has(session.id)) {
+        throw new Error(
+          "Metric contributor belongs to another or ambiguous session",
+        );
+      }
+    } else if (
+      !declaredAnchors.has(key) ||
+      (metric.value !== 0 && metric.coverage.status !== "unavailable")
+    ) {
+      throw new Error(
+        "Metric requires known event evidence or a declared zero/unavailable anchor",
+      );
+    }
   }
   return metric;
 }

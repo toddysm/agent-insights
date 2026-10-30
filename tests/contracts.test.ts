@@ -78,6 +78,20 @@ test("read bounds, identities and references are validated", () => {
     assert.throws(() => parseReadView(invalid), z.ZodError);
 });
 
+test("a completely empty read cannot hide a missing or unsupported source", () => {
+  assert.throws(
+    () =>
+      parseReadView({
+        ...exampleReadView(),
+        sources: [],
+        sessions: [],
+        events: [],
+        issues: [],
+      }),
+    z.ZodError,
+  );
+});
+
 test("invalid span bounds and token quantities fail", () => {
   const view = exampleReadView();
   const call = view.events[1];
@@ -125,6 +139,19 @@ test("changed sources require reduced coverage and an explicit issue", () => {
   };
   assert.equal(parseReadView(changed).sources[0]?.changedDuringRead, true);
   assert.throws(() => parseReadView({ ...changed, issues: [] }));
+  for (const changedDuringRead of [false, null]) {
+    assert.throws(
+      () =>
+        parseReadView({
+          ...changed,
+          sources: changed.sources.map((candidate) => ({
+            ...candidate,
+            changedDuringRead,
+          })),
+        }),
+      z.ZodError,
+    );
+  }
 });
 
 test("unavailable source stays explicit without fake sessions or zero-valued records", () => {
@@ -259,6 +286,137 @@ test("reader extension point rejects missing/ambiguous registration and accepts 
   );
   abort.abort();
   await assert.rejects(reader.read(context), { name: "AbortError" });
+});
+
+test("shared-source metrics reject another session, ambiguous events and undeclared roots", () => {
+  const base = exampleReadView();
+  const session = base.sessions[0];
+  const event = base.events[0];
+  const original = event?.references[0];
+  const root = session?.references[0];
+  assert.ok(session && event && original && root);
+  const otherReference = {
+    ...original,
+    recordId: "other-request",
+    location: { kind: "jsonl", line: 3, pointer: "" },
+  };
+  const otherEvent = {
+    ...event,
+    id: "other-event",
+    sessionId: "other-session",
+    references: [otherReference],
+  };
+  const view = parseReadView({
+    ...base,
+    sessions: [
+      ...base.sessions,
+      { ...session, id: "other-session", nativeId: "other-native" },
+    ],
+    events: [...base.events, otherEvent],
+  });
+  const metric = {
+    readId: view.id,
+    sessionId: session.id,
+    key: "messages",
+    basis: "calculated",
+    unit: "count",
+    value: 1,
+    coverage: { status: "complete" },
+    contributors: [original],
+  };
+  assert.equal(parseMetric(metric, view).value, 1);
+  assert.throws(
+    () => parseMetric({ ...metric, contributors: [otherReference] }, view),
+    /another or ambiguous/,
+  );
+  assert.throws(
+    () =>
+      parseMetric(
+        {
+          ...metric,
+          value: 0,
+          contributors: [{ ...root, recordId: "invented" }],
+        },
+        view,
+      ),
+    /declared/,
+  );
+  assert.throws(
+    () => parseMetric({ ...metric, contributors: [root] }, view),
+    /declared/,
+  );
+  assert.equal(
+    parseMetric({ ...metric, value: 0, contributors: [root] }, view).value,
+    0,
+  );
+  assert.equal(
+    parseMetric(
+      {
+        ...metric,
+        value: null,
+        coverage: { status: "unavailable", reason: "Missing" },
+        contributors: [root],
+      },
+      view,
+    ).value,
+    null,
+  );
+  const ambiguous = parseReadView({
+    ...view,
+    events: [...base.events, { ...otherEvent, references: [original] }],
+  });
+  assert.throws(() => parseMetric(metric, ambiguous), /another or ambiguous/);
+  const unassigned = parseReadView({
+    ...base,
+    events: [{ ...event, sessionId: null }],
+  });
+  assert.throws(() => parseMetric(metric, unassigned), /another or ambiguous/);
+});
+
+test("many-session reads preserve ID-based event associations", () => {
+  const base = exampleReadView();
+  const session = base.sessions[0];
+  const event = base.events[0];
+  assert.ok(session && event);
+  const sessions = Array.from({ length: 200 }, (_, index) => ({
+    ...session,
+    id: `session-${index}`,
+    nativeId: `native-session-${index}`,
+    references: [
+      {
+        sourceId: "source-fixture",
+        recordId: `session-header-${index}`,
+        location: { kind: "jsonl", line: index + 1, pointer: "" },
+      },
+    ],
+  }));
+  const events = Array.from({ length: 2000 }, (_, index) => ({
+    ...event,
+    id: `event-${index}`,
+    nativeId: `native-event-${index}`,
+    sessionId: `session-${index % 200}`,
+    references: [
+      {
+        sourceId: "source-fixture",
+        recordId: `event-record-${index}`,
+        location: { kind: "jsonl", line: index + 201, pointer: "" },
+      },
+    ],
+  }));
+  const view = parseReadView({ ...base, sessions, events });
+  assert.equal(view.sessions.length, 200);
+  assert.equal(view.events[1999]?.sessionId, "session-199");
+  assert.throws(
+    () =>
+      parseReadView({
+        ...view,
+        events: [
+          ...view.events,
+          { ...event, id: "invalid-event", sessionId: "missing" },
+        ],
+      }),
+    z.ZodError,
+  );
 });
 
 test("source locators reject malformed pointers and nonpositive line numbers", () => {
