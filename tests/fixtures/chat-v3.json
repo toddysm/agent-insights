@@ -1,0 +1,17 @@
+{
+  "version": 3,
+  "sessionId": "synthetic-session",
+  "creationDate": 1760000000000,
+  "initialLocation": "panel",
+  "responderUsername": "Synthetic assistant",
+  "customTitle": "Fictional example",
+  "requests": [
+    {
+      "requestId": "request-1",
+      "message": { "text": "Create a fictional example.", "parts": [] },
+      "variableData": { "variables": [] },
+      "timestamp": 1760000000000,
+      "response": [{ "value": "Created a fictional example." }]
+    }
+  ]
+}
