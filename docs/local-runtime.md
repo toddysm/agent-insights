@@ -67,6 +67,11 @@ newer read or refresh. Source-change metadata is a best-effort observation, not
 a claim of an atomic filesystem snapshot. This is not a security sandbox against
 a hostile process already running with the same operating-system account.
 
+The view's read-completion timestamp includes adapter parsing and normalization.
+Authenticated status retains the separate input-capture bounds in `readTiming`,
+so processing latency is not mistaken for newer source observation. Source-change
+checks apply to that input-capture interval, not to later adapter computation.
+
 ## Copilot configuration and remote processing
 
 The approved first backend is installed Copilot. These startup options record

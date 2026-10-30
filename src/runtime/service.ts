@@ -10,7 +10,7 @@ import {
 } from "../evidence/contracts.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError, cancelledRead } from "./errors.js";
-import type { ReadRequest, RuntimeStatus } from "./protocol.js";
+import type { ReadRequest, ReadTiming, RuntimeStatus } from "./protocol.js";
 import { SourceAccess } from "./sources.js";
 
 /** Await a cooperative adapter without allowing ignored cancellation to retain the current generation. */
@@ -47,6 +47,7 @@ export class RuntimeService {
   private readonly readers = new Map<SourceFormat, EvidenceReader>();
   private current: ReadView | null = null;
   private currentSelection: Readonly<ReadRequest> | null = null;
+  private currentTiming: ReadTiming | null = null;
   private active: { id: string; controller: AbortController } | null = null;
 
   /** Register only explicitly supplied internal adapters; this is not a dynamic plugin loader. */
@@ -64,11 +65,13 @@ export class RuntimeService {
 
   /** Report source access and actual adapter availability without connecting to a model. */
   async status(): Promise<RuntimeStatus> {
+    const sources = await this.sources.list();
     return {
       checkedAtMs: Date.now(),
-      sources: await this.sources.list(),
+      sources,
       readers: [...this.readers.keys()],
       hasReadView: this.current !== null,
+      readTiming: this.currentTiming,
       analysis: {
         harness: this.config.harness,
         requestedModel: this.config.model,
@@ -96,6 +99,7 @@ export class RuntimeService {
     this.active = null;
     this.current = null;
     this.currentSelection = null;
+    this.currentTiming = null;
   }
 
   /** Run a registered reader on approved bytes; reject stale, invalid or mis-scoped adapter results. */
@@ -217,14 +221,34 @@ export class RuntimeService {
           message: "Source changed during read",
         });
       }
-      this.current = parseReadView({
+      const normalized = parseReadView({
         ...view,
         startedAtMs: captured.startedAtMs,
         finishedAtMs: captured.finishedAtMs,
         sources,
         issues,
       });
+      if (controller.signal.aborted || this.active?.id !== id)
+        throw cancelledRead(controller.signal);
+      const finishedAtMs = Date.now();
+      if (
+        !Number.isSafeInteger(finishedAtMs) ||
+        finishedAtMs < captured.finishedAtMs
+      ) {
+        throw new RuntimeError(
+          "CLOCK_CHANGED",
+          "The clock changed while completing the read. Retry the operation.",
+          409,
+        );
+      }
+      this.current = Object.freeze({ ...normalized, finishedAtMs });
       this.currentSelection = request;
+      this.currentTiming = Object.freeze({
+        readId: id,
+        inputStartedAtMs: captured.startedAtMs,
+        inputFinishedAtMs: captured.finishedAtMs,
+        finishedAtMs,
+      });
       return this.current;
     } catch (error) {
       if (controller.signal.aborted) throw cancelledRead(controller.signal);

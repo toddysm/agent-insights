@@ -17,6 +17,15 @@ export const statusSchema = z.strictObject({
   sources: z.array(locationSchema),
   readers: z.array(sourceFormatSchema),
   hasReadView: z.boolean(),
+  readTiming: z
+    .strictObject({
+      readId: z.string(),
+      inputStartedAtMs: z.number(),
+      inputFinishedAtMs: z.number(),
+      finishedAtMs: z.number(),
+    })
+    .readonly()
+    .nullable(),
   analysis: z.strictObject({
     harness: z.literal("copilot"),
     requestedModel: z.string().nullable(),
@@ -28,6 +37,8 @@ export const statusSchema = z.strictObject({
 
 /** Browser status returned from an authenticated metadata request. */
 export type RuntimeStatus = z.infer<typeof statusSchema>;
+/** Input observation bounds are distinct from completion of adapter processing. */
+export type ReadTiming = NonNullable<RuntimeStatus["readTiming"]>;
 /** Configured source status, not proof of capture-format compatibility. */
 export type SourceLocation = z.infer<typeof locationSchema>;
 

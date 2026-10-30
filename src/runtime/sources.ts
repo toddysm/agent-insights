@@ -281,6 +281,7 @@ export class SourceAccess {
           offset += result.bytesRead;
         }
         if (signal.aborted) throw cancelledRead(signal);
+        await this.inspect(grant);
         const after = await handle.stat({ bigint: true });
         return {
           bytes: buffer.subarray(0, offset),

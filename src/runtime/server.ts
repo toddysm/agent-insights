@@ -34,6 +34,23 @@ const page = `<!doctype html>
 <title>Agent Insights</title><link rel="stylesheet" href="/assets/app.css"></head>
 <body><div id="root"></div><script type="module" src="/assets/app.js"></script></body></html>`;
 
+/** Canonicalize loopback origins, including omission of the default HTTP port. */
+export function loopbackOrigin(port: number): string {
+  return new URL(`http://127.0.0.1:${port}`).origin;
+}
+
+/** Accept only the bound literal loopback host, not URL-like Host values or rebinding names. */
+export function allowedHost(host: string | undefined, origin: string): boolean {
+  if (host === undefined || !/^127\.0\.0\.1(?::\d{1,5})?$/.test(host))
+    return false;
+  try {
+    return new URL(`http://${host}`).origin === origin;
+  } catch (error) {
+    if (error instanceof TypeError) return false;
+    throw error;
+  }
+}
+
 /** Write an uncached structured response; callers supply only validated data or controlled errors. */
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
@@ -152,7 +169,7 @@ export async function startRuntime(
       "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
     );
     if (
-      request.headers.host !== new URL(origin).host ||
+      !allowedHost(request.headers.host, origin) ||
       (request.headers.origin !== undefined &&
         request.headers.origin !== origin)
     ) {
@@ -295,7 +312,7 @@ export async function startRuntime(
         reject(new Error("Loopback address is unavailable"));
         return;
       }
-      origin = `http://127.0.0.1:${address.port}`;
+      origin = loopbackOrigin(address.port);
       resolve();
     });
   });

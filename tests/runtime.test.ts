@@ -20,6 +20,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import test, { type TestContext } from "node:test";
 import {
   parseReadView,
@@ -30,7 +32,12 @@ import {
 import { parseConfig, type RuntimeConfig } from "../src/runtime/config.js";
 import { RuntimeError } from "../src/runtime/errors.js";
 import { errorSchema, statusSchema } from "../src/runtime/protocol.js";
-import { startRuntime, type RunningRuntime } from "../src/runtime/server.js";
+import {
+  allowedHost,
+  loopbackOrigin,
+  startRuntime,
+  type RunningRuntime,
+} from "../src/runtime/server.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import {
   MAX_SOURCE_BYTES,
@@ -183,6 +190,24 @@ test("startup configuration is explicit, bounded and Copilot-first", () => {
     assert.throws(() => parseConfig(args), RuntimeError);
 });
 
+test("HTTP default-port normalization accepts valid loopback forms without broadening the host policy", () => {
+  assert.equal(loopbackOrigin(80), "http://127.0.0.1");
+  assert.equal(allowedHost("127.0.0.1", loopbackOrigin(80)), true);
+  assert.equal(allowedHost("127.0.0.1:80", loopbackOrigin(80)), true);
+  assert.equal(allowedHost("127.0.0.1:1234", loopbackOrigin(1234)), true);
+  for (const host of [
+    undefined,
+    "localhost",
+    "unapproved.invalid",
+    "user@127.0.0.1",
+    "127.0.0.1/path",
+    "127.0.0.1:65536",
+    "127.0.0.1:1234",
+  ]) {
+    assert.equal(allowedHost(host, loopbackOrigin(80)), false);
+  }
+});
+
 test("source grants reject traversal, prefix siblings, absolute paths and unknown grants", async (t) => {
   const data = await fixture(t);
   const access = await SourceAccess.create([data.allowed]);
@@ -222,6 +247,40 @@ test("symlink escapes and changed configured targets are rejected", async (t) =>
     { code: "ROOT_CHANGED" },
   );
   assert.equal((await access.list())[1]?.available, false);
+});
+
+test("a configured root retargeted after opening a file cannot return old-target bytes", async (t) => {
+  const data = await fixture(t);
+  const alias = path.join(data.root, "in-flight-alias");
+  await symlink(data.allowed, alias, "junction");
+  const access = await SourceAccess.create([alias]);
+  const target = await realpath(data.file);
+  const originalOpen = fsPromises.open;
+  let retargeted = false;
+  const mock = t.mock.method(
+    fsPromises,
+    "open",
+    async (...args: Parameters<typeof originalOpen>) => {
+      const handle = await originalOpen(...args);
+      if (!retargeted && args[0] === target) {
+        await unlink(alias);
+        await symlink(data.outside, alias, "junction");
+        retargeted = true;
+      }
+      return handle;
+    },
+  );
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(
+      access.read("source-1", "capture.jsonl", new AbortController().signal),
+      { code: "ROOT_CHANGED" },
+    );
+    assert.equal(retargeted, true);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("file grants read in place without creating a source replica or modifying content", async (t) => {
@@ -352,6 +411,40 @@ test("registered readers produce only a transient current generation", async (t)
       new RuntimeService(sources, config(), [syntheticReader, syntheticReader]),
     /Expected one reader/,
   );
+});
+
+test("read completion includes adapter work while retaining the actual input observation bounds", async (t) => {
+  const data = await fixture(t);
+  let adapterStartedAt = 0;
+  let adapterFinishedAt = 0;
+  const reader: EvidenceReader = {
+    format: "vscode-otel-jsonl",
+    async read(input) {
+      adapterStartedAt = Date.now();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const view = readerView(input, "SYNTHETIC");
+      adapterFinishedAt = Date.now();
+      return view;
+    },
+  };
+  const service = new RuntimeService(
+    await SourceAccess.create([data.file]),
+    config([data.file]),
+    [reader],
+  );
+  const view = await service.read(
+    { sourceId: "source-1", relativePath: "", format: reader.format },
+    new AbortController().signal,
+  );
+  const timing = (await service.status()).readTiming;
+  assert.ok(timing);
+  assert.equal(timing.readId, view.id);
+  assert.ok(timing.inputFinishedAtMs <= adapterStartedAt);
+  assert.ok(view.finishedAtMs >= adapterFinishedAt);
+  assert.equal(timing.finishedAtMs, view.finishedAtMs);
+  assert.ok(timing.inputFinishedAtMs < timing.finishedAtMs);
+  service.invalidate();
+  assert.equal((await service.status()).readTiming, null);
 });
 
 test("an in-flight selection cannot be relabeled by mutating the caller's request", async (t) => {
