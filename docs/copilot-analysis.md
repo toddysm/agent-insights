@@ -128,6 +128,8 @@ budget is too small.
 
 Results cite only events from the selected session/read and retain their original
 source references. They are model judgments, not independent artifact verification.
+Read, session and event identifiers use the shared evidence contract without
+truncation; the enclosing request, prompt and result byte limits remain enforced.
 Input-capture bounds are sent separately from parsing/normalization completion;
 missing capture timing remains unavailable rather than becoming an observation timestamp.
 Missing analysis input/output usage remains **Unavailable**, not zero. Analysis

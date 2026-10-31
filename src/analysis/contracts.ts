@@ -1,11 +1,11 @@
 /** Transient analysis protocol, independent of source readers and individual interpretation prompts. */
 import { z } from "zod";
-import { referenceSchema } from "../evidence/contracts.js";
+import { evidenceIdSchema, referenceSchema } from "../evidence/contracts.js";
 
 export const ANALYSIS_INPUT_LIMIT = 64 * 1024;
 export const ANALYSIS_OUTPUT_LIMIT = 128 * 1024;
 export const ANALYSIS_ACKNOWLEDGEMENT = "remote-processing-v1";
-const id = z.string().min(1).max(256);
+const id = evidenceIdSchema;
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 
 /** A user authorizes one operation on one session from the currently displayed read. */

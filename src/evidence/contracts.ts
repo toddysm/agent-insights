@@ -1,7 +1,9 @@
 /** Transient, source-linked evidence contracts; no source access, persistence or inference. */
 import { z } from "zod";
 
-const id = z.string().min(1);
+/** Preserve nonempty evidence identifiers verbatim; transport limits must not truncate their contents. */
+export const evidenceIdSchema = z.string().min(1);
+const id = evidenceIdSchema;
 const milliseconds = z
   .number()
   .finite()

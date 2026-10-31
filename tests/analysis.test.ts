@@ -14,6 +14,7 @@ import {
   ANALYSIS_ACKNOWLEDGEMENT,
   ANALYSIS_INPUT_LIMIT,
   ANALYSIS_OUTPUT_LIMIT,
+  analysisRequestSchema,
   type AnalysisProvider,
   type AnalysisRequest,
   type ProviderInput,
@@ -127,6 +128,47 @@ test("analysis preserves input observation bounds separately from processing com
   const second = inputs[1];
   assert.ok(second);
   assert.equal(JSON.parse(second.prompt).inputCapture, null);
+});
+
+test("valid long evidence identifiers remain selectable and citable without truncation", async () => {
+  const eventId = "event-" + "e".repeat(300);
+  for (const longSelection of [false, true]) {
+    const sessionId = longSelection
+      ? "session-" + "s".repeat(300)
+      : "session-fixture";
+    const view = parseReadView({
+      ...exampleReadView(),
+      id: longSelection ? "read-" + "r".repeat(300) : "read-fixture",
+      sessions: exampleReadView().sessions.map((session) => ({
+        ...session,
+        id: sessionId,
+      })),
+      events: exampleReadView().events.map((event, index) => ({
+        ...event,
+        sessionId,
+        id: index === 0 ? eventId : event.id,
+      })),
+    });
+    const selected = analysisRequestSchema.parse({
+      ...request,
+      readId: view.id,
+      sessionId,
+    });
+    const runner = new AnalysisRunner(
+      {
+        ...syntheticProvider,
+        async analyze(input) {
+          assert.ok(input.prompt.includes(eventId));
+          return syntheticResponse(input).replace("message-fixture", eventId);
+        },
+      },
+      [syntheticOperation],
+    );
+    runner.start(view, selected);
+    await tick();
+    assert.equal(runner.run?.state, "succeeded");
+    assert.deepEqual(runner.run?.result?.eventIds, [eventId]);
+  }
 });
 
 test("stale reads, missing definitions and empty evidence never invoke a model", async () => {
