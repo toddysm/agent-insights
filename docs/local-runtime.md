@@ -13,10 +13,21 @@ continues to use fictional data.
 Use Node.js 24 and npm. From the repository root:
 
 ```bash
-npm ci --ignore-scripts
-npm run build
+npm ci --include=dev --ignore-scripts
 npm start -- --source /path/to/private/captures
 ```
+
+Install dependencies once per checkout, and again when the lockfile changes.
+The development dependencies are needed to compile this source distribution.
+`npm start` runs `npm run build` automatically before launching; it does not
+install packages or start an older build when compilation fails.
+
+Git does not contain the generated `.build` directory. Pulling or cloning the
+repository alone therefore does not prepare it to run. On older revisions that
+lack automatic startup building, run `npm run build` before `npm start`.
+If you deliberately disable npm lifecycle scripts for startup, build explicitly
+first. The `--ignore-scripts` flag in the installation command above applies
+only to installation; it does not disable later startup hooks.
 
 `--source` can name a file or directory; repeat it for additional locations, up
 to 32. Relative paths resolve against the startup directory. Shell-expanded home
@@ -111,11 +122,15 @@ not copy auth files or silently fall back to another provider.
 
 Provider/cloud decisions are recorded in
 [#7](https://github.com/toddysm/agent-insights/issues/7), with integration tracked
-in [#15](https://github.com/toddysm/agent-insights/issues/15). Completion/rubric
-decisions and the actual adapter are still outstanding.
+in [#15](https://github.com/toddysm/agent-insights/issues/15). The initial
+completion/rubric defaults are approved; implementing and qualifying the actual
+adapter is still outstanding.
 
 ## Errors and validation
 
+- **Missing dependencies or generated CLI:** run
+  `npm ci --include=dev --ignore-scripts`, then `npm start`. For an older revision,
+  run `npm run build` between those commands.
 - **Access required:** reopen the full launch URL; do not put the credential in
   a query parameter or browser storage.
 - **Unavailable location:** check the configured path and permissions, then
