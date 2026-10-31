@@ -4,6 +4,12 @@ import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
+import {
+  syntheticOperation,
+  syntheticProvider,
+  syntheticReader,
+  syntheticResponse,
+} from "../../.build/tests/fixtures/analysis.js";
 
 test("source selection, cloud disclosure and memory-only access work on desktop and narrow screens", async ({
   page,
@@ -39,7 +45,9 @@ test("source selection, cloud disclosure and memory-only access work on desktop 
     await expect(
       page.getByText("requested-example", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByText(/no analyzer is connected/i)).toBeVisible();
+    await expect(
+      page.getByText(/Analysis definitions are not installed yet/i),
+    ).toBeVisible();
     await expect(page).toHaveTitle("Agent Insights");
     await page.keyboard.press("Tab");
     await expect(
@@ -103,6 +111,7 @@ test("an empty configuration stays explicit instead of rendering example session
     model: null,
     copilotPath: null,
   });
+
   try {
     await page.goto(runtime.launchUrl);
     await expect(
@@ -114,5 +123,128 @@ test("an empty configuration stays explicit instead of rendering example session
     await expect(page.getByRole("button", { name: "Analyze" })).toHaveCount(0);
   } finally {
     await runtime.close();
+  }
+});
+
+test("analysis requires fresh acknowledgement, reports separate usage and supports cancellation", async ({
+  page,
+}, testInfo) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "agent-insights-analysis-browser-"),
+  );
+  const file = path.join(directory, "synthetic.jsonl");
+  await writeFile(file, "SYNTHETIC_CAPTURE");
+  let calls = 0;
+  let failStatusOnce = false;
+  await page.route("**/api/status", async (route) => {
+    if (failStatusOnce) {
+      failStatusOnce = false;
+      await route.abort("failed");
+    } else await route.continue();
+  });
+  const runtime = await startRuntime(
+    {
+      sources: [file],
+      port: 0,
+      harness: "copilot",
+      model: null,
+      copilotPath: null,
+    },
+    {
+      readers: [syntheticReader],
+      analysisOperations: [syntheticOperation],
+      analysisProvider: {
+        ...syntheticProvider,
+        async analyze(input, callbacks) {
+          calls++;
+          callbacks.progress("running");
+          if (calls > 1) {
+            await new Promise((_resolve, reject) => {
+              callbacks.signal.addEventListener(
+                "abort",
+                () => reject(new Error("SYNTHETIC_ABORT")),
+                { once: true },
+              );
+            });
+          }
+          callbacks.usage({ input: 7, output: 3, model: "synthetic" });
+          return syntheticResponse(input);
+        },
+      },
+    },
+  );
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByRole("button", { name: "Refresh sources" }).click();
+    expect(calls).toBe(0);
+    await page.getByRole("button", { name: "Read source" }).click();
+    await page.getByLabel("Session to analyze").selectOption("session-fixture");
+    await page
+      .getByRole("combobox", { name: "Analysis", exact: true })
+      .selectOption("synthetic");
+    await expect(
+      page.getByRole("button", { name: "Analyze", exact: true }),
+    ).toBeDisabled();
+    expect(calls).toBe(0);
+    await page.getByRole("checkbox").check();
+    failStatusOnce = true;
+    await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    await expect(page.getByText(/Retrying analysis status/)).toBeVisible();
+    await expect(
+      page.getByLabel("Source location", { exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Cancel analysis" }),
+    ).toBeEnabled();
+    await expect(page.getByText("Analysis succeeded: finished.")).toBeVisible();
+    await expect(page.getByText(/Retrying analysis status/)).toHaveCount(0);
+    await expect(
+      page.getByText(/Analysis input tokens: 7; output tokens: 3/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("heading", { name: "Model-generated result" }),
+    ).toBeVisible();
+    expect(calls).toBe(1);
+    await page.getByLabel("Session to analyze").selectOption("");
+    await expect(page.getByRole("checkbox")).not.toBeChecked();
+    await expect(
+      page.getByRole("heading", { name: "Model-generated result" }),
+    ).toHaveCount(0);
+    await page.getByLabel("Session to analyze").selectOption("session-fixture");
+    await page.getByRole("checkbox").check();
+    await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    await page.goto("about:blank");
+    await page.goto(runtime.launchUrl);
+    await expect(page.getByLabel("Session to analyze")).toHaveValue("");
+    await expect(
+      page.getByRole("button", { name: "Cancel analysis" }),
+    ).toBeVisible();
+    expect(calls).toBe(2);
+    await page.getByRole("button", { name: "Cancel analysis" }).click();
+    await expect(page.getByText("Analysis was cancelled.")).toBeVisible();
+    await expect(page.getByText(/Analysis input tokens:/)).toHaveCount(0);
+    expect(calls).toBe(2);
+    await page.getByRole("button", { name: "Refresh sources" }).click();
+    await expect(page.getByRole("checkbox")).not.toBeChecked();
+    await expect(
+      page.getByRole("button", { name: "Analyze", exact: true }),
+    ).toBeDisabled();
+    expect(calls).toBe(2);
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await page.screenshot({
+      path: testInfo.outputPath("analysis-mobile.png"),
+      fullPage: true,
+    });
+    expect(
+      await page.evaluate(() => localStorage.length + sessionStorage.length),
+    ).toBe(0);
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
   }
 });

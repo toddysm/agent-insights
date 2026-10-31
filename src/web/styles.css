@@ -265,6 +265,23 @@ dd {
 .cloud-notice p {
   font-size: 14px;
 }
+.consent {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  line-height: 1.5;
+}
+.consent input {
+  width: auto;
+  flex: none;
+  margin-top: 4px;
+}
+.analysis-result pre {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 760px) {
   .sidebar {
     position: static;
