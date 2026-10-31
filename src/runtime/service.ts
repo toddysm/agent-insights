@@ -105,6 +105,11 @@ export class RuntimeService {
     return this.currentSelection;
   }
 
+  /** Return capture bounds for this generation, distinct from parsing/normalization completion. */
+  get readTiming(): ReadTiming | null {
+    return this.currentTiming;
+  }
+
   /** Abort this runtime's active operation and discard its view; never touch source files. */
   invalidate(): void {
     this.analysis?.invalidate();

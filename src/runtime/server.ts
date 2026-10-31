@@ -277,7 +277,11 @@ export async function startRuntime(
               "Select a current session and acknowledge remote processing.",
               400,
             );
-          json(response, 202, analysis.start(service.view, selection.data));
+          json(
+            response,
+            202,
+            analysis.start(service.view, selection.data, service.readTiming),
+          );
         } else {
           const selection = z
             .strictObject({ id: z.string().min(1).max(256) })

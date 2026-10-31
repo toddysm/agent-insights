@@ -71,6 +71,8 @@ function App(): ReactElement {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
+  const [reconciling, setReconciling] = useState(false);
+  const [analysisNotice, setAnalysisNotice] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourceId, setSourceId] = useState("");
   const [relativePath, setRelativePath] = useState("");
@@ -81,16 +83,26 @@ function App(): ReactElement {
   const [operationId, setOperationId] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const generation = useRef(0);
+  const startAttempt = useRef<{
+    previousRunId: string | null;
+    readId: string;
+    sessionId: string;
+    operationId: string;
+  } | null>(null);
   const selected = status?.sources.find((source) => source.id === sourceId);
   const run = status?.analysis.run;
   const analysisRunning = run?.state === "running";
+  const analysisLocked = analysisRunning || reconciling;
   const selectedRun =
     run?.readId === view?.id &&
     run?.sessionId === sessionId &&
-    run?.operationId === operationId;
+    run?.operationId === operationId &&
+    run?.id !== startAttempt.current?.previousRunId;
 
   /** A changed selection cannot inherit acknowledgement or display a prior read's analysis. */
   function clearView(): void {
+    startAttempt.current = null;
+    setAnalysisNotice("");
     setPollError("");
     setView(null);
     setSessionId("");
@@ -139,7 +151,7 @@ function App(): ReactElement {
   }, []);
 
   useEffect(() => {
-    if (!analysisRunning) return;
+    if (!analysisRunning && !reconciling) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const current = generation.current;
@@ -149,16 +161,34 @@ function App(): ReactElement {
         const result = await request("/api/status", statusSchema);
         if (stopped || current !== generation.current) return;
         setPollError("");
-        setStatus((previous) =>
-          previous !== null &&
-          previous.analysis.run !== null &&
-          previous.analysis.run.id === run?.id &&
-          previous.analysis.run.state === "running"
-            ? result
-            : previous,
-        );
+        if (reconciling) {
+          const attempt = startAttempt.current;
+          const restored = result.analysis.run;
+          if (
+            attempt &&
+            restored &&
+            restored.id !== attempt.previousRunId &&
+            restored.readId === attempt.readId &&
+            restored.sessionId === attempt.sessionId &&
+            restored.operationId === attempt.operationId
+          ) {
+            startAttempt.current = null;
+            setError("");
+          }
+          setStatus(result);
+          setReconciling(false);
+        } else {
+          setStatus((previous) =>
+            previous !== null &&
+            previous.analysis.run !== null &&
+            previous.analysis.run.id === run?.id &&
+            previous.analysis.run.state === "running"
+              ? result
+              : previous,
+          );
+        }
         if (result.analysis.run?.state === "running")
-          timer = setTimeout(() => void poll(), 500);
+          timer = setTimeout(() => void poll(), reconciling ? 0 : 500);
       } catch (failure) {
         if (!stopped && current === generation.current) {
           setPollError(
@@ -175,7 +205,7 @@ function App(): ReactElement {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [analysisRunning, run?.id]);
+  }, [analysisRunning, run?.id, reconciling]);
 
   /** Submit only the selected read/session and acknowledgement; instructions are application-owned. */
   async function analyze(): Promise<void> {
@@ -186,6 +216,13 @@ function App(): ReactElement {
     setBusy(true);
     setError("");
     setPollError("");
+    setAnalysisNotice("");
+    startAttempt.current = {
+      previousRunId: run?.id ?? null,
+      readId: view.id,
+      sessionId,
+      operationId,
+    };
     try {
       const result = await request("/api/analysis/start", analysisRunSchema, {
         readId: view.id,
@@ -193,12 +230,14 @@ function App(): ReactElement {
         operationId,
         acknowledgement: acknowledged ? ANALYSIS_ACKNOWLEDGEMENT : "",
       });
+      startAttempt.current = null;
       setStatus((previous) =>
         previous
           ? { ...previous, analysis: { ...previous.analysis, run: result } }
           : previous,
       );
     } catch (failure) {
+      setReconciling(true);
       setError(
         failure instanceof Error
           ? failure.message
@@ -218,9 +257,16 @@ function App(): ReactElement {
     setBusy(true);
     setError("");
     try {
-      setStatus(
-        await request("/api/analysis/cancel", statusSchema, { id: run.id }),
-      );
+      const result = await request("/api/analysis/cancel", statusSchema, {
+        id: run.id,
+      });
+      setStatus(result);
+      if (!selectedRun) {
+        if (result.analysis.run?.state === "cancelled")
+          setAnalysisNotice("Analysis was cancelled.");
+        else if (result.analysis.run?.error)
+          setError(result.analysis.run.error.message);
+      }
     } catch (failure) {
       setError(
         failure instanceof Error
@@ -336,7 +382,7 @@ function App(): ReactElement {
                 <button
                   type="button"
                   onClick={() => void load(true)}
-                  disabled={busy || analysisRunning}
+                  disabled={busy || analysisLocked}
                 >
                   {busy ? "Checking..." : "Refresh sources"}
                 </button>
@@ -389,7 +435,7 @@ function App(): ReactElement {
                       <select
                         id="source"
                         value={sourceId}
-                        disabled={busy || analysisRunning}
+                        disabled={busy || analysisLocked}
                         onChange={(event) => {
                           setSourceId(event.target.value);
                           setRelativePath("");
@@ -411,7 +457,7 @@ function App(): ReactElement {
                           <input
                             id="relative-path"
                             value={relativePath}
-                            disabled={busy || analysisRunning}
+                            disabled={busy || analysisLocked}
                             onChange={(event) => {
                               setRelativePath(event.target.value);
                               setReadNotice("");
@@ -431,7 +477,7 @@ function App(): ReactElement {
                           clearView();
                         }}
                         disabled={
-                          busy || analysisRunning || status.readers.length === 0
+                          busy || analysisLocked || status.readers.length === 0
                         }
                       >
                         {status.readers.length === 0 ? (
@@ -447,7 +493,7 @@ function App(): ReactElement {
                         type="submit"
                         disabled={
                           busy ||
-                          analysisRunning ||
+                          analysisLocked ||
                           !selected?.available ||
                           !format
                         }
@@ -499,9 +545,16 @@ function App(): ReactElement {
                 </div>
               </dl>
               <p>{status?.analysis.reason}</p>
-              {pollError && analysisRunning && (
+              {pollError && analysisLocked && (
                 <p role="alert">{pollError} Retrying analysis status...</p>
               )}
+              {reconciling && (
+                <p role="status">
+                  Checking whether analysis started. The analysis request will
+                  not be resent.
+                </p>
+              )}
+              {analysisNotice && <p role="status">{analysisNotice}</p>}
               <div className="cloud-notice">
                 <h3>Analysis sends selected content to a remote service</h3>
                 <p>
@@ -538,9 +591,11 @@ function App(): ReactElement {
                   <select
                     id="analysis-session"
                     value={sessionId}
-                    disabled={busy || analysisRunning || !view}
+                    disabled={busy || analysisLocked || !view}
                     onChange={(event) => {
                       setSessionId(event.target.value);
+                      startAttempt.current = null;
+                      setAnalysisNotice("");
                       setAcknowledged(false);
                     }}
                   >
@@ -555,9 +610,11 @@ function App(): ReactElement {
                   <select
                     id="analysis-operation"
                     value={operationId}
-                    disabled={busy || analysisRunning}
+                    disabled={busy || analysisLocked}
                     onChange={(event) => {
                       setOperationId(event.target.value);
+                      startAttempt.current = null;
+                      setAnalysisNotice("");
                       setAcknowledged(false);
                     }}
                   >
@@ -578,7 +635,7 @@ function App(): ReactElement {
                       id="analysis-consent"
                       type="checkbox"
                       checked={acknowledged}
-                      disabled={busy || analysisRunning}
+                      disabled={busy || analysisLocked}
                       onChange={(event) =>
                         setAcknowledged(event.target.checked)
                       }
@@ -591,7 +648,7 @@ function App(): ReactElement {
                     type="submit"
                     disabled={
                       busy ||
-                      analysisRunning ||
+                      analysisLocked ||
                       !acknowledged ||
                       !view ||
                       !sessionId ||
@@ -603,7 +660,7 @@ function App(): ReactElement {
                   </button>
                 </form>
               )}
-              {run && (run.state !== "succeeded" || selectedRun) && (
+              {run && (analysisRunning || selectedRun) && (
                 <div className="analysis-result">
                   <p role="status">
                     Analysis {run.state}: {run.stage}.

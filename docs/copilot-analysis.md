@@ -74,6 +74,12 @@ Source selection, source refresh and progress polling never initiate model
 analysis. Only application-owned definitions can supply analysis instructions;
 the browser cannot upload arbitrary prompts or register operations.
 
+If the start response is lost, the interface locks another start while it
+reconciles server status. It retries status reads, not the analysis request.
+Reopening the full launch URL restores active-run progress and cancellation
+without requiring the browser to retain its previous selection. Terminal errors,
+usage and results remain scoped to the selected read, session and analysis.
+
 ## Isolation and retention
 
 Each run uses a fresh, explicitly selected Copilot process over standard input
@@ -122,6 +128,8 @@ budget is too small.
 
 Results cite only events from the selected session/read and retain their original
 source references. They are model judgments, not independent artifact verification.
+Input-capture bounds are sent separately from parsing/normalization completion;
+missing capture timing remains unavailable rather than becoming an observation timestamp.
 Missing analysis input/output usage remains **Unavailable**, not zero. Analysis
 usage never changes the subject session's captured usage.
 
@@ -156,6 +164,21 @@ authenticated session creation with a session-scoped credential is qualified
 separately, without sending a prompt or invoking a model. Hosted validation downloads
 checksum-pinned 1.0.104 binaries solely into owned test directories on the
 Linux, macOS and Windows runners; application startup does not download them.
+
+The [authenticated qualification](../tests/copilot-auth-qualification.test.mjs)
+also exercises prompt-bearing requests on the normal authenticated Copilot path.
+It uses existing account metadata/policy authentication, but intercepts every
+model request locally and returns synthetic responses. Nothing is forwarded to
+a remote model, and payloads and credentials are audited while the session is
+alive and after shutdown. This is separate from the unauthenticated hosted cases:
+
+```bash
+COPILOT_AUTH_QUALIFICATION=1 COPILOT_QUALIFICATION_PATH=/absolute/path/to/copilot npm run test:copilot-auth
+```
+
+One-shot Copilot requests use the supported non-WebSocket transport. Production
+still sends acknowledged content to Copilot's remote service; only the opt-in
+qualification substitutes local responses.
 
 The SDK pins an older Zod release affected by
 [GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).

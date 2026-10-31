@@ -183,6 +183,7 @@ export function copilotSessionOptions(
     enableFileChangeTracking: false,
     enableManagedSettings: true,
     enforceManagedModelDefaults: true,
+    capi: { enableWebSocketResponses: false },
     enableSkills: false,
     includedBuiltinSkills: [],
     enableFileHooks: false,

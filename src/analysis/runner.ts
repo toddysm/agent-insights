@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import type { ReadView } from "../evidence/contracts.js";
 import { RuntimeError } from "../runtime/errors.js";
+import type { ReadTiming } from "../runtime/protocol.js";
 import {
   ANALYSIS_ACKNOWLEDGEMENT,
   ANALYSIS_INPUT_LIMIT,
@@ -113,7 +114,11 @@ export class AnalysisRunner {
   }
 
   /** Validate scope and consent before scheduling any provider work; reject rather than queue payloads. */
-  start(view: ReadView | null, request: AnalysisRequest): AnalysisRun {
+  start(
+    view: ReadView | null,
+    request: AnalysisRequest,
+    timing?: ReadTiming | null,
+  ): AnalysisRun {
     if (this.cleanupBlocked || this.closed)
       throw new RuntimeError(
         "ANALYSIS_CLEANUP_BLOCKED",
@@ -130,6 +135,12 @@ export class AnalysisRunner {
       throw new RuntimeError(
         "ANALYSIS_STALE",
         "Read the source again before starting analysis.",
+        409,
+      );
+    if (timing && timing.readId !== view.id)
+      throw new RuntimeError(
+        "ANALYSIS_STALE",
+        "Input-capture timing belongs to another read.",
         409,
       );
     const session = view.sessions.find((item) => item.id === request.sessionId);
@@ -174,7 +185,13 @@ export class AnalysisRunner {
         readId: view.id,
         sessionId: session.id,
         operationId: operation.id,
-        observedAtMs: view.finishedAtMs,
+        inputCapture: timing
+          ? {
+              startedAtMs: timing.inputStartedAtMs,
+              finishedAtMs: timing.inputFinishedAtMs,
+            }
+          : null,
+        processingFinishedAtMs: view.finishedAtMs,
         sources: view.sources.filter((source) =>
           session.sourceIds.includes(source.id),
         ),

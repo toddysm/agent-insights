@@ -88,6 +88,47 @@ test("only the selected session reaches the provider and usage stays separate", 
   assert.equal(runner.run?.usage.input, 7);
 });
 
+test("analysis preserves input observation bounds separately from processing completion", async () => {
+  const view = parseReadView({ ...exampleReadView(), finishedAtMs: 9000 });
+  const inputs: ProviderInput[] = [];
+  const runner = new AnalysisRunner(
+    {
+      ...syntheticProvider,
+      async analyze(input) {
+        inputs.push(input);
+        return syntheticResponse(input);
+      },
+    },
+    [syntheticOperation],
+  );
+  const timing = {
+    readId: view.id,
+    inputStartedAtMs: 1000,
+    inputFinishedAtMs: 1100,
+    finishedAtMs: 9000,
+  };
+  runner.start(view, request, timing);
+  await tick();
+  const first = inputs[0];
+  assert.ok(first);
+  const captured = JSON.parse(first.prompt);
+  assert.deepEqual(captured.inputCapture, {
+    startedAtMs: 1000,
+    finishedAtMs: 1100,
+  });
+  assert.equal(captured.processingFinishedAtMs, 9000);
+  assert.equal("observedAtMs" in captured, false);
+  assert.throws(
+    () => runner.start(view, request, { ...timing, readId: "other" }),
+    /another read/,
+  );
+  runner.start(view, request);
+  await tick();
+  const second = inputs[1];
+  assert.ok(second);
+  assert.equal(JSON.parse(second.prompt).inputCapture, null);
+});
+
 test("stale reads, missing definitions and empty evidence never invoke a model", async () => {
   const runner = new AnalysisRunner(syntheticProvider);
   assert.throws(() => runner.start(null, request), /Read the source again/);
