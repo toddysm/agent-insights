@@ -28,12 +28,16 @@ npm run check
 npm test
 ```
 
-To open the local interface:
+To open the local interface from a fresh checkout:
 
 ```bash
-npm run build
+npm ci --include=dev --ignore-scripts
 npm start -- --source /path/to/private/captures
 ```
+
+`npm start` builds the current source before launching. Build output is not
+stored in Git, and each checkout needs its own dependency installation.
+`npm run build` remains available as an explicit build command.
 
 Open the full, private launch URL printed by the server.
 Copilot is the first planned analysis backend. When enabled, it sends selected

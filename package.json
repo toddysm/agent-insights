@@ -9,8 +9,10 @@
   "scripts": {
     "build": "tsc && esbuild src/web/app.tsx --bundle --minify --outfile=.build/public/app.js",
     "check": "tsc --noEmit",
-    "test": "npm run build && node --test .build/tests/*.test.js",
+    "test": "npm run build && node --test .build/tests/*.test.js tests/startup.test.mjs",
+    "test:startup": "node --test tests/startup.test.mjs",
     "test:browser": "npm run build && playwright test",
+    "prestart": "npm run build",
     "start": "node .build/src/runtime/cli.js"
   },
   "dependencies": {

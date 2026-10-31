@@ -4,12 +4,13 @@ Capability inventory as of 2026-10-30. This records project delivery status,
 not session data or analysis results.
 
 The code baseline is main at `2f9d85cb4658300279e0a5e2e526b4d6ec62fe74`.
-The current plan is lightweight design revision 5 in
+The current plan is lightweight design revision 6 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
 The user approved the plan, runtime baseline and unattended review/merge scope
 on 2026-10-30, followed by configurable Copilot-first analysis and disclosed
-remote processing. Interpretation rules and backend qualification remain gated.
+remote processing and the initial interpretation defaults. Backend qualification
+remains required before analysis can be offered.
 
 Tracking currently uses GitHub issues and native sub-issues/dependencies.
 GitHub Project access is unavailable; no board status is claimed.
@@ -71,8 +72,8 @@ The runtime/source workflow decision in
 [#6](https://github.com/toddysm/agent-insights/issues/6) is approved.
 The provider/data portion of
 [#7](https://github.com/toddysm/agent-insights/issues/7) now approves Copilot first
-and remote processing with explicit user awareness. Its completion/rubric rules
-remain open. Model execution still requires the qualified adapter and user action;
+and remote processing with explicit user awareness. The user also approved its
+initial completion/rubric rules. Model execution still requires the qualified adapter and user action;
 source selection/refresh does not transmit content. GitHub-hosted validation
 remains the selected testing mode.
 
