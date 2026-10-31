@@ -213,6 +213,11 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page.getByRole("checkbox").check();
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    await page.goto(runtime.launchUrl);
+    await expect(
+      page.getByRole("button", { name: "Cancel analysis" }),
+    ).toBeVisible();
+    expect(calls).toBe(2);
     await page.getByRole("button", { name: "Cancel analysis" }).click();
     await expect(page.getByText("Analysis cancelled: finished.")).toBeVisible();
     expect(calls).toBe(2);

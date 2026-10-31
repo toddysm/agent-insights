@@ -12,6 +12,7 @@ import {
   type SessionConfig,
   type ModelInfo,
   type SessionEvent,
+  type GetAuthStatusResponse,
 } from "@github/copilot-sdk";
 import { RuntimeError } from "../runtime/errors.js";
 import type { RuntimeConfig } from "../runtime/config.js";
@@ -52,6 +53,10 @@ export interface CopilotDependencies {
   locate(configured: string | null): Promise<string | null>;
   version(executable: string): Promise<string | null>;
   client(options: CopilotClientOptions): CopilotTransport;
+  credentials(
+    auth: GetAuthStatusResponse,
+    signal: AbortSignal,
+  ): Promise<string>;
 }
 
 /** Keep all cleanup resources reachable until process termination and metadata removal both succeed. */
@@ -122,12 +127,7 @@ export function copilotClientOptions(
     "NODE_EXTRA_CA_CERTS",
   ];
   if (authenticate)
-    names.push(
-      "GH_TOKEN",
-      "GITHUB_TOKEN",
-      "COPILOT_GITHUB_TOKEN",
-      "COPILOT_SDK_AUTH_TOKEN",
-    );
+    names.push("GH_TOKEN", "GITHUB_TOKEN", "COPILOT_GITHUB_TOKEN");
   for (const name of names)
     if (process.env[name] !== undefined) env[name] = process.env[name];
   Object.assign(env, {
@@ -162,8 +162,16 @@ export function copilotSessionOptions(
   memory: MemorySessionFilesystem,
   input: ProviderInput,
   model: string | null,
+  gitHubToken: string,
 ): SessionConfig {
+  if (!gitHubToken || /\s|\0/.test(gitHubToken))
+    throw new RuntimeError(
+      "COPILOT_SESSION_AUTH_REQUIRED",
+      "Valid session-scoped Copilot authentication is required.",
+      401,
+    );
   return {
+    gitHubToken,
     ...(model === null ? {} : { model, allowedModels: [model] }),
     availableTools: [],
     excludedTools: ["builtin:*", "mcp:*", "custom:*"],
@@ -174,6 +182,7 @@ export function copilotSessionOptions(
     enableSessionTelemetry: false,
     enableFileChangeTracking: false,
     enableManagedSettings: true,
+    enforceManagedModelDefaults: true,
     enableSkills: false,
     includedBuiltinSkills: [],
     enableFileHooks: false,
@@ -293,6 +302,68 @@ async function installedVersion(executable: string): Promise<string | null> {
   return /GitHub Copilot CLI (\d+\.\d+\.\d+)\./.exec(stdout)?.[1] ?? null;
 }
 
+/** Acquire the same reported account through supported authentication, retaining tokens only in memory. */
+export async function managedSessionToken(
+  auth: GetAuthStatusResponse,
+  signal: AbortSignal,
+): Promise<string> {
+  signal.throwIfAborted();
+  if (!auth.isAuthenticated)
+    throw new RuntimeError(
+      "COPILOT_SESSION_AUTH_REQUIRED",
+      "Authenticate the intended Copilot account before requesting session credentials.",
+      401,
+    );
+  let token: string | undefined;
+  if (auth.authType === "env") {
+    token =
+      process.env.COPILOT_GITHUB_TOKEN ||
+      process.env.GH_TOKEN ||
+      process.env.GITHUB_TOKEN;
+  } else if (auth.authType === "gh-cli") {
+    const args = ["auth", "token"];
+    try {
+      if (auth.host) {
+        const host = new URL(
+          auth.host.includes("://") ? auth.host : `https://${auth.host}`,
+        );
+        if (
+          host.protocol !== "https:" ||
+          host.username ||
+          host.password ||
+          host.pathname !== "/" ||
+          host.search ||
+          host.hash
+        )
+          throw new Error("Invalid authentication host.");
+        args.push(`--hostname=${host.host}`);
+      }
+      if (auth.login) args.push(`--user=${auth.login}`);
+      const result = await execute("gh", args, {
+        signal,
+        timeout: 5000,
+        maxBuffer: 16 * 1024,
+        windowsHide: true,
+      });
+      token = result.stdout.trim();
+    } catch (error) {
+      if (signal.aborted) throw error;
+      throw new RuntimeError(
+        "COPILOT_SESSION_AUTH_REQUIRED",
+        "GitHub CLI could not supply the reported account's session credential. Check gh auth status.",
+        401,
+      );
+    }
+  }
+  if (!token || token.length > 16 * 1024 || /\s|\0/.test(token))
+    throw new RuntimeError(
+      "COPILOT_SESSION_AUTH_REQUIRED",
+      "Session-scoped authentication requires the supported GitHub CLI login or token environment.",
+      401,
+    );
+  return token;
+}
+
 /** Each analysis owns a fresh process and virtual filesystem; metadata probes never send source content. */
 export class CopilotAnalysisProvider implements AnalysisProvider {
   private metadata: ReturnType<AnalysisProvider["status"]> | null = null;
@@ -310,6 +381,7 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       locate: installedExecutable,
       version: installedVersion,
       client: (options) => new CopilotClient(options),
+      credentials: managedSessionToken,
       ...dependencies,
     };
   }
@@ -457,15 +529,20 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
           503,
         );
       callbacks.signal.throwIfAborted();
-      if (
-        !(await waitForCopilot(() => client.getAuthStatus(), callbacks.signal))
-          .isAuthenticated
-      )
+      const auth = await waitForCopilot(
+        () => client.getAuthStatus(),
+        callbacks.signal,
+      );
+      if (!auth.isAuthenticated)
         throw new RuntimeError(
           "COPILOT_AUTH_REQUIRED",
           "Copilot authentication is unavailable. Authenticate through its supported GitHub CLI or token flow, then retry.",
           401,
         );
+      const gitHubToken = await waitForCopilot(
+        () => this.dependencies.credentials(auth, callbacks.signal),
+        callbacks.signal,
+      );
       const models = await waitForCopilot(
         () => client.listModels(),
         callbacks.signal,
@@ -482,7 +559,12 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       const session = await waitForCopilot(
         () =>
           client.createSession(
-            copilotSessionOptions(memory, input, this.config.model),
+            copilotSessionOptions(
+              memory,
+              input,
+              this.config.model,
+              gitHubToken,
+            ),
           ),
         callbacks.signal,
       );

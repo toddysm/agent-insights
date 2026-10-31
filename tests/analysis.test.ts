@@ -412,11 +412,18 @@ test("Copilot settings enforce memory storage, no tools/customizations and proce
     fs,
     { system: "trusted", prompt: "synthetic" },
     "requested",
+    "synthetic-session-token",
   );
   assert.deepEqual(session.availableTools, []);
   assert.deepEqual(session.allowedModels, ["requested"]);
   assert.equal(session.enableFileHooks, false);
   assert.equal(session.enableManagedSettings, true);
+  assert.equal(session.enforceManagedModelDefaults, true);
+  assert.equal(session.gitHubToken, "synthetic-session-token");
+  assert.throws(
+    () => copilotSessionOptions(fs, { system: "", prompt: "" }, null, ""),
+    /session-scoped/,
+  );
   assert.equal(session.enableSessionStore, false);
   assert.equal(session.embeddingCacheStorage, "in-memory");
 });

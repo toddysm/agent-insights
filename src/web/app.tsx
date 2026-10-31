@@ -84,6 +84,10 @@ function App(): ReactElement {
   const selected = status?.sources.find((source) => source.id === sourceId);
   const run = status?.analysis.run;
   const analysisRunning = run?.state === "running";
+  const selectedRun =
+    run?.readId === view?.id &&
+    run?.sessionId === sessionId &&
+    run?.operationId === operationId;
 
   /** A changed selection cannot inherit acknowledgement or display a prior read's analysis. */
   function clearView(): void {
@@ -599,41 +603,36 @@ function App(): ReactElement {
                   </button>
                 </form>
               )}
-              {run &&
-                run.readId === view?.id &&
-                run.sessionId === sessionId &&
-                run.operationId === operationId && (
-                  <div className="analysis-result">
-                    <p role="status">
-                      Analysis {run.state}: {run.stage}.
-                    </p>
-                    {analysisRunning && (
-                      <button
-                        type="button"
-                        disabled={busy}
-                        onClick={() => void cancelAnalysis()}
-                      >
-                        Cancel analysis
-                      </button>
-                    )}
-                    {run.error && <p role="alert">{run.error.message}</p>}
-                    <p>
-                      Analysis input tokens: {run.usage.input ?? "Unavailable"};
-                      output tokens: {run.usage.output ?? "Unavailable"}.
-                      Effective model: {run.usage.model ?? "Not reported"}. This
-                      usage is separate from the captured session.
-                    </p>
-                    {run.result && (
-                      <>
-                        <h3>Model-generated result</h3>
-                        <pre>{JSON.stringify(run.result.data, null, 2)}</pre>
-                        <p>
-                          Evidence records: {run.result.eventIds.join(", ")}
-                        </p>
-                      </>
-                    )}
-                  </div>
-                )}
+              {run && (run.state !== "succeeded" || selectedRun) && (
+                <div className="analysis-result">
+                  <p role="status">
+                    Analysis {run.state}: {run.stage}.
+                  </p>
+                  {analysisRunning && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void cancelAnalysis()}
+                    >
+                      Cancel analysis
+                    </button>
+                  )}
+                  {run.error && <p role="alert">{run.error.message}</p>}
+                  <p>
+                    Analysis input tokens: {run.usage.input ?? "Unavailable"};
+                    output tokens: {run.usage.output ?? "Unavailable"}.
+                    Effective model: {run.usage.model ?? "Not reported"}. This
+                    usage is separate from the captured session.
+                  </p>
+                  {run.result && selectedRun && (
+                    <>
+                      <h3>Model-generated result</h3>
+                      <pre>{JSON.stringify(run.result.data, null, 2)}</pre>
+                      <p>Evidence records: {run.result.eventIds.join(", ")}</p>
+                    </>
+                  )}
+                </div>
+              )}
             </section>
           </>
         )}

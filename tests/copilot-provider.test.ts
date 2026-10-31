@@ -10,6 +10,7 @@ import {
   QUALIFIED_COPILOT_VERSION,
   type CopilotTransport,
   type CopilotSessionPort,
+  managedSessionToken,
 } from "../src/analysis/copilot.js";
 import { AnalysisRunner } from "../src/analysis/runner.js";
 import {
@@ -62,7 +63,10 @@ class ControlledTransport extends EventEmitter implements CopilotTransport {
   }
 
   /** Return no usage events so the runtime-reported model fallback is independently exercised. */
-  async createSession(_config: SessionConfig): Promise<CopilotSessionPort> {
+  async createSession(config: SessionConfig): Promise<CopilotSessionPort> {
+    assert.equal(config.enableManagedSettings, true);
+    assert.equal(config.gitHubToken, "synthetic-session-token");
+    assert.equal(config.enforceManagedModelDefaults, true);
     return {
       rpc: {
         model: {
@@ -96,6 +100,44 @@ class ControlledTransport extends EventEmitter implements CopilotTransport {
   }
 }
 
+test("session credentials use supported environment precedence and reject missing or unsupported authentication", async () => {
+  const names = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
+  const saved = names.map((name) => [name, process.env[name]] as const);
+  try {
+    process.env.COPILOT_GITHUB_TOKEN = "synthetic-primary";
+    process.env.GH_TOKEN = "synthetic-secondary";
+    process.env.GITHUB_TOKEN = "synthetic-tertiary";
+    const auth = { isAuthenticated: true, authType: "env" as const };
+    const signal = new AbortController().signal;
+    assert.equal(await managedSessionToken(auth, signal), "synthetic-primary");
+    delete process.env.COPILOT_GITHUB_TOKEN;
+    assert.equal(
+      await managedSessionToken(auth, signal),
+      "synthetic-secondary",
+    );
+    delete process.env.GH_TOKEN;
+    assert.equal(await managedSessionToken(auth, signal), "synthetic-tertiary");
+    delete process.env.GITHUB_TOKEN;
+    await assert.rejects(
+      managedSessionToken(auth, signal),
+      /Session-scoped authentication/,
+    );
+    await assert.rejects(
+      managedSessionToken({ isAuthenticated: true, authType: "hmac" }, signal),
+      /Session-scoped authentication/,
+    );
+    await assert.rejects(
+      managedSessionToken({ isAuthenticated: false }, signal),
+      /Authenticate/,
+    );
+  } finally {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});
+
 /** Inject only probing and the SDK boundary; production allocation/cleanup code still runs unchanged. */
 function controlledProvider(transport: ControlledTransport) {
   const directories: string[] = [];
@@ -105,6 +147,7 @@ function controlledProvider(transport: ControlledTransport) {
     {
       locate: async () => "/synthetic/copilot",
       version: async () => QUALIFIED_COPILOT_VERSION,
+      credentials: async () => "synthetic-session-token",
       client: (options) => {
         assert.ok(options.baseDirectory);
         directories.push(path.dirname(options.baseDirectory));

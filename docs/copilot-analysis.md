@@ -42,6 +42,14 @@ without copying credential files. This isolated mode does not read credentials
 out of another active Copilot conversation. A Copilot chat login alone may not
 make SDK authentication available.
 
+Managed-policy bootstrap also requires a **session-scoped** GitHub credential,
+not merely client-level login. After acknowledgement, the application obtains
+that credential in memory from the reported GitHub CLI account (`gh auth token`,
+pinned to its reported host/user), or from the supported environment-token
+precedence. It supplies the token only through the SDK protocol, never through
+files, command-line arguments or logs. Unsupported authentication fails closed.
+Locked managed model defaults are requested alongside managed permission policy.
+
 Check `gh auth status` and make sure the selected account is the one you intend
 to use. It may differ from another Copilot chat's account. If needed, authenticate
 through `gh auth login` or the SDK's supported token flow outside this application.
@@ -86,7 +94,7 @@ and output, not an existing chat or a bundled-runtime fallback.
 Copilot may create operational configuration, locks and program-cache metadata
 in a private temporary directory. This is not a payload staging directory.
 Qualification checks that synthetic prompt/response markers are absent from its
-files after the runtime stops. The directory is removed after confirmed cleanup.
+files while the session is alive and again after the runtime stops. The directory is removed after confirmed cleanup.
 If stopping the process or removing its metadata fails, ownership is retained
 and new analyses remain blocked, including after source refresh. Shutdown retries
 the retained cleanup; repeated stop signals can retry a failed shutdown.
@@ -142,7 +150,10 @@ COPILOT_QUALIFICATION_PATH=/absolute/path/to/copilot npm run test:copilot
 The last command uses the **real selected Copilot executable** with a synthetic
 loopback model. It needs no model credentials, performs no paid inference and
 sends no private captures. It checks tool exclusion, unrelated instruction
-exclusion and absence of synthetic payloads on disk. Hosted validation downloads
+exclusion, native cancellation and absence of synthetic payloads on disk.
+These unauthenticated loopback cases explicitly exclude managed-policy bootstrap;
+authenticated session creation with a session-scoped credential is qualified
+separately, without sending a prompt or invoking a model. Hosted validation downloads
 checksum-pinned 1.0.104 binaries solely into owned test directories on the
 Linux, macOS and Windows runners; application startup does not download them.
 

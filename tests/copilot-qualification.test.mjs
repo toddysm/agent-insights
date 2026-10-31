@@ -49,6 +49,19 @@ async function auditDisk(directory, canary) {
   }
 }
 
+/**
+ * Loopback qualification has no GitHub identity; authenticated policy bootstrap is checked separately.
+ * @param {import("@github/copilot-sdk").SessionConfig} config - Production settings with a synthetic credential.
+ */
+function syntheticSessionConfig(config) {
+  const { gitHubToken, gitHubTokenProvider, ...settings } = config;
+  return {
+    ...settings,
+    enableManagedSettings: false,
+    enforceManagedModelDefaults: false,
+  };
+}
+
 for (const phase of ["connection", "response"]) {
   test(
     `production provider cancels the native runtime during ${phase}`,
@@ -95,6 +108,7 @@ for (const phase of ["connection", "response"]) {
           model: "synthetic-qualification",
         },
         {
+          credentials: async () => "synthetic-session-token",
           client: (options) => {
             assert.ok(options.baseDirectory);
             ownedDirectory = path.dirname(options.baseDirectory);
@@ -124,7 +138,7 @@ for (const phase of ["connection", "response"]) {
               ],
               createSession: (config) =>
                 client.createSession({
-                  ...config,
+                  ...syntheticSessionConfig(config),
                   provider: {
                     type: "openai",
                     baseUrl: `http://127.0.0.1:${address.port}/v1`,
@@ -156,6 +170,8 @@ for (const phase of ["connection", "response"]) {
             throw new Error("Native request completed before cancellation.");
           }),
         ]);
+        assert.ok(ownedDirectory);
+        await auditDisk(ownedDirectory, marker);
         const rejected = assert.rejects(pending, { name: "AbortError" });
         controller.abort();
         await rejected;
@@ -317,7 +333,14 @@ for (const attemptTool of [false, true]) {
       );
       try {
         const session = await client.createSession({
-          ...copilotSessionOptions(memory, input, "synthetic-qualification"),
+          ...syntheticSessionConfig(
+            copilotSessionOptions(
+              memory,
+              input,
+              "synthetic-qualification",
+              "synthetic-session-token",
+            ),
+          ),
           ...(attemptTool
             ? {
                 tools: [
@@ -358,6 +381,8 @@ for (const attemptTool of [false, true]) {
         if (result) assert.ok(result.data.content.includes(canary));
         assert.ok(calls >= 1 && calls <= (attemptTool ? 2 : 1));
         if (!attemptTool) assert.ok(result);
+        await client.getStatus();
+        await auditDisk(directory, canary);
       } finally {
         await client.forceStop();
         server.closeAllConnections();
