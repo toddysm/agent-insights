@@ -11,11 +11,13 @@
     "check": "tsc --noEmit",
     "test": "npm run build && node --test .build/tests/*.test.js tests/startup.test.mjs",
     "test:startup": "node --test tests/startup.test.mjs",
+    "test:copilot": "npm run build && node --test tests/copilot-qualification.test.mjs",
     "test:browser": "npm run build && playwright test",
     "prestart": "npm run build",
     "start": "node .build/src/runtime/cli.js"
   },
   "dependencies": {
+    "@github/copilot-sdk": "1.0.28",
     "zod": "^4.6.7",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
@@ -27,5 +29,10 @@
     "@types/react-dom": "^19.3.0",
     "esbuild": "^0.28.2",
     "@playwright/test": "1.64.1"
+  },
+  "overrides": {
+    "@github/copilot-sdk": {
+      "zod": "$zod"
+    }
   }
 }

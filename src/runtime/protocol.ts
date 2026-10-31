@@ -1,6 +1,7 @@
 /** Shared browser/server envelopes; settings and status are not a persisted session catalog. */
 import { z } from "zod";
 import { sourceFormatSchema } from "../evidence/contracts.js";
+import { analysisRunSchema } from "../analysis/contracts.js";
 
 /** Explicitly available/unavailable configured location; paths are returned only after authentication. */
 export const locationSchema = z.strictObject({
@@ -11,7 +12,7 @@ export const locationSchema = z.strictObject({
   reason: z.string().nullable(),
 });
 
-/** Metadata-only status; the analyzer remains unavailable until its adapter is implemented. */
+/** Installation status and the current in-memory run/result; polling never starts model analysis. */
 export const statusSchema = z.strictObject({
   checkedAtMs: z.number(),
   sources: z.array(locationSchema),
@@ -29,9 +30,12 @@ export const statusSchema = z.strictObject({
   analysis: z.strictObject({
     harness: z.literal("copilot"),
     requestedModel: z.string().nullable(),
-    available: z.literal(false),
+    available: z.boolean(),
+    version: z.string().nullable(),
     remoteProcessing: z.literal(true),
     reason: z.string(),
+    operations: z.array(z.strictObject({ id: z.string(), label: z.string() })),
+    run: analysisRunSchema.nullable(),
   }),
 });
 

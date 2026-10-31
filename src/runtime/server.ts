@@ -12,6 +12,14 @@ import { RuntimeError } from "./errors.js";
 import { readRequestSchema } from "./protocol.js";
 import { RuntimeService } from "./service.js";
 import { SourceAccess } from "./sources.js";
+import { z } from "zod";
+import {
+  analysisRequestSchema,
+  type AnalysisOperation,
+  type AnalysisProvider,
+} from "../analysis/contracts.js";
+import { AnalysisRunner } from "../analysis/runner.js";
+import { CopilotAnalysisProvider } from "../analysis/copilot.js";
 
 /** Safe diagnostics contain operation codes only, not request bodies, tokens or source data. */
 export interface Diagnostic {
@@ -113,13 +121,15 @@ async function controlBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Start on IPv4 loopback only. No reader or model adapter is installed implicitly. */
+/** Start on IPv4 loopback; Copilot transport is configured but connects only after acknowledged analysis. */
 export async function startRuntime(
   config: RuntimeConfig,
   options: {
     readers?: readonly EvidenceReader[];
     onDiagnostic?: (event: Diagnostic) => void;
     readTimeoutMs?: number;
+    analysisProvider?: AnalysisProvider;
+    analysisOperations?: readonly AnalysisOperation[];
   } = {},
 ): Promise<RunningRuntime> {
   const assets = new Map([
@@ -144,6 +154,10 @@ export async function startRuntime(
     config,
     options.readers,
     options.readTimeoutMs,
+    new AnalysisRunner(
+      options.analysisProvider ?? new CopilotAnalysisProvider(config),
+      options.analysisOperations,
+    ),
   );
   const token = randomBytes(32).toString("base64url");
   let origin = "";
@@ -226,7 +240,13 @@ export async function startRuntime(
       json(response, 200, service.view);
     } else if (
       request.method === "POST" &&
-      ["/api/refresh", "/api/cancel", "/api/read"].includes(url.pathname)
+      [
+        "/api/refresh",
+        "/api/cancel",
+        "/api/read",
+        "/api/analysis/start",
+        "/api/analysis/cancel",
+      ].includes(url.pathname)
     ) {
       if (request.headers.origin !== origin)
         throw new RuntimeError(
@@ -235,6 +255,44 @@ export async function startRuntime(
           403,
         );
       const body = await controlBody(request);
+      if (url.pathname.startsWith("/api/analysis/")) {
+        if (response.destroyed)
+          throw new RuntimeError(
+            "ANALYSIS_CANCELLED",
+            "The analysis request was disconnected.",
+            409,
+          );
+        const analysis = service.analysis;
+        if (!analysis)
+          throw new RuntimeError(
+            "ANALYSIS_UNAVAILABLE",
+            "Analysis is not configured.",
+            501,
+          );
+        if (url.pathname === "/api/analysis/start") {
+          const selection = analysisRequestSchema.safeParse(body);
+          if (!selection.success)
+            throw new RuntimeError(
+              "ANALYSIS_SELECTION_INVALID",
+              "Select a current session and acknowledge remote processing.",
+              400,
+            );
+          json(response, 202, analysis.start(service.view, selection.data));
+        } else {
+          const selection = z
+            .strictObject({ id: z.string().min(1).max(256) })
+            .safeParse(body);
+          if (!selection.success)
+            throw new RuntimeError(
+              "ANALYSIS_SELECTION_INVALID",
+              "Select the current analysis to cancel.",
+              400,
+            );
+          await analysis.cancel(selection.data.id);
+          json(response, 200, await service.status());
+        }
+        return;
+      }
       if (url.pathname !== "/api/read") {
         if (
           typeof body !== "object" ||
@@ -325,10 +383,13 @@ export async function startRuntime(
     close() {
       if (closing !== null) return closing;
       service.invalidate();
-      closing = new Promise<void>((resolve, reject) => {
+      const stopped = new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
+      closing = Promise.all([stopped, service.analysis?.close()]).then(
+        () => undefined,
+      );
       return closing;
     },
   };

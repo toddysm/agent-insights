@@ -15,12 +15,13 @@ limitations, and validation instructions.
 The [local runtime](docs/local-runtime.md) provides a loopback-only source
 interface and read-only access boundary, built on the
 [in-memory evidence contract](docs/evidence-contracts.md).
-Real source readers, report views and model analysis are not installed yet;
-the interface reports those capabilities as unavailable rather than showing
-example data.
+The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
+memory-only model execution. Real source readers, report views and interpretation
+definitions are not installed yet; the interface reports those capabilities as
+unavailable rather than showing example data.
 See the [capability inventory](docs/project-state.md) for the current plan.
 
-To validate the contracts with Node.js 24:
+To validate the implementation with Node.js 24:
 
 ```bash
 npm ci --ignore-scripts
@@ -40,6 +41,6 @@ stored in Git, and each checkout needs its own dependency installation.
 `npm run build` remains available as an explicit build command.
 
 Open the full, private launch URL printed by the server.
-Copilot is the first planned analysis backend. When enabled, it sends selected
+Copilot is the first analysis backend. After acknowledgement, it sends selected
 content to a remote service; a local harness is not on-device inference.
 See the [runtime and privacy guide](docs/local-runtime.md) before using analysis.

@@ -13,6 +13,7 @@ import type { RuntimeConfig } from "./config.js";
 import { RuntimeError, cancelledRead } from "./errors.js";
 import type { ReadRequest, ReadTiming, RuntimeStatus } from "./protocol.js";
 import { SourceAccess } from "./sources.js";
+import type { AnalysisRunner } from "../analysis/runner.js";
 
 /** Await a cooperative adapter without allowing ignored cancellation to retain the current generation. */
 async function abortable<T>(
@@ -57,6 +58,7 @@ export class RuntimeService {
     private readonly config: RuntimeConfig,
     readers: readonly EvidenceReader[] = [],
     private readonly timeoutMs = 30_000,
+    readonly analysis: AnalysisRunner | null = null,
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
       throw new Error("Read timeout must be a positive integer");
@@ -67,6 +69,15 @@ export class RuntimeService {
   /** Report source access and actual adapter availability without connecting to a model. */
   async status(): Promise<RuntimeStatus> {
     const sources = await this.sources.list();
+    const availability =
+      this.analysis === null
+        ? {
+            available: false,
+            version: null,
+            reason:
+              "The Copilot analysis adapter is not installed in this runtime yet.",
+          }
+        : await this.analysis.availability();
     return {
       checkedAtMs: Date.now(),
       sources,
@@ -76,10 +87,10 @@ export class RuntimeService {
       analysis: {
         harness: this.config.harness,
         requestedModel: this.config.model,
-        available: false,
+        ...availability,
         remoteProcessing: true,
-        reason:
-          "The Copilot analysis adapter is not installed in this runtime yet.",
+        operations: this.analysis?.definitions ?? [],
+        run: this.analysis?.run ?? null,
       },
     };
   }
@@ -96,6 +107,7 @@ export class RuntimeService {
 
   /** Abort this runtime's active operation and discard its view; never touch source files. */
   invalidate(): void {
+    this.analysis?.invalidate();
     this.active?.controller.abort();
     this.active = null;
     this.current = null;
