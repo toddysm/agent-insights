@@ -38,6 +38,8 @@ export function syntheticResponse(input: ProviderInput): string {
 
 /** Deterministic mock transport with explicit analysis-only usage, not a real Copilot connection. */
 export const syntheticProvider: AnalysisProvider = {
+  /** No external resources are owned by the synthetic transport. */
+  async close() {},
   async status() {
     return { available: true, version: "synthetic", reason: "Test provider." };
   },

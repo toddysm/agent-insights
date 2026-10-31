@@ -2,8 +2,17 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createServer } from "node:http";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -38,6 +47,145 @@ async function auditDisk(directory, canary) {
       );
     }
   }
+}
+
+for (const phase of ["connection", "response"]) {
+  test(
+    `production provider cancels the native runtime during ${phase}`,
+    { timeout: 45_000 },
+    async (t) => {
+      const executable = process.env.COPILOT_QUALIFICATION_PATH;
+      assert.ok(executable);
+      const marker = `SYNTHETIC_CANCEL_${randomUUID()}`;
+      let enter;
+      const entered = new Promise((resolve) => {
+        enter = resolve;
+      });
+      let closeResponse;
+      const responseClosed = new Promise((resolve) => {
+        closeResponse = resolve;
+      });
+      let calls = 0;
+      const server = createServer(async (request, response) => {
+        let body = "";
+        for await (const chunk of request) body += chunk;
+        assert.ok(body.includes(marker));
+        calls++;
+        response.on("close", closeResponse);
+        enter();
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const address = server.address();
+      assert.ok(address && typeof address !== "string");
+      let sdk;
+      let ownedDirectory;
+      let ownedProcess;
+      const originalSpawn = childProcess.spawn;
+      /** Capture the actual SDK-owned child, rather than asserting an inferred connection state. */
+      childProcess.spawn = (...args) => {
+        const child = originalSpawn(...args);
+        ownedProcess = child;
+        return child;
+      };
+      syncBuiltinESMExports();
+      const provider = new CopilotAnalysisProvider(
+        {
+          copilotPath: executable,
+          model: "synthetic-qualification",
+        },
+        {
+          client: (options) => {
+            assert.ok(options.baseDirectory);
+            ownedDirectory = path.dirname(options.baseDirectory);
+            const client = new CopilotClient(
+              copilotClientOptions(executable, ownedDirectory, false),
+            );
+            sdk = client;
+            return {
+              start: async () => {
+                await client.start();
+                if (phase === "connection") {
+                  enter();
+                  await new Promise(() => {});
+                }
+              },
+              getStatus: () => client.getStatus(),
+              getAuthStatus: async () => ({ isAuthenticated: true }),
+              listModels: async () => [
+                {
+                  id: "synthetic-qualification",
+                  name: "Synthetic",
+                  capabilities: {
+                    supports: { vision: false, reasoningEffort: false },
+                    limits: { max_context_window_tokens: 128000 },
+                  },
+                },
+              ],
+              createSession: (config) =>
+                client.createSession({
+                  ...config,
+                  provider: {
+                    type: "openai",
+                    baseUrl: `http://127.0.0.1:${address.port}/v1`,
+                    apiKey: "synthetic-no-credentials",
+                    wireApi: "completions",
+                  },
+                }),
+              forceStop: () => client.forceStop(),
+            };
+          },
+        },
+      );
+      const controller = new AbortController();
+      t.signal.addEventListener("abort", () => controller.abort(), {
+        once: true,
+      });
+      try {
+        const pending = provider.analyze(
+          { system: "Synthetic cancellation qualification.", prompt: marker },
+          {
+            signal: controller.signal,
+            progress: () => {},
+            usage: () => {},
+          },
+        );
+        await Promise.race([
+          entered,
+          pending.then(() => {
+            throw new Error("Native request completed before cancellation.");
+          }),
+        ]);
+        const rejected = assert.rejects(pending, { name: "AbortError" });
+        controller.abort();
+        await rejected;
+        if (phase === "response") await responseClosed;
+        assert.equal(calls, phase === "response" ? 1 : 0);
+        assert.ok(sdk);
+        assert.ok(ownedProcess);
+        if (ownedProcess.exitCode === null && ownedProcess.signalCode === null)
+          await once(ownedProcess, "exit", {
+            signal: AbortSignal.timeout(5000),
+          });
+        assert.ok(
+          ownedProcess.exitCode !== null || ownedProcess.signalCode !== null,
+        );
+        assert.ok(ownedDirectory);
+        await assert.rejects(access(ownedDirectory), { code: "ENOENT" });
+      } finally {
+        controller.abort();
+        try {
+          if (sdk) await sdk.forceStop();
+          await provider.close();
+        } finally {
+          childProcess.spawn = originalSpawn;
+          syncBuiltinESMExports();
+          server.closeAllConnections();
+          await new Promise((resolve) => server.close(resolve));
+        }
+      }
+    },
+  );
 }
 
 for (const attemptTool of [false, true]) {

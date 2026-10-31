@@ -86,7 +86,10 @@ and output, not an existing chat or a bundled-runtime fallback.
 Copilot may create operational configuration, locks and program-cache metadata
 in a private temporary directory. This is not a payload staging directory.
 Qualification checks that synthetic prompt/response markers are absent from its
-files after the runtime stops. The directory is removed after every run.
+files after the runtime stops. The directory is removed after confirmed cleanup.
+If stopping the process or removing its metadata fails, ownership is retained
+and new analyses remain blocked, including after source refresh. Shutdown retries
+the retained cleanup; repeated stop signals can retry a failed shutdown.
 
 Application results and the selected read remain transient. Refresh or a new
 read invalidates old results and cancels their analysis. Restarting the application

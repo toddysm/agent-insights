@@ -93,4 +93,6 @@ export interface AnalysisProvider {
   }>;
   /** Run acknowledged, prepared input; stop owned resources when the signal aborts or the call settles. */
   analyze(input: ProviderInput, callbacks: ProviderCallbacks): Promise<string>;
+  /** Retry cleanup of retained resources; reject until their termination/removal is confirmed. */
+  close(): Promise<void>;
 }

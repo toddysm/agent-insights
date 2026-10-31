@@ -22,6 +22,8 @@ export class AnalysisRunner {
   private current: AnalysisRun | null = null;
   private controller: AbortController | null = null;
   private pending: Promise<void> | null = null;
+  private cleanupBlocked = false;
+  private closed = false;
 
   /** Register trusted definitions; an empty registry honestly exposes no analysis operations yet. */
   constructor(
@@ -60,7 +62,14 @@ export class AnalysisRunner {
   }
 
   /** Inspect installation metadata only; no authentication, model connection or evidence transmission. */
-  availability() {
+  async availability() {
+    if (this.cleanupBlocked || this.closed)
+      return {
+        available: false,
+        version: null,
+        reason:
+          "Analysis is stopped or cleanup is unconfirmed. Stop the application to retry owned-resource cleanup.",
+      };
     return this.provider.status();
   }
 
@@ -70,7 +79,7 @@ export class AnalysisRunner {
     this.current = null;
   }
 
-  /** Cancel only the named current run, then await its transport cleanup before returning. */
+  /** Discard the named run even if success races cancellation; preserve cleanup failures and newer runs. */
   async cancel(id: string): Promise<void> {
     if (this.current?.id !== id)
       throw new RuntimeError(
@@ -80,16 +89,37 @@ export class AnalysisRunner {
       );
     this.controller?.abort();
     await this.pending;
+    if (this.current?.id === id && this.current.state === "succeeded") {
+      this.current = {
+        ...this.current,
+        state: "cancelled",
+        result: null,
+        finishedAtMs: Date.now(),
+        error: {
+          code: "ANALYSIS_CANCELLED",
+          message: "Analysis was cancelled and its result discarded.",
+        },
+      };
+    }
   }
 
   /** Shutdown waits for owned work; no model process or selected evidence outlives the runtime. */
   async close(): Promise<void> {
+    this.closed = true;
     this.invalidate();
     await this.pending;
+    await this.provider.close();
+    this.cleanupBlocked = false;
   }
 
   /** Validate scope and consent before scheduling any provider work; reject rather than queue payloads. */
   start(view: ReadView | null, request: AnalysisRequest): AnalysisRun {
+    if (this.cleanupBlocked || this.closed)
+      throw new RuntimeError(
+        "ANALYSIS_CLEANUP_BLOCKED",
+        "Analysis is stopped or awaiting confirmed cleanup. Restart after shutdown succeeds.",
+        503,
+      );
     if (request.acknowledgement !== ANALYSIS_ACKNOWLEDGEMENT)
       throw new RuntimeError(
         "ANALYSIS_CONSENT_REQUIRED",
@@ -266,6 +296,7 @@ export class AnalysisRunner {
       const cleanupFailed =
         error instanceof RuntimeError &&
         error.code === "COPILOT_CLEANUP_FAILED";
+      if (cleanupFailed) this.cleanupBlocked = true;
       const cancelled =
         controller.signal.aborted && !timedOut && !cleanupFailed;
       let failure: { code: string; message: string };

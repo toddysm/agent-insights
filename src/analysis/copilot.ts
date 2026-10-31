@@ -11,6 +11,7 @@ import {
   type CopilotClientOptions,
   type SessionConfig,
   type ModelInfo,
+  type SessionEvent,
 } from "@github/copilot-sdk";
 import { RuntimeError } from "../runtime/errors.js";
 import type { RuntimeConfig } from "../runtime/config.js";
@@ -25,6 +26,65 @@ import { MemorySessionFilesystem } from "./memory-filesystem.js";
 
 export const QUALIFIED_COPILOT_VERSION = "1.0.104";
 const execute = promisify(execFile);
+
+/** Only the SDK session capabilities used by this adapter; enables faithful transport fault tests. */
+export interface CopilotSessionPort {
+  readonly rpc: {
+    readonly model: { getCurrent(): Promise<{ modelId?: string }> };
+  };
+  on(handler: (event: SessionEvent) => void): () => void;
+  sendAndWait(
+    input: { prompt: string },
+    timeout: number,
+  ): Promise<{ data: { content: string } } | undefined>;
+}
+
+/** Owned transport operations, deliberately excluding credentials and unrelated SDK capabilities. */
+export interface CopilotTransport extends Pick<
+  CopilotClient,
+  "start" | "getStatus" | "getAuthStatus" | "listModels" | "forceStop"
+> {
+  createSession(config: SessionConfig): Promise<CopilotSessionPort>;
+}
+
+/** Internal injectable boundaries for executable probing and transport lifecycle tests, not browser configuration. */
+export interface CopilotDependencies {
+  locate(configured: string | null): Promise<string | null>;
+  version(executable: string): Promise<string | null>;
+  client(options: CopilotClientOptions): CopilotTransport;
+}
+
+/** Keep all cleanup resources reachable until process termination and metadata removal both succeed. */
+interface OwnedCopilot {
+  readonly client: CopilotTransport;
+  readonly memory: MemorySessionFilesystem;
+  readonly directory: string;
+  stopped: boolean;
+}
+
+/** Observe transport settlement even after abort, without allowing an unresponsive RPC to delay cancellation. */
+async function waitForCopilot<T>(
+  operation: () => Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  signal.throwIfAborted();
+  const pending = operation();
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) abort();
+    void pending.then(
+      (value) => {
+        signal.removeEventListener("abort", abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", abort);
+        reject(error);
+      },
+    );
+  });
+}
 
 /** Preserve platform/auth/proxy requirements, not ambient tracing, debug, plugin or tool settings. */
 export function copilotClientOptions(
@@ -219,23 +279,91 @@ async function installedExecutable(
   return null;
 }
 
+/** Read a bounded version banner without starting a session or permitting auto-update. */
+async function installedVersion(executable: string): Promise<string | null> {
+  const { stdout } = await execute(
+    executable,
+    ["--version", "--no-auto-update"],
+    {
+      timeout: 5000,
+      maxBuffer: 4096,
+      windowsHide: true,
+    },
+  );
+  return /GitHub Copilot CLI (\d+\.\d+\.\d+)\./.exec(stdout)?.[1] ?? null;
+}
+
 /** Each analysis owns a fresh process and virtual filesystem; metadata probes never send source content. */
 export class CopilotAnalysisProvider implements AnalysisProvider {
   private metadata: ReturnType<AnalysisProvider["status"]> | null = null;
+  private readonly dependencies: CopilotDependencies;
+  private owned: OwnedCopilot | null = null;
+  private cleaning: Promise<void> | null = null;
+  private cleanupFailed = false;
 
   /** Retain startup preferences without connecting to Copilot or handling credential material. */
   constructor(
     private readonly config: Pick<RuntimeConfig, "copilotPath" | "model">,
-  ) {}
+    dependencies: Partial<CopilotDependencies> = {},
+  ) {
+    this.dependencies = {
+      locate: installedExecutable,
+      version: installedVersion,
+      client: (options) => new CopilotClient(options),
+      ...dependencies,
+    };
+  }
 
   /** Cache startup installation metadata; actual analysis independently rechecks the executable. */
   status(): ReturnType<AnalysisProvider["status"]> {
+    if (this.cleanupFailed)
+      return Promise.resolve({
+        available: false,
+        version: null,
+        reason:
+          "Copilot cleanup is unconfirmed. Stop the application to retry owned-resource cleanup.",
+      });
     return (this.metadata ??= this.inspect());
+  }
+
+  /** Retry retained cleanup during shutdown; failure never drops the owned client or its memory store. */
+  close(): Promise<void> {
+    return this.cleanupOwned();
+  }
+
+  /** Serialize stop/removal attempts and retain ownership, including after partial cleanup. */
+  private cleanupOwned(): Promise<void> {
+    if (this.cleaning) return this.cleaning;
+    const owned = this.owned;
+    if (!owned) return Promise.resolve();
+    this.cleaning = Promise.resolve()
+      .then(async () => {
+        if (!owned.stopped) {
+          await owned.client.forceStop();
+          owned.stopped = true;
+        }
+        owned.memory.dispose();
+        await rm(owned.directory, { recursive: true, force: true });
+        this.owned = null;
+        this.cleanupFailed = false;
+      })
+      .catch(() => {
+        this.cleanupFailed = true;
+        throw new RuntimeError(
+          "COPILOT_CLEANUP_FAILED",
+          "Copilot cleanup is unconfirmed. New analyses are blocked; stop the application to retry cleanup.",
+          500,
+        );
+      })
+      .finally(() => {
+        this.cleaning = null;
+      });
+    return this.cleaning;
   }
 
   /** Require the qualified version; detecting a newer executable is not permission to upgrade support. */
   private async inspect() {
-    const executable = await installedExecutable(this.config.copilotPath);
+    const executable = await this.dependencies.locate(this.config.copilotPath);
     if (!executable)
       return {
         available: false,
@@ -244,17 +372,7 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
           "Copilot was not found. Install it separately or set --copilot-path.",
       };
     try {
-      const { stdout } = await execute(
-        executable,
-        ["--version", "--no-auto-update"],
-        {
-          timeout: 5000,
-          maxBuffer: 4096,
-          windowsHide: true,
-        },
-      );
-      const version =
-        /GitHub Copilot CLI (\d+\.\d+\.\d+)\./.exec(stdout)?.[1] ?? null;
+      const version = await this.dependencies.version(executable);
       const available = version === QUALIFIED_COPILOT_VERSION;
       return {
         available,
@@ -278,10 +396,16 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
     input: ProviderInput,
     callbacks: ProviderCallbacks,
   ): Promise<string> {
+    if (this.owned || this.cleanupFailed)
+      throw new RuntimeError(
+        "COPILOT_CLEANUP_FAILED",
+        "An earlier Copilot process still requires cleanup.",
+        503,
+      );
     const status = await this.inspect();
     if (!status.available)
       throw new RuntimeError("COPILOT_UNAVAILABLE", status.reason, 503);
-    const executable = await installedExecutable(this.config.copilotPath);
+    const executable = await this.dependencies.locate(this.config.copilotPath);
     if (!executable)
       throw new RuntimeError(
         "COPILOT_UNAVAILABLE",
@@ -293,14 +417,22 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       path.join(tmpdir(), "agent-insights-copilot-"),
     );
     const memory = new MemorySessionFilesystem();
-    const client = new CopilotClient(
-      copilotClientOptions(executable, directory),
-    );
+    let client: CopilotTransport;
+    try {
+      client = this.dependencies.client(
+        copilotClientOptions(executable, directory),
+      );
+    } catch (error) {
+      memory.dispose();
+      await rm(directory, { recursive: true, force: true });
+      throw error;
+    }
+    this.owned = { client, memory, directory, stopped: false };
     let stopFailure: unknown;
     let abortedStop: Promise<void> | null = null;
     /** Abort the owned transport immediately; retain cleanup errors for the awaited finalizer. */
     const abort = () => {
-      abortedStop = client.forceStop().catch((error: unknown) => {
+      abortedStop = this.cleanupOwned().catch((error: unknown) => {
         stopFailure = error;
       });
     };
@@ -310,8 +442,11 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       await memory.mkdir("/workspace", true);
       await memory.mkdir("/sessions", true);
       callbacks.progress("connecting");
-      await client.start();
-      const actual = await client.getStatus();
+      await waitForCopilot(() => client.start(), callbacks.signal);
+      const actual = await waitForCopilot(
+        () => client.getStatus(),
+        callbacks.signal,
+      );
       if (
         actual.version !== QUALIFIED_COPILOT_VERSION ||
         actual.protocolVersion !== 3
@@ -322,13 +457,19 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
           503,
         );
       callbacks.signal.throwIfAborted();
-      if (!(await client.getAuthStatus()).isAuthenticated)
+      if (
+        !(await waitForCopilot(() => client.getAuthStatus(), callbacks.signal))
+          .isAuthenticated
+      )
         throw new RuntimeError(
           "COPILOT_AUTH_REQUIRED",
           "Copilot authentication is unavailable. Authenticate through its supported GitHub CLI or token flow, then retry.",
           401,
         );
-      const models = await client.listModels();
+      const models = await waitForCopilot(
+        () => client.listModels(),
+        callbacks.signal,
+      );
       if (
         this.config.model !== null &&
         !models.some((model) => model.id === this.config.model)
@@ -338,10 +479,17 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
           "The requested model is not available to this Copilot account.",
           422,
         );
-      const session = await client.createSession(
-        copilotSessionOptions(memory, input, this.config.model),
+      const session = await waitForCopilot(
+        () =>
+          client.createSession(
+            copilotSessionOptions(memory, input, this.config.model),
+          ),
+        callbacks.signal,
       );
-      const current = await session.rpc.model.getCurrent();
+      const current = await waitForCopilot(
+        () => session.rpc.model.getCurrent(),
+        callbacks.signal,
+      );
       if (
         this.config.model !== null &&
         current.modelId !== undefined &&
@@ -357,7 +505,15 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
         models,
         this.config.model ?? current.modelId,
       );
-      let usage: AnalysisUsage = { input: null, output: null, model: null };
+      let usage: AnalysisUsage = {
+        input: null,
+        output: null,
+        model:
+          current.modelId && current.modelId !== "auto"
+            ? current.modelId
+            : null,
+      };
+      callbacks.usage({ ...usage });
       let seenUsage = false;
       const seen = new Set<string>();
       const unsubscribe = session.on((event) => {
@@ -388,9 +544,9 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       try {
         callbacks.signal.throwIfAborted();
         callbacks.progress("running");
-        const response = await session.sendAndWait(
-          { prompt: input.prompt },
-          110_000,
+        const response = await waitForCopilot(
+          () => session.sendAndWait({ prompt: input.prompt }, 110_000),
+          callbacks.signal,
         );
         callbacks.signal.throwIfAborted();
         const output = response?.data.content;
@@ -417,28 +573,9 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       );
     } finally {
       callbacks.signal.removeEventListener("abort", abort);
-      try {
-        await abortedStop;
-        await client.forceStop();
-        if (stopFailure !== undefined) throw stopFailure;
-      } catch {
-        throw new RuntimeError(
-          "COPILOT_CLEANUP_FAILED",
-          "Copilot cleanup could not be confirmed. Stop and restart the local application.",
-          500,
-        );
-      } finally {
-        memory.dispose();
-        try {
-          await rm(directory, { recursive: true, force: true });
-        } catch {
-          throw new RuntimeError(
-            "COPILOT_CLEANUP_FAILED",
-            "Copilot operational metadata could not be removed. Stop and restart the local application.",
-            500,
-          );
-        }
-      }
+      await abortedStop;
+      if (stopFailure !== undefined) throw stopFailure;
+      await this.cleanupOwned();
     }
   }
 }

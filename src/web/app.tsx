@@ -70,6 +70,7 @@ async function request<T>(
 function App(): ReactElement {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [error, setError] = useState("");
+  const [pollError, setPollError] = useState("");
   const [busy, setBusy] = useState(false);
   const [sourceId, setSourceId] = useState("");
   const [relativePath, setRelativePath] = useState("");
@@ -86,6 +87,7 @@ function App(): ReactElement {
 
   /** A changed selection cannot inherit acknowledgement or display a prior read's analysis. */
   function clearView(): void {
+    setPollError("");
     setView(null);
     setSessionId("");
     setAcknowledged(false);
@@ -142,16 +144,26 @@ function App(): ReactElement {
       try {
         const result = await request("/api/status", statusSchema);
         if (stopped || current !== generation.current) return;
-        setStatus(result);
+        setPollError("");
+        setStatus((previous) =>
+          previous !== null &&
+          previous.analysis.run !== null &&
+          previous.analysis.run.id === run?.id &&
+          previous.analysis.run.state === "running"
+            ? result
+            : previous,
+        );
         if (result.analysis.run?.state === "running")
           timer = setTimeout(() => void poll(), 500);
       } catch (failure) {
-        if (!stopped && current === generation.current)
-          setError(
+        if (!stopped && current === generation.current) {
+          setPollError(
             failure instanceof Error
               ? failure.message
               : "Analysis status could not be checked.",
           );
+          timer = setTimeout(() => void poll(), 1000);
+        }
       }
     }
     timer = setTimeout(() => void poll(), 500);
@@ -169,6 +181,7 @@ function App(): ReactElement {
     }
     setBusy(true);
     setError("");
+    setPollError("");
     try {
       const result = await request("/api/analysis/start", analysisRunSchema, {
         readId: view.id,
@@ -372,7 +385,7 @@ function App(): ReactElement {
                       <select
                         id="source"
                         value={sourceId}
-                        disabled={busy}
+                        disabled={busy || analysisRunning}
                         onChange={(event) => {
                           setSourceId(event.target.value);
                           setRelativePath("");
@@ -482,6 +495,9 @@ function App(): ReactElement {
                 </div>
               </dl>
               <p>{status?.analysis.reason}</p>
+              {pollError && analysisRunning && (
+                <p role="alert">{pollError} Retrying analysis status...</p>
+              )}
               <div className="cloud-notice">
                 <h3>Analysis sends selected content to a remote service</h3>
                 <p>

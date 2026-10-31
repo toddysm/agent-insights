@@ -375,6 +375,7 @@ export async function startRuntime(
     });
   });
   let closing: Promise<void> | null = null;
+  let stopped: Promise<void> | null = null;
   return {
     origin,
     token,
@@ -383,13 +384,16 @@ export async function startRuntime(
     close() {
       if (closing !== null) return closing;
       service.invalidate();
-      const stopped = new Promise<void>((resolve, reject) => {
+      stopped ??= new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
-      closing = Promise.all([stopped, service.analysis?.close()]).then(
-        () => undefined,
-      );
+      closing = Promise.all([stopped, service.analysis?.close()])
+        .then(() => undefined)
+        .catch((error: unknown) => {
+          closing = null;
+          throw error;
+        });
       return closing;
     },
   };

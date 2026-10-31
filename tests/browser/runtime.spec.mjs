@@ -135,6 +135,13 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
   const file = path.join(directory, "synthetic.jsonl");
   await writeFile(file, "SYNTHETIC_CAPTURE");
   let calls = 0;
+  let failStatusOnce = false;
+  await page.route("**/api/status", async (route) => {
+    if (failStatusOnce) {
+      failStatusOnce = false;
+      await route.abort("failed");
+    } else await route.continue();
+  });
   const runtime = await startRuntime(
     {
       sources: [file],
@@ -180,8 +187,17 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
     ).toBeDisabled();
     expect(calls).toBe(0);
     await page.getByRole("checkbox").check();
+    failStatusOnce = true;
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    await expect(page.getByText(/Retrying analysis status/)).toBeVisible();
+    await expect(
+      page.getByLabel("Source location", { exact: true }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("button", { name: "Cancel analysis" }),
+    ).toBeEnabled();
     await expect(page.getByText("Analysis succeeded: finished.")).toBeVisible();
+    await expect(page.getByText(/Retrying analysis status/)).toHaveCount(0);
     await expect(
       page.getByText(/Analysis input tokens: 7; output tokens: 3/),
     ).toBeVisible();

@@ -241,6 +241,61 @@ test("a synchronous provider failure does not leave the runner permanently busy"
   assert.equal(reports, 2);
 });
 
+test("cancellation discards an already completed result without cancelling a newer run", async () => {
+  const runner = new AnalysisRunner(syntheticProvider, [syntheticOperation]);
+  const first = runner.start(exampleReadView(), request);
+  await tick();
+  await runner.cancel(first.id);
+  assert.equal(runner.run?.state, "cancelled");
+  assert.equal(runner.run?.result, null);
+  assert.equal(runner.run?.usage.input, 7);
+  const second = runner.start(exampleReadView(), request);
+  await tick();
+  const cancel = runner.cancel(second.id);
+  const newer = runner.start(exampleReadView(), request);
+  await cancel;
+  await tick();
+  assert.equal(runner.run?.id, newer.id);
+  assert.equal(runner.run?.state, "succeeded");
+});
+
+test("runtime shutdown retains its cleanup retry path after the network server has stopped", async () => {
+  let fail = true;
+  let attempts = 0;
+  const runtime = await startRuntime(
+    {
+      sources: [],
+      port: 0,
+      harness: "copilot",
+      model: null,
+      copilotPath: null,
+    },
+    {
+      analysisProvider: {
+        ...syntheticProvider,
+        async close() {
+          attempts++;
+          if (fail)
+            throw new RuntimeError(
+              "COPILOT_CLEANUP_FAILED",
+              "Synthetic cleanup failure.",
+              500,
+            );
+        },
+      },
+    },
+  );
+  try {
+    await assert.rejects(runtime.close(), /cleanup failure/);
+    fail = false;
+    await runtime.close();
+    assert.equal(attempts, 2);
+  } finally {
+    fail = false;
+    await runtime.close();
+  }
+});
+
 test("overdue synchronous results are rejected and cleanup failures are not reported as successful cancellation", async () => {
   const slow = new AnalysisRunner(
     {
