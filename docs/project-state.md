@@ -3,7 +3,7 @@
 Capability inventory as of 2026-10-30. This records project delivery status,
 not session data or analysis results.
 
-The code baseline is main at `2f9d85cb4658300279e0a5e2e526b4d6ec62fe74`.
+The preceding merged baseline is main at `4310baf08c92e2523f08579dd14773f4b8b99cfc`.
 The current plan is lightweight design revision 6 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
@@ -17,7 +17,7 @@ GitHub Project access is unavailable; no board status is claimed.
 
 ## Implemented
 
-No production session-analysis capability has shipped.
+No complete production session-analysis workflow has shipped.
 
 | Capability | Feature slug | Tracking issue | PRD doc | Docs (arch/dev) | Docs (user) | Landed |
 | ---------- | ------------ | -------------- | ------- | --------------- | ----------- | ------ |
@@ -44,8 +44,10 @@ Prototype tests are not validation of production source readers or analysis.
 The runtime baseline is TypeScript, Node.js 24 and React on a loopback-only
 server, with explicit source selection and manual refresh. The
 [local interface](local-runtime.md) and
-[evidence contracts](evidence-contracts.md) are implemented. No real-session
-reader, report or model-analysis capability has shipped.
+[evidence contracts](evidence-contracts.md) are implemented. The
+[Copilot transport and analysis runner](copilot-analysis.md) implement consent,
+in-memory execution, validated references, cancellation and separate usage.
+Real-session readers, reports and interpretation definitions remain incomplete.
 
 | Capability                                                                                                                                                                 | Feature slug            | Tracking issue                                           | PRD doc                                                                   | Docs                                                                                                                                                                              |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -73,7 +75,8 @@ The runtime/source workflow decision in
 The provider/data portion of
 [#7](https://github.com/toddysm/agent-insights/issues/7) now approves Copilot first
 and remote processing with explicit user awareness. The user also approved its
-initial completion/rubric rules. Model execution still requires the qualified adapter and user action;
+initial completion/rubric rules. Model execution requires a qualified installed
+runtime, an application-owned interpretation definition and acknowledged user action;
 source selection/refresh does not transmit content. GitHub-hosted validation
 remains the selected testing mode.
 
@@ -88,5 +91,5 @@ remains the selected testing mode.
 | Gap                                                                      | Evidence and next work                                                                                                                                                                           |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
-| Real-session readers, reports and model analysis are not implemented yet | The local shell reports missing capabilities explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2)                                             |
+| Real-session readers, reports and interpretation definitions are not implemented yet | The transport is available, but the local shell reports missing consumers explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
 | End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |

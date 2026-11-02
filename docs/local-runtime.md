@@ -3,7 +3,8 @@
 The current runtime implements
 [#9](https://github.com/toddysm/agent-insights/issues/9): source configuration,
 availability checks, a controlled read boundary and an in-memory reader registry.
-It does not yet include real capture readers, report views or a model adapter.
+It also includes the [Copilot analysis transport](copilot-analysis.md).
+It does not yet include real capture readers, report views or interpretation definitions.
 The interface states those limitations explicitly. The
 [historical prototype](../design/session-insights/README.md) is separate and
 continues to use fictional data.
@@ -96,26 +97,27 @@ the requested preferences but do not launch or authenticate Copilot yet:
 npm start -- --source /path/to/capture.jsonl --harness copilot --model MODEL_ID
 ```
 
-Use `--copilot-path PATH` to record an explicit executable preference. If no model
-is requested, the interface displays the harness default as not connected;
+Use `--copilot-path PATH` to select an explicit installed executable. If no model
+is requested, the interface displays the harness default;
 it does not invent an effective model. Other harness names are rejected rather
 than silently substituted.
 
-**A local harness does not mean local model inference.** Once the analysis
-adapter is implemented and qualified, selected conversation messages and relevant
+**A local harness does not mean local model inference.** After acknowledgement,
+selected conversation messages and relevant
 tool results may be sent to Copilot's remote service. They can contain source
 code, private paths or other sensitive material. Provider/account retention,
 data-handling and usage limits still apply.
 
-The interface displays this notice now. The future analysis action must require
-an explicit acknowledgement before transmission; source selection and refresh
-must never send capture content to a model. No model connection occurs in this
-runtime release.
+The analysis action requires an explicit acknowledgement before transmission;
+source selection and refresh never send capture content to a model. Production
+interpretation definitions are still pending, so no analysis action is offered
+until a definition and readable session are available.
 
 The application must not persist source payloads or results in a database,
-browser storage, history, logs or archives. The Copilot adapter must additionally
-prove that its own transcript/debug/telemetry/cache behavior meets that policy,
-with tools and unrelated customizations disabled. If the installed version or
+browser storage, history, logs or archives. The Copilot adapter uses bounded
+in-memory session storage with tools, unrelated customizations and payload
+telemetry disabled. See its [qualification, authentication and limits](copilot-analysis.md).
+If the installed version or
 enforced policy cannot provide those controls, analysis remains unavailable.
 Credentials stay with supported harness authentication; the application must
 not copy auth files or silently fall back to another provider.
@@ -123,8 +125,8 @@ not copy auth files or silently fall back to another provider.
 Provider/cloud decisions are recorded in
 [#7](https://github.com/toddysm/agent-insights/issues/7), with integration tracked
 in [#15](https://github.com/toddysm/agent-insights/issues/15). The initial
-completion/rubric defaults are approved; implementing and qualifying the actual
-adapter is still outstanding.
+completion/rubric defaults are approved. The transport is implemented; the
+individual interpretation definitions remain separate work.
 
 ## Errors and validation
 

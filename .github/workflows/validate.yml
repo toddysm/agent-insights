@@ -6,6 +6,7 @@ name: Application validation
     paths:
       - "src/**"
       - "tests/**"
+      - "scripts/prepare-copilot-qualification.mjs"
       - "package*.json"
       - ".npmrc"
       - "tsconfig.json"
@@ -19,6 +20,7 @@ name: Application validation
     paths:
       - "src/**"
       - "tests/**"
+      - "scripts/prepare-copilot-qualification.mjs"
       - "package*.json"
       - ".npmrc"
       - "tsconfig.json"
@@ -57,6 +59,26 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm test
+      - name: Prepare checksum-pinned Copilot test runtime
+        run: node scripts/prepare-copilot-qualification.mjs
+      - name: Qualify memory-only Copilot sessions with a synthetic local model
+        run: npm run test:copilot
+      - name: Remove the owned qualification runtime
+        if: always()
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import { realpath, rm } from "node:fs/promises";
+          import path from "node:path";
+          const root = process.env.COPILOT_QUALIFICATION_ROOT;
+          if (root) {
+            const parent = await realpath(path.dirname(root));
+            assert.equal(parent, await realpath(process.env.RUNNER_TEMP));
+            assert.ok(path.basename(root).startsWith("agent-insights-qualified-"));
+            await rm(root, { recursive: true, force: true });
+          }
+          NODE
   browser:
     runs-on: ubuntu-latest
     timeout-minutes: 15

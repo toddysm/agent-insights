@@ -1,7 +1,18 @@
-/** Transient, source-linked evidence contracts; no source access, persistence or inference. */
+/**
+ * Validate transient evidence and metrics independently of their source reader
+ * and analysis executor. VS Code Copilot Chat is the first planned source family;
+ * naming a supported format here does not install a parser for it.
+ *
+ * Readers supply normalized records with original source anchors. Analysis can use
+ * those records through a separate provider, without changing their authority or
+ * conflating model judgments with captured facts. This module performs no source
+ * access, persistence or model inference.
+ */
 import { z } from "zod";
 
-const id = z.string().min(1);
+/** Preserve nonempty evidence identifiers verbatim; transport limits must not truncate their contents. */
+export const evidenceIdSchema = z.string().min(1);
+const id = evidenceIdSchema;
 const milliseconds = z
   .number()
   .finite()
