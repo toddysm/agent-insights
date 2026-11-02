@@ -47,7 +47,9 @@ server, with explicit source selection and manual refresh. The
 [evidence contracts](evidence-contracts.md) are implemented. The
 [Copilot transport and analysis runner](copilot-analysis.md) implement consent,
 in-memory execution, validated references, cancellation and separate usage.
-Real-session readers, reports and interpretation definitions remain incomplete.
+The OpenTelemetry execution reader is implemented through
+[#10](https://github.com/toddysm/agent-insights/issues/10); conversation readers,
+reports and interpretation definitions remain incomplete.
 
 | Capability                                                                                                                                                                 | Feature slug            | Tracking issue                                           | PRD doc                                                                   | Docs                                                                                                                                                                              |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -91,5 +93,5 @@ remains the selected testing mode.
 | Gap                                                                      | Evidence and next work                                                                                                                                                                           |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
-| Real-session readers, reports and interpretation definitions are not implemented yet | The transport is available, but the local shell reports missing consumers explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
+| Conversation readers, reports and interpretation definitions remain incomplete | The execution reader and transport are available; missing consumers are reported explicitly. Delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
 | End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |

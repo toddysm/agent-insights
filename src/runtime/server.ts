@@ -5,9 +5,10 @@
  * and delegates source reads and acknowledged analysis to their respective services.
  * It serves only fixed built assets, not arbitrary capture or workspace paths.
  *
- * Normal startup configures the Copilot CLI analysis provider but registers no
- * production readers or interpretation definitions yet. Those are code-owned
- * extension points; the first planned evidence source remains VS Code Copilot Chat.
+ * The executable supplies the VS Code reader registry; trusted embedding/tests
+ * can supply a different set, with no readers registered by this factory itself.
+ * Copilot CLI is the default analysis provider; interpretation definitions are
+ * still separate code-owned extension points, not discovered from captures.
  */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";

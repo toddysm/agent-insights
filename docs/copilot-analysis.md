@@ -16,7 +16,9 @@ artifact and prompt-coaching definitions belong to the subsequent work items.
 The source readers in [#10](https://github.com/toddysm/agent-insights/issues/10)
 and [#11](https://github.com/toddysm/agent-insights/issues/11) are responsible for
 reading its supported execution traces and saved conversation formats in place.
-Those readers have not shipped yet.
+The execution reader now handles the OpenTelemetry extension file export;
+the saved-conversation readers remain pending in #11. See the
+[supported format boundary](evidence-contracts.md#execution-reader-behavior).
 
 The [Copilot provider](../src/analysis/copilot.ts) has a different responsibility:
 it uses the installed **Copilot CLI to execute analysis of normalized evidence**.

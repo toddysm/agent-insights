@@ -4,7 +4,9 @@ The current runtime implements
 [#9](https://github.com/toddysm/agent-insights/issues/9): source configuration,
 availability checks, a controlled read boundary and an in-memory reader registry.
 It also includes the [Copilot analysis transport](copilot-analysis.md).
-It does not yet include real capture readers, report views or interpretation definitions.
+It includes the VS Code OpenTelemetry extension file-export reader from
+[#10](https://github.com/toddysm/agent-insights/issues/10). Conversation readers,
+report views and interpretation definitions are not installed yet.
 The interface states those limitations explicitly. The
 [historical prototype](../design/session-insights/README.md) is separate and
 continues to use fictional data.
@@ -67,11 +69,35 @@ Only regular files are read, using read-only descriptors. A single read is
 limited to 64 MiB; oversized captures produce an explicit error, not silent
 truncation. There are no filesystem watchers.
 
-No production reader is registered yet, so "Read source" is disabled in this
-build. Internal adapters use the existing
-[reader contract](evidence-contracts.md); tests use synthetic adapters, not real
-capture support. Future readers receive a bounded byte stream and cancellation
-signal, not permission to select arbitrary paths.
+### Read an existing execution capture
+
+1. Start with `--source` pointing to an existing VS Code OpenTelemetry file export
+   or its authorized parent directory. Do not copy the capture into this project.
+2. Open the private launch URL and select the configured source. For a directory,
+   enter the relative capture filename.
+3. Select `vscode-otel-jsonl` and choose **Read source**.
+4. Inspect the observed session/record counts, **Read coverage** and expandable
+   **Read limitations**. Reading does not invoke a model.
+
+The reader targets the extension file exporter inspected in VS Code 1.144.0;
+it is not an Agent Debug Log export, OpenTelemetry Protocol wire export, saved
+chat, native Copilot history or arbitrary JSON Lines reader. See the exact
+[format and evidence limits](evidence-contracts.md#execution-reader-behavior).
+No personal live capture has been used for qualification; tests use synthetic
+exporter-shaped fixtures.
+
+Malformed independent records can yield a partial read with valid records
+retained. A trailing unfinished record is reported, not silently discarded.
+After the writer finishes, choose **Read source** again. Unsupported input without
+usable evidence reports unavailable data rather than successful zero totals.
+Records without an unambiguous reported session remain unassigned; paths and
+timestamps are not used to invent one. Existing capture prerequisites remain
+tracked in [#1](https://github.com/toddysm/agent-insights/issues/1).
+
+Production readers are registered by the executable. Trusted embedding/tests may
+explicitly supply their own reader list; the server factory alone defaults to
+none. All adapters receive bounded bytes and cancellation through the
+[reader contract](evidence-contracts.md), not arbitrary filesystem access.
 
 Read views remain in process memory. Refresh, cancellation and process shutdown
 discard the current view. An older operation cannot publish a result after a
@@ -79,9 +105,9 @@ newer read or refresh. Source-change metadata is a best-effort observation, not
 a claim of an atomic filesystem snapshot. This is not a security sandbox against
 a hostile process already running with the same operating-system account.
 
-The view's read-completion timestamp includes adapter parsing and normalization.
-Authenticated status retains the separate input-capture bounds in `readTiming`,
-so processing latency is not mistaken for newer source observation. Source-change
+The view's read bounds describe input capture. Authenticated status retains those
+bounds and the separate processing-finish timestamp in `readTiming`, so parsing
+latency is not mistaken for newer source observation. Source-change
 checks apply to that input-capture interval, not to later adapter computation.
 The read deadline also uses a monotonic elapsed-time check before publication:
 synchronous parsing cannot publish an overdue result merely because it delayed
