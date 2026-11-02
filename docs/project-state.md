@@ -1,16 +1,20 @@
 # Project state
 
-Capability inventory as of 2026-10-30. This records project delivery status,
+Capability inventory as of 2026-11-02. This records project delivery status,
 not session data or analysis results.
 
-The preceding merged baseline is main at `4310baf08c92e2523f08579dd14773f4b8b99cfc`.
-The current plan is lightweight design revision 6 in
+The merged baseline is main at `d767c31665fffb72154fbccb23ecbd2494072c97`.
+The current plan is lightweight design revision 7 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
 The user approved the plan, runtime baseline and unattended review/merge scope
 on 2026-10-30, followed by configurable Copilot-first analysis and disclosed
-remote processing and the initial interpretation defaults. Backend qualification
-remains required before analysis can be offered.
+remote processing and the initial interpretation defaults. The Copilot runner
+and its qualification shipped through [#26](https://github.com/toddysm/agent-insights/pull/26).
+On 2026-11-02 the user approved the reader refinement in
+[#10](https://github.com/toddysm/agent-insights/issues/10) and
+[#11](https://github.com/toddysm/agent-insights/issues/11), including immediate
+implementation after publication. This does not claim that readers have shipped.
 
 Tracking currently uses GitHub issues and native sub-issues/dependencies.
 GitHub Project access is unavailable; no board status is claimed.
@@ -61,8 +65,14 @@ Real-session readers, reports and interpretation definitions remain incomplete.
 No additional production capability is currently scheduled outside this build.
 
 The tracker links 16 new A-P work items plus the existing capture and experience
-items: 18 required native children, with 25 immediate dependency links.
+items: 18 required native children, with 26 immediate dependency links.
 The detailed acceptance criteria and dependency order live in those issues.
+
+The initial execution reader targets the OpenTelemetry extension file export.
+Saved chat v3 and chat mutation logs follow in #11, which depends on #10 for
+shared parsing/integration. Agent Debug Log qualification is a separate deferred
+item, not an alias for the OpenTelemetry format. Mutation replay reconstructs
+current coherent captured state and must disclose historical limitations.
 
 Harness-owned data is the sole evidence authority. The approved initial scope
 reads sources in place and analyzes them transiently in memory. It excludes an
@@ -85,6 +95,7 @@ remains the selected testing mode.
 | Capability                                             | Feature slug            | Tracking issue                                           | Reason                                                                                                                                 |
 | ------------------------------------------------------ | ----------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
 | Manual corrections to inferred session interpretations | vscode-session-analysis | [#5](https://github.com/toddysm/agent-insights/issues/5) | Deferred standalone idea, not a required child or dependency of the initial read-only feature; no future correction design is approved |
+| VS Code Agent Debug Log execution adapter qualification | vscode-session-analysis | [#27](https://github.com/toddysm/agent-insights/issues/27) | Separate format qualification after the initial reader scope; not a required child or dependency of the first delivery |
 
 ## Known gaps & debt
 
