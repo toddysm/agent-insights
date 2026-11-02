@@ -10,6 +10,27 @@ The shipped definition registry is currently empty, so the interface says
 Copilot does not by itself produce a session report. Task/outcome, steering,
 artifact and prompt-coaching definitions belong to the subsequent work items.
 
+## VS Code evidence and the analysis executor are different
+
+**Visual Studio Code Copilot Chat remains the first session source to support.**
+The source readers in [#10](https://github.com/toddysm/agent-insights/issues/10)
+and [#11](https://github.com/toddysm/agent-insights/issues/11) are responsible for
+reading its supported execution traces and saved conversation formats in place.
+Those readers have not shipped yet.
+
+The [Copilot provider](../src/analysis/copilot.ts) has a different responsibility:
+it uses the installed **Copilot CLI to execute analysis of normalized evidence**.
+It does not read Copilot CLI session history, attach to a VS Code chat, or control
+the editor. Adding this executor does not prioritize CLI sessions over VS Code.
+The `--harness` option selects the analysis executor, not the capture format.
+
+The intended first path is therefore: VS Code Copilot Chat captures, followed by
+a supported reader, followed by the in-memory analysis runner using Copilot CLI.
+Using VS Code Chat itself as the model-execution backend would be a separate
+integration; it is not what this provider implements. Likewise, signing in to
+Copilot inside VS Code does not by itself establish the CLI/SDK authentication
+described below.
+
 ## Install and select Copilot
 
 Install GitHub Copilot CLI (command-line interface) separately. This application

@@ -1,4 +1,15 @@
-/** Opt-in authenticated CAPI qualification: intercept every prompt-bearing request locally; never invoke a remote model. */
+/**
+ * Opt-in qualification of the normal authenticated Copilot analysis path.
+ *
+ * COPILOT_AUTH_QUALIFICATION=1 and COPILOT_QUALIFICATION_PATH are required. Existing
+ * account/policy bootstrap can contact GitHub, but the SDK request handler returns
+ * synthetic model responses locally instead of forwarding inference requests.
+ * No private capture is used and no remote model inference is requested.
+ *
+ * The production provider still creates its process and operational directory.
+ * Wrapped termination audits that directory while alive and after stop, before
+ * normal cleanup removes it. Marker/credential contents must never be printed.
+ */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, rm } from "node:fs/promises";
@@ -7,7 +18,14 @@ import test from "node:test";
 import { CopilotClient, CopilotRequestHandler } from "@github/copilot-sdk";
 import { CopilotAnalysisProvider } from "../.build/src/analysis/copilot.js";
 
-/** Return a synthetic response in the native request's format; no request is forwarded here. */
+/**
+ * Construct a local response matching the intercepted completion/Responses wire format.
+ * @param {Record<string, unknown>} input - Parsed SDK request, including model, stream
+ * and either messages or input; this is synthetic qualification traffic only.
+ * @param {string} marker - Canary echoed into the response for subsequent disk auditing.
+ * @returns {Response} JSON or event-stream response with fictional usage, not measured billing.
+ * Unsupported formats throw; this helper performs no network request.
+ */
 function syntheticResponse(input, marker) {
   const content = JSON.stringify({ reply: marker });
   const model = input.model ?? "synthetic";
@@ -129,14 +147,31 @@ function syntheticResponse(input, marker) {
   );
 }
 
-/** Fulfill model requests locally or reject them; this handler never forwards an inference request. */
+/**
+ * SDK model-request hook separating metadata bootstrap from intercepted inference.
+ * Before arming, only empty-body GET/HEAD metadata requests can be forwarded.
+ * After arming, a request must contain the canary and is answered locally.
+ * WebSocket requests are rejected instead of providing an uncontrolled fallback.
+ */
 class InterceptedInference extends CopilotRequestHandler {
   armed = false;
   calls = 0;
+  /**
+   * Bind one qualification case's synthetic marker.
+   * @param {string} marker - Required in every intercepted inference body and echoed response.
+   */
   constructor(marker) {
     super();
     this.marker = marker;
   }
+  /**
+   * Serve or reject an SDK request according to the current qualification phase.
+   * @param {Request} request - SDK-created request; headers/body can contain private account context.
+   * @param {import("@github/copilot-sdk").CopilotRequestContext} context - SDK metadata used only
+   * when forwarding allowed bootstrap requests, never logged or copied to test output.
+   * @returns {Promise<Response>} Bootstrap metadata or a synthetic model response.
+   * Unexpected methods, missing canaries and unsupported formats reject without forwarding inference.
+   */
   async sendRequest(request, context) {
     const text = await request.clone().text();
     if (!this.armed) {
@@ -153,12 +188,21 @@ class InterceptedInference extends CopilotRequestHandler {
     this.calls++;
     return syntheticResponse(JSON.parse(text), this.marker);
   }
+  /**
+   * Reject a transport not enabled by this qualification/configuration.
+   * @returns {Promise<never>} Always rejects; no upstream WebSocket is created.
+   */
   async openWebSocket() {
     throw new Error("WebSocket inference is disabled; nothing forwarded.");
   }
 }
 
-/** Inspect only the owned directory and never print marker or credential values. */
+/**
+ * Inspect an owned operational directory without exposing the values being searched.
+ * @param {string} directory - Temporary root supplied by the provider under test, not a capture location.
+ * @param {string[]} markers - Synthetic content plus the in-memory credential, none of which may appear on disk.
+ * @returns {Promise<void>} Resolves after the audit; rejects on symlinks, marker matches or filesystem errors.
+ */
 async function audit(directory, markers) {
   for (const entry of await readdir(directory, {
     recursive: true,

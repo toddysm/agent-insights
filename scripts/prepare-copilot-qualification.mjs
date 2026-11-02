@@ -1,4 +1,15 @@
-/** CI-only download of a checksum-pinned test runtime; never installs or updates a user's Copilot. */
+/**
+ * Prepare a checksum-pinned Copilot executable only for hosted qualification.
+ *
+ * This top-level program requires CI=true, RUNNER_TEMP and GITHUB_ENV. It selects
+ * the runner platform's fixed release archive, validates its checksum before
+ * extraction, and publishes executable/root paths for subsequent workflow steps.
+ * Success leaves the owned directory for the workflow's cleanup step; preparation
+ * failure removes it before rethrowing.
+ *
+ * Application startup never calls this script. It does not alter the user's CLI
+ * installation, parse captures, authenticate a model account or run an analysis.
+ */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";

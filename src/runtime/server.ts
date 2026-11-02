@@ -1,4 +1,14 @@
-/** Authenticated loopback HTTP boundary with fixed assets and explicit source-read operations. */
+/**
+ * Serve the local interface and authenticated control endpoints on IPv4 loopback.
+ *
+ * This boundary validates launch access/origins, bounds small JSON control bodies
+ * and delegates source reads and acknowledged analysis to their respective services.
+ * It serves only fixed built assets, not arbitrary capture or workspace paths.
+ *
+ * Normal startup configures the Copilot CLI analysis provider but registers no
+ * production readers or interpretation definitions yet. Those are code-owned
+ * extension points; the first planned evidence source remains VS Code Copilot Chat.
+ */
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import {
@@ -21,19 +31,35 @@ import {
 import { AnalysisRunner } from "../analysis/runner.js";
 import { CopilotAnalysisProvider } from "../analysis/copilot.js";
 
-/** Safe diagnostics contain operation codes only, not request bodies, tokens or source data. */
+/**
+ * Payload-free request diagnostic sent to the embedding application's observer.
+ * It intentionally carries neither raw exceptions nor source text, credentials,
+ * launch tokens or request bodies.
+ */
 export interface Diagnostic {
   readonly code: "UNEXPECTED_ERROR";
   readonly operation: "request" | "source-status";
 }
 
-/** A server owned by the caller; the launch secret is in memory and expires at shutdown. */
+/**
+ * Handle owned by the launcher for one listening local runtime.
+ * The launcher must call close() and handle failure; dropping this object does not
+ * confirm that network connections or an analysis process have been stopped.
+ */
 export interface RunningRuntime {
+  /** Canonical listening origin including the actual operating-system-selected port. */
   readonly origin: string;
+  /** Sensitive browser bootstrap URL containing the launch credential in its fragment. */
   readonly launchUrl: string;
+  /** In-memory request credential; do not log, persist or share it. */
   readonly token: string;
+  /** Trusted in-process service handle, not an unauthenticated network access path. */
   readonly service: RuntimeService;
-  /** Cancel owned reads and close this server's connections. */
+  /**
+   * Stop admission/network connections and cancel reads/analysis owned by this runtime.
+   * @returns Resolves after cleanup; rejects on failure while retaining a retry path.
+   * Repeated calls share active shutdown or retry unconfirmed cleanup without deleting source files.
+   */
   close(): Promise<void>;
 }
 
@@ -42,12 +68,22 @@ const page = `<!doctype html>
 <title>Agent Insights</title><link rel="stylesheet" href="/assets/app.css"></head>
 <body><div id="root"></div><script type="module" src="/assets/app.js"></script></body></html>`;
 
-/** Canonicalize loopback origins, including omission of the default HTTP port. */
+/**
+ * Format the origin used by Host/Origin checks.
+ * @param port - Listening port, including 80 whose default suffix URL normalization omits.
+ * @returns Canonical literal-loopback origin; malformed URL/port inputs throw.
+ */
 export function loopbackOrigin(port: number): string {
   return new URL(`http://127.0.0.1:${port}`).origin;
 }
 
-/** Accept only the bound literal loopback host, not URL-like Host values or rebinding names. */
+/**
+ * Compare an incoming Host header with the bound literal-loopback origin.
+ * @param host - Header value; undefined, nonliteral hosts and URL-like syntax are rejected.
+ * @param origin - Canonical origin produced for this server's actual listening port.
+ * @returns Whether normalized host/port matches. Malformed URL syntax returns false;
+ * unexpected parser failures propagate.
+ */
 export function allowedHost(host: string | undefined, origin: string): boolean {
   if (host === undefined || !/^127\.0\.0\.1(?::\d{1,5})?$/.test(host))
     return false;
@@ -59,7 +95,13 @@ export function allowedHost(host: string | undefined, origin: string): boolean {
   }
 }
 
-/** Write an uncached structured response; callers supply only validated data or controlled errors. */
+/**
+ * Serialize one route response after its access/cache/security headers have been applied.
+ * @param response - Open outgoing message that has not already sent headers.
+ * @param status - HTTP status chosen by the route, including 202 for accepted asynchronous work.
+ * @param body - JSON-serializable validated data or a controlled error envelope.
+ * Ends the response; encoding/write failures propagate to the request boundary.
+ */
 function json(response: ServerResponse, status: number, body: unknown): void {
   response.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -67,7 +109,13 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(JSON.stringify(body));
 }
 
-/** Compare a bounded opaque launch secret without leaking which portion matched. */
+/**
+ * Check the launch credential without comparing equal-length values byte by byte in JavaScript.
+ * @param request - Incoming request carrying X-Agent-Insights-Token.
+ * @param token - This runtime's private launch credential, never a GitHub authentication token.
+ * @returns False for absent/nonstring/wrong-length values; equal-length values use timingSafeEqual.
+ * Origin and operation authorization remain separate checks.
+ */
 function authorized(request: IncomingMessage, token: string): boolean {
   const provided = request.headers["x-agent-insights-token"];
   return (
@@ -77,7 +125,13 @@ function authorized(request: IncomingMessage, token: string): boolean {
   );
 }
 
-/** Read a small control message, never a capture upload; malformed/oversized messages fail explicitly. */
+/**
+ * Decode a small application/json control body without treating it as a capture upload.
+ * @param request - Incoming stream; early rejection does not destroy it so the outer handler can drain it.
+ * @returns Parsed unknown JSON for route-specific schema validation.
+ * Rejects with controlled errors for wrong content type, undecodable chunks, invalid
+ * JSON or more than 8,192 bytes; stream failures propagate to the request boundary.
+ */
 async function controlBody(request: IncomingMessage): Promise<unknown> {
   if (
     request.headers["content-type"]?.split(";")[0]?.trim() !==
@@ -121,7 +175,17 @@ async function controlBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-/** Start on IPv4 loopback; Copilot transport is configured but connects only after acknowledged analysis. */
+/**
+ * Create source grants, services and the loopback listener without starting model analysis.
+ * @param config - Validated launch settings: approved source locations, requested port and provider preferences.
+ * @param options - Trusted embedding/test overrides. readers registers source parsers;
+ * analysisOperations registers instruction/validation definitions; both default empty.
+ * analysisProvider defaults to installed Copilot. readTimeoutMs configures the read
+ * budget; onDiagnostic observes payload-free request failures and must not throw.
+ * @returns Owned runtime handle and private launch URL after the server is listening.
+ * Rejects on missing build assets, unexpected grant setup failure or inability to bind.
+ * Missing captures can instead remain explicitly unavailable in source status.
+ */
 export async function startRuntime(
   config: RuntimeConfig,
   options: {
@@ -161,7 +225,11 @@ export async function startRuntime(
   );
   const token = randomBytes(32).toString("base64url");
   let origin = "";
-  /** Emit only fixed diagnostic fields; raw exception messages may contain captured content. */
+  /**
+   * Report only fixed request diagnostic fields through the supplied observer or stderr.
+   * Raw exception text can contain captured content and is intentionally not included.
+   * @param event - Controlled diagnostic code and operation, never an exception/request object.
+   */
   const report =
     options.onDiagnostic ??
     ((event: Diagnostic) => {
@@ -170,7 +238,14 @@ export async function startRuntime(
       );
     });
 
-  /** Handle only fixed routes; never resolve request paths into static or source filesystem paths. */
+  /**
+   * Process one fixed asset/status/control route within this runtime's access boundary.
+   * @param request - Incoming headers/body; user-provided paths never become arbitrary static-file paths.
+   * @param response - Outgoing message receiving no-store/security headers and the route result.
+   * @returns Resolves after responding. Controlled/unknown failures reject to the outer
+   * handler for redaction. Accepted analysis continues asynchronously and is observed
+   * through status, rather than keeping the start request open until inference ends.
+   */
   async function handle(
     request: IncomingMessage,
     response: ServerResponse,
@@ -322,7 +397,10 @@ export async function startRuntime(
           400,
         );
       const controller = new AbortController();
-      /** Normal completion also emits close; cancel only an abandoned request. */
+      /**
+       * Abort this source read only when the response closes before completion.
+       * A normal close event after sending the result must not invalidate that successful read.
+       */
       const disconnect = () => {
         if (!response.writableEnded) controller.abort();
       };
@@ -385,6 +463,11 @@ export async function startRuntime(
     token,
     launchUrl: `${origin}/#access=${token}`,
     service,
+    /**
+     * Reuse network shutdown and await analysis cleanup before resolving.
+     * A rejected attempt clears only the in-flight shutdown promise so retained
+     * provider resources can be retried without reopening the listener.
+     */
     close() {
       if (closing !== null) return closing;
       service.invalidate();

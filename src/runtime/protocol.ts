@@ -1,4 +1,15 @@
-/** Shared browser/server envelopes; settings and status are not a persisted session catalog. */
+/**
+ * Browser/server control and status shapes for the loopback runtime.
+ *
+ * These schemas validate network envelopes, not raw harness capture formats.
+ * Source locations, available readers and analysis-provider status are distinct:
+ * a detected Copilot CLI executor does not imply that a VS Code capture reader
+ * or interpretation definition is installed.
+ *
+ * Status may include the one current in-memory analysis result; it is not a
+ * persistent catalog/history. Membership, consent and lifecycle checks also run
+ * in the source service and analysis runner, beyond these structural schemas.
+ */
 import { z } from "zod";
 import { sourceFormatSchema } from "../evidence/contracts.js";
 import { analysisRunSchema } from "../analysis/contracts.js";
@@ -12,7 +23,12 @@ export const locationSchema = z.strictObject({
   reason: z.string().nullable(),
 });
 
-/** Installation status and the current in-memory run/result; polling never starts model analysis. */
+/**
+ * Authenticated status response: source availability, actual registered readers,
+ * capture timing and analysis-provider/run information. Checking status does not
+ * itself read capture content or start inference. Null timing/run fields denote
+ * absence rather than a fabricated empty session or zero-valued analysis.
+ */
 export const statusSchema = z.strictObject({
   checkedAtMs: z.number(),
   sources: z.array(locationSchema),

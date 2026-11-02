@@ -1,9 +1,18 @@
-/** Local entry point: show a private launch URL and stop only this runtime's resources on signals. */
+/**
+ * Executable entry point for the local web application.
+ * Parses launch preferences, starts the loopback server and prints its private
+ * bootstrap URL. It does not discover captures, parse VS Code chats or start a
+ * model session. Provider/source-reader behavior belongs to the runtime services.
+ */
 import { parseConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
 import { startRuntime } from "./server.js";
 
-/** Launch from explicit startup configuration; no source scanning or model connection occurs. */
+/**
+ * Launch from process arguments, or print usage when help was requested.
+ * @returns Resolves once the listener and signal handlers are installed, not when
+ * the server shuts down. Startup failures reject to the top-level redacted reporter.
+ */
 async function main(): Promise<void> {
   const config = parseConfig(process.argv.slice(2));
   if (config === null) {
@@ -16,7 +25,11 @@ async function main(): Promise<void> {
   process.stdout.write(
     `Agent Insights: ${runtime.launchUrl}\nKeep this launch URL private. Access stays in memory; reopen the full URL after a page reload.\n`,
   );
-  /** Stop only this runtime; repeated signals retry unconfirmed cleanup without exposing private state. */
+  /**
+   * Schedule shutdown of this owned runtime in response to a process signal.
+   * Returns immediately; cleanup is asynchronous. Failures emit only a fixed code
+   * and set exitCode, while a later signal can retry retained cleanup resources.
+   */
   const stop = () => {
     void runtime.close().catch(() => {
       process.stderr.write("[agent-insights] SHUTDOWN_FAILED\n");

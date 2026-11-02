@@ -1,4 +1,12 @@
-/** Exercise production provider ownership/cancellation with injected transport faults and real owned temp directories. */
+/**
+ * Test the production Copilot provider through an injected SDK-compatible transport.
+ *
+ * The provider still creates/removes real test-owned operational directories, but
+ * the transport below only simulates process state and authentication. Native CLI
+ * process-exit/persistence checks live in the separate qualification tests.
+ * Environment-token cases temporarily use synthetic values and restore this test
+ * process's environment; no real credential is printed or sent to a model.
+ */
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
 import { access } from "node:fs/promises";
@@ -21,7 +29,12 @@ import {
 import { exampleReadView } from "./fixtures/read-view.js";
 import { syntheticOperation } from "./fixtures/analysis.js";
 
-/** Deterministic owned-process stand-in; blocked calls remain observable after a failed stop. */
+/**
+ * Controlled SDK stand-in for cancellation and cleanup recovery.
+ * running is simulated state, not a process probe. failStop deliberately leaves
+ * that state and its pending rejection handle intact so retention can be asserted.
+ * No actual CLI, network inference or account lookup occurs here.
+ */
 class ControlledTransport extends EventEmitter implements CopilotTransport {
   running = false;
   failStop = false;
@@ -29,26 +42,33 @@ class ControlledTransport extends EventEmitter implements CopilotTransport {
   modelId: string | undefined = "synthetic";
   private rejectPending: ((error: Error) => void) | null = null;
 
-  /** Select which SDK phase waits for cancellation rather than completing immediately. */
+  /**
+   * Select the point at which a test will observe and cancel outstanding work.
+   * @param waitAt - connection or response blocks that phase; null completes immediately.
+   */
   constructor(readonly waitAt: "connection" | "response" | null) {
     super();
   }
 
-  /** Mark the process alive before exposing a controllably blocked connection. */
+  /**
+   * Mark simulated ownership active and optionally wait at connection setup.
+   * @returns Resolves immediately unless connection is selected; that wait rejects
+   * only when a successful forceStop confirms the simulated termination.
+   */
   async start(): Promise<void> {
     this.running = true;
     if (this.waitAt === "connection") await this.wait();
   }
 
-  /** Report only the qualified protocol; no real executable or account is consulted. */
+  /** Resolve fixed version/protocol metadata so tests reach the intended later lifecycle phase. */
   async getStatus() {
     return { version: QUALIFIED_COPILOT_VERSION, protocolVersion: 3 };
   }
-  /** Supply a synthetic authenticated state without credential material. */
+  /** Resolve a synthetic authenticated state; the injected credential dependency supplies only a fake token. */
   async getAuthStatus() {
     return { isAuthenticated: true };
   }
-  /** Supply a finite model budget so cancellation reaches the intended phase. */
+  /** Resolve one synthetic catalog entry with a finite context budget and no account lookup. */
   async listModels(): Promise<ModelInfo[]> {
     return [
       {
@@ -62,7 +82,12 @@ class ControlledTransport extends EventEmitter implements CopilotTransport {
     ];
   }
 
-  /** Return no usage events so the runtime-reported model fallback is independently exercised. */
+  /**
+   * Check isolation/authentication setup and provide a controllable fake session.
+   * @param config - Must carry managed policy, locked model defaults and the synthetic session token.
+   * @returns A session that reports modelId but emits no usage events, isolating
+   * model-identity fallback from token accounting. Invalid configuration rejects.
+   */
   async createSession(config: SessionConfig): Promise<CopilotSessionPort> {
     assert.equal(config.enableManagedSettings, true);
     assert.equal(config.gitHubToken, "synthetic-session-token");
@@ -82,7 +107,11 @@ class ControlledTransport extends EventEmitter implements CopilotTransport {
     };
   }
 
-  /** Fail without changing ownership, or confirm the stop and reject the outstanding SDK call. */
+  /**
+   * Attempt simulated termination and count each attempt.
+   * @returns Resolves after clearing running/rejecting pending work, or rejects when
+   * failStop is true without changing ownership. This is not a native process kill.
+   */
   async forceStop(): Promise<void> {
     this.stops++;
     if (this.failStop) throw new Error("SYNTHETIC_STOP_FAILURE");
@@ -91,7 +120,10 @@ class ControlledTransport extends EventEmitter implements CopilotTransport {
     this.rejectPending = null;
   }
 
-  /** Expose the wait only after its rejection path is installed, avoiding a cancellation race. */
+  /**
+   * Install the pending rejection path before emitting the test's waiting event.
+   * @returns A promise left pending until successful simulated termination rejects it.
+   */
   private wait(): Promise<void> {
     return new Promise((_resolve, reject) => {
       this.rejectPending = reject;
@@ -138,7 +170,12 @@ test("session credentials use supported environment precedence and reject missin
   }
 });
 
-/** Inject only probing and the SDK boundary; production allocation/cleanup code still runs unchanged. */
+/**
+ * Construct a provider with deterministic executable/auth/SDK dependencies.
+ * @param transport - Test-controlled SDK stand-in whose wait/stop behavior the case can change.
+ * @returns The real provider, allocated directory paths and a client-creation counter.
+ * Production allocation/cleanup still executes; executable lookup and credentials are fake.
+ */
 function controlledProvider(transport: ControlledTransport) {
   const directories: string[] = [];
   let clients = 0;

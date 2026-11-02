@@ -1,4 +1,12 @@
-/** Consent, provenance, lifecycle and memory-only analysis regressions use synthetic evidence/providers. */
+/**
+ * Verify runner contracts, provenance, lifecycle, limits and virtual storage using
+ * synthetic evidence/providers, plus local HTTP integration over test-owned files.
+ * No real model inference or private capture is used.
+ *
+ * Inline provider overrides use AnalysisProvider's input/callback contract; each
+ * named test states its intentional success, failure or cancellation behavior.
+ * The native and authenticated transport qualification programs are separate.
+ */
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -240,7 +248,11 @@ test("the exact serialized input byte limit is accepted and one additional byte 
     },
   };
   const base = exampleReadView();
-  /** Change only message text so every boundary case has identical envelope overhead. */
+  /**
+   * Replace only fixture message text so byte-boundary cases share envelope overhead.
+   * @param text - Synthetic content used to reach the exact combined input-size boundary.
+   * @returns A fresh validated read without mutating the shared baseline fixture.
+   */
   const withText = (text: string) =>
     parseReadView({
       ...base,

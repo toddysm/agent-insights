@@ -19,6 +19,9 @@ The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
 memory-only model execution. Real source readers, report views and interpretation
 definitions are not installed yet; the interface reports those capabilities as
 unavailable rather than showing example data.
+Visual Studio Code Copilot Chat remains the first capture source. Copilot CLI is
+the analysis executor, not the first history source being imported; see the
+[source/executor distinction](docs/copilot-analysis.md#vs-code-evidence-and-the-analysis-executor-are-different).
 See the [capability inventory](docs/project-state.md) for the current plan.
 
 To validate the implementation with Node.js 24:

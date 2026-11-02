@@ -1,4 +1,14 @@
-/** Qualify a selected real Copilot runtime using only a loopback synthetic model and owned test files. */
+/**
+ * Qualify the explicitly selected real CLI with synthetic, unauthenticated inference.
+ *
+ * COPILOT_QUALIFICATION_PATH names the executable. Cases create owned temporary
+ * directories and local model endpoints, exercise the production provider's
+ * cancellation path, and audit payloads before/after process termination.
+ * No real capture or remote model inference is involved.
+ *
+ * These cases deliberately omit authenticated managed-policy bootstrap; that
+ * boundary is exercised by the separate opt-in authenticated qualification.
+ */
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -28,6 +38,7 @@ import {
  * Scan only the owned test directory; symlinks must never redirect the audit into user data.
  * @param {string} directory - Temporary root owned by this qualification case.
  * @param {string} canary - Synthetic prompt/response marker forbidden in disk content.
+ * @returns {Promise<void>} Resolves after inspection; rejects on a marker, symlink or filesystem failure.
  */
 async function auditDisk(directory, canary) {
   const files = await readdir(directory, {
@@ -50,8 +61,11 @@ async function auditDisk(directory, canary) {
 }
 
 /**
- * Loopback qualification has no GitHub identity; authenticated policy bootstrap is checked separately.
+ * Derive the unauthenticated local-model configuration from production isolation settings.
  * @param {import("@github/copilot-sdk").SessionConfig} config - Production settings with a synthetic credential.
+ * @returns {import("@github/copilot-sdk").SessionConfig} Configuration without session credentials
+ * or managed-policy bootstrap; tool/storage controls remain in place. This is not
+ * proof of authenticated policy behavior and must not be used by production startup.
  */
 function syntheticSessionConfig(config) {
   const { gitHubToken, gitHubTokenProvider, ...settings } = config;

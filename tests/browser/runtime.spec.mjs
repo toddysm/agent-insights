@@ -1,4 +1,12 @@
-/** Browser walkthrough of the real loopback shell using owned synthetic source locations. */
+/**
+ * Walk through the real loopback interface using only test-owned synthetic locations.
+ * Playwright's page parameter controls the isolated browser; testInfo supplies
+ * case-specific screenshot destinations, never a capture or application archive.
+ *
+ * Analysis cases inject a fixture reader and mock provider so consent, progress,
+ * cancellation and fresh-page recovery can be tested before production definitions
+ * exist. Runtime/model storage and provider qualification are tested separately.
+ */
 import { test, expect } from "@playwright/test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

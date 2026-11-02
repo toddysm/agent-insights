@@ -1,4 +1,15 @@
-/** Read-only local interface; acknowledged analysis uses the backend, without browser storage or sample data. */
+/**
+ * Mount the local source/analysis interface and send validated controls to its backend.
+ *
+ * Capture selection and analysis execution are separate: VS Code Copilot Chat is
+ * the first planned evidence source; Copilot CLI is the backend's analysis executor.
+ * The browser does not parse captures, connect directly to a remote model or
+ * register analysis definitions. Missing production readers/definitions remain visible.
+ *
+ * Launch access, the displayed read and control state stay in memory. User actions
+ * trigger source reads or acknowledged analysis; status polling only observes work
+ * already accepted by the backend. No local/session storage or sample report data is used.
+ */
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
@@ -14,7 +25,12 @@ import {
 } from "../runtime/protocol.js";
 import "./styles.css";
 
-/** Consume the per-process launch credential without retaining it in browser storage or the visible URL. */
+/**
+ * Read bootstrap access from the initial URL fragment and remove that fragment from history.
+ * @returns The supplied access value, or an empty string when absent.
+ * This performs no authentication request and writes no browser storage; the server
+ * later validates the in-memory value on each authenticated request.
+ */
 function launchAccess(): string {
   const value =
     new URLSearchParams(window.location.hash.slice(1)).get("access") ?? "";
@@ -24,7 +40,16 @@ function launchAccess(): string {
 
 const token = launchAccess();
 
-/** Validate server envelopes and surface controlled errors; never substitute a successful empty result. */
+/**
+ * Send one local control/status request and validate its successful response.
+ * @typeParam T - Result shape produced by the supplied Zod schema.
+ * @param route - Application-owned relative backend route, not a URL from captured evidence.
+ * @param schema - Validator for the expected successful response body.
+ * @param body - Undefined selects GET; any supplied value is JSON-encoded for POST.
+ * @returns Validated data, or rejects with a displayable Error for transport,
+ * decoding, server-reported or schema failures. No successful empty fallback is returned.
+ * The launch credential is attached in memory; raw response bodies are not logged.
+ */
 async function request<T>(
   route: string,
   schema: z.ZodType<T>,
@@ -66,7 +91,13 @@ async function request<T>(
   return parsed.data;
 }
 
-/** Display available capabilities and require session selection plus acknowledgement before analysis. */
+/**
+ * Own the displayed read, selection, acknowledgement and current-run controls.
+ * It never infers metrics or changes captured evidence. Lost start responses are
+ * reconciled through status instead of resubmitting work; terminal data is shown
+ * only for the matching selection, while active cancellation remains reachable.
+ * @returns The local interface; effects and event handlers perform its backend requests.
+ */
 function App(): ReactElement {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
   const [error, setError] = useState("");
@@ -99,7 +130,11 @@ function App(): ReactElement {
     run?.operationId === operationId &&
     run?.id !== startAttempt.current?.previousRunId;
 
-  /** A changed selection cannot inherit acknowledgement or display a prior read's analysis. */
+  /**
+   * Clear browser-only read/acknowledgement state when its selection changes.
+   * This does not call the backend or independently cancel its work; source reads,
+   * refresh and explicit cancellation own those server-side transitions.
+   */
   function clearView(): void {
     startAttempt.current = null;
     setAnalysisNotice("");
@@ -109,7 +144,12 @@ function App(): ReactElement {
     setAcknowledged(false);
   }
 
-  /** Refresh metadata manually and disregard responses from older UI operations. */
+  /**
+   * Load source/provider status, optionally invalidating the backend's current read.
+   * @param refresh - True posts the refresh control; false only reads current status.
+   * @returns Resolves after current-generation state/error updates. Handled request
+   * failures are displayed rather than thrown to UI event callers; stale replies are ignored.
+   */
   async function load(refresh: boolean): Promise<void> {
     const current = ++generation.current;
     setBusy(true);
@@ -155,7 +195,12 @@ function App(): ReactElement {
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     const current = generation.current;
-    /** Poll metadata only; neither progress polling nor refresh initiates model requests. */
+    /**
+     * Poll the existing run or reconcile an ambiguous start within this UI generation.
+     * Retries failed status reads, never analysis submissions. Successful terminal/newer
+     * state cannot be overwritten by an older poll; cleanup stops scheduled polling.
+     * @returns Resolves after a state/error update or scheduling the next status attempt.
+     */
     async function poll(): Promise<void> {
       try {
         const result = await request("/api/status", statusSchema);
@@ -207,7 +252,13 @@ function App(): ReactElement {
     };
   }, [analysisRunning, run?.id, reconciling]);
 
-  /** Submit only the selected read/session and acknowledgement; instructions are application-owned. */
+  /**
+   * Handle an explicit Analyze action using the current selection and acknowledgement.
+   * The request contains identifiers, not arbitrary prompt instructions or capture uploads.
+   * @returns Resolves after the start response or a displayed error, not after inference.
+   * An ambiguous failure locks another start while status reconciliation finds whether
+   * the server accepted it; the original analysis request is never automatically resent.
+   */
   async function analyze(): Promise<void> {
     if (!view) {
       setError("Read a source and select a session before analysis.");
@@ -248,7 +299,12 @@ function App(): ReactElement {
     }
   }
 
-  /** Cancel the named run, not a newer run that may have superseded a stale browser response. */
+  /**
+   * Request cancellation of the displayed run ID, including after reopening the page.
+   * @returns Resolves after backend cleanup/status or a displayed error. A cancellation
+   * outside the local selection receives an action notice, not another selection's
+   * terminal result/usage. Server-side ID checks protect a newer run from a stale request.
+   */
   async function cancelAnalysis(): Promise<void> {
     if (!run) {
       setError("No current analysis is available to cancel.");
@@ -278,7 +334,12 @@ function App(): ReactElement {
     }
   }
 
-  /** Request a supported read; readers are never installed or selected through a silent fallback. */
+  /**
+   * Request the selected source grant, relative path and registered reader format.
+   * @returns Resolves after retaining a current-generation read/status or displaying an
+   * error. This resets analysis acknowledgement and does not invoke a model.
+   * The backend owns parsing; absent readers are not replaced with synthetic evidence.
+   */
   async function read(): Promise<void> {
     const current = ++generation.current;
     setBusy(true);

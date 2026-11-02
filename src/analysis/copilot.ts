@@ -1,4 +1,19 @@
-/** Installed Copilot adapter: explicit stdio transport, isolated memory-only sessions, no tool execution. */
+/**
+ * Execute prepared analysis through an installed GitHub Copilot command-line
+ * interface (CLI), using its software development kit (SDK).
+ *
+ * This is an analysis-provider adapter, not a capture-source reader. The first
+ * planned evidence source is Visual Studio Code Copilot Chat, whose traces and
+ * saved conversations are handled by separate readers. This file neither imports
+ * Copilot CLI history nor attaches to, exports, or controls a VS Code chat.
+ *
+ * Only analyze() starts a session: it validates the installed runtime, authenticates
+ * the reported account, supplies selected evidence over standard input/output and
+ * collects a response. SDK session files stay in a bounded virtual memory store.
+ * A private physical directory holds operational metadata until cleanup succeeds.
+ * Harness capture files are never opened by this adapter; model inference normally occurs
+ * remotely after the runner has obtained the user's acknowledgement.
+ */
 import { constants } from "node:fs";
 import { access, mkdtemp, realpath, rm } from "node:fs/promises";
 import { execFile } from "node:child_process";
@@ -25,49 +40,117 @@ import {
 } from "./contracts.js";
 import { MemorySessionFilesystem } from "./memory-filesystem.js";
 
+/** Exact installed CLI version covered by qualification; newer versions are not silently accepted. */
 export const QUALIFIED_COPILOT_VERSION = "1.0.104";
 const execute = promisify(execFile);
 
-/** Only the SDK session capabilities used by this adapter; enables faithful transport fault tests. */
+/**
+ * Minimal session surface consumed by the provider, implemented by the real SDK
+ * or a controlled lifecycle test double. It exposes no source-discovery or file tools.
+ */
 export interface CopilotSessionPort {
   readonly rpc: {
-    readonly model: { getCurrent(): Promise<{ modelId?: string }> };
+    readonly model: {
+      /**
+       * Read the current selection without starting inference.
+       * @returns Model metadata when known; an omitted ID or Auto routing is not a concrete identity.
+       */
+      getCurrent(): Promise<{ modelId?: string }>;
+    };
   };
+  /**
+   * Subscribe to session events while inference is active.
+   * @param handler - Observer that must not throw or persist raw event payloads.
+   * @returns Unsubscribe function; the provider calls it when response waiting ends.
+   */
   on(handler: (event: SessionEvent) => void): () => void;
+  /**
+   * Send one prepared message and await the SDK's assistant response.
+   * @param input - Prompt text already selected and bounded by the analysis caller.
+   * @param timeout - Response-wait budget in milliseconds, separate from the runner's full-run budget.
+   * @returns Response text wrapper, or undefined if no assistant message is available; failures reject.
+   */
   sendAndWait(
     input: { prompt: string },
     timeout: number,
   ): Promise<{ data: { content: string } } | undefined>;
 }
 
-/** Owned transport operations, deliberately excluding credentials and unrelated SDK capabilities. */
+/**
+ * SDK transport owned by one analysis. Inherited methods start the process,
+ * inspect runtime/auth/model metadata and stop it. forceStop() must reject when
+ * termination is unconfirmed so the owning provider can retain and retry it.
+ * This narrower surface also permits fault tests without invoking a real model.
+ */
 export interface CopilotTransport extends Pick<
   CopilotClient,
   "start" | "getStatus" | "getAuthStatus" | "listModels" | "forceStop"
 > {
+  /**
+   * Create a fresh session; never resume an unrelated conversation.
+   * @param config - Isolation settings, trusted system instructions and session-scoped authentication.
+   * @returns Session port after bootstrap; invalid settings/authentication reject.
+   */
   createSession(config: SessionConfig): Promise<CopilotSessionPort>;
 }
 
-/** Internal injectable boundaries for executable probing and transport lifecycle tests, not browser configuration. */
+/**
+ * Trusted constructor-supplied dependencies for platform access and lifecycle tests.
+ * Browser input and captured instructions cannot replace these functions. Overrides
+ * must preserve cancellation, ownership and credential-redaction obligations.
+ */
 export interface CopilotDependencies {
+  /**
+   * @param configured - Explicit executable preference, or null to search the native PATH.
+   * @returns Canonical candidate path or null when unavailable; unexpected lookup failures reject.
+   */
   locate(configured: string | null): Promise<string | null>;
+  /**
+   * @param executable - Located candidate to probe without starting a chat.
+   * @returns Parsed version or null for an unrecognized banner; execution failures reject.
+   */
   version(executable: string): Promise<string | null>;
+  /**
+   * @param options - Process, environment, authentication and virtual-filesystem configuration.
+   * @returns An unstarted SDK-compatible client whose resources will belong to the provider.
+   */
   client(options: CopilotClientOptions): CopilotTransport;
+  /**
+   * @param auth - Authenticated account metadata reported by this client, not browser-supplied identity.
+   * @param signal - Cancels credential retrieval before a model request is sent.
+   * @returns Session credential held only in memory; unavailable/unsupported authentication rejects.
+   */
   credentials(
     auth: GetAuthStatusResponse,
     signal: AbortSignal,
   ): Promise<string>;
 }
 
-/** Keep all cleanup resources reachable until process termination and metadata removal both succeed. */
+/**
+ * Retained ownership record for one SDK process and its storage.
+ * A cleanup failure must not discard this record: the process may still be alive,
+ * or termination may have succeeded while operational-directory removal failed.
+ */
 interface OwnedCopilot {
+  /** Client used again by shutdown if its first forceStop attempt fails. */
   readonly client: CopilotTransport;
+  /** Session storage; disposed only after the transport confirms termination. */
   readonly memory: MemorySessionFilesystem;
+  /** Physical, test/application-owned operational directory, not a capture-payload staging area. */
   readonly directory: string;
+  /** True after confirmed transport stop; directory removal can still need a retry. */
   stopped: boolean;
 }
 
-/** Observe transport settlement even after abort, without allowing an unresponsive RPC to delay cancellation. */
+/**
+ * Await an SDK operation without waiting indefinitely for it after cancellation.
+ * @param operation - Lazy asynchronous call; it is not invoked if the signal is already aborted.
+ * @param signal - Run-owned cancellation signal whose reason rejects this wait.
+ * @returns The operation's value or rejection, unless cancellation wins first.
+ *
+ * This helper observes late settlement to avoid unhandled rejections, but does not
+ * itself terminate a process. The provider's abort handler owns transport cleanup.
+ */
 async function waitForCopilot<T>(
   operation: () => Promise<T>,
   signal: AbortSignal,
@@ -75,6 +158,7 @@ async function waitForCopilot<T>(
   signal.throwIfAborted();
   const pending = operation();
   return new Promise<T>((resolve, reject) => {
+    /** Reject only this wait; the provider independently owns process termination. */
     const abort = () => reject(signal.reason);
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
@@ -91,7 +175,15 @@ async function waitForCopilot<T>(
   });
 }
 
-/** Preserve platform/auth/proxy requirements, not ambient tracing, debug, plugin or tool settings. */
+/**
+ * Build SDK client options without creating directories, spawning a process or connecting.
+ * @param executable - Resolved installed CLI path; discovery/version validation belongs to the caller.
+ * @param directory - Private physical root owned by this run for operational metadata and temporary files.
+ * @param authenticate - Defaults to true for supported existing-user authentication; false excludes
+ * credential environment variables and login reuse in synthetic qualification.
+ * @returns Explicit standard-input/output transport, virtual session paths, quiet logging and a
+ * restricted environment retaining platform/auth/proxy needs rather than ambient customization.
+ */
 export function copilotClientOptions(
   executable: string,
   directory: string,
@@ -157,7 +249,16 @@ export function copilotClientOptions(
   };
 }
 
-/** Defense-in-depth settings supplement empty mode; only trusted analysis instructions are supplied. */
+/**
+ * Build a fresh tool-free session configuration; this does not send the evidence prompt.
+ * @param memory - This run's virtual filesystem; it must remain owned until the client is stopped.
+ * @param input - Uses system as trusted instructions here; prompt is sent separately by analyze().
+ * @param model - Requested model ID, or null to let the harness resolve its default.
+ * @param gitHubToken - Session-scoped credential from the reported account, held only in memory.
+ * @returns Sensitive SDK configuration with managed policy enabled and optional CLI features disabled.
+ * Do not log or persist the returned object because it contains the session credential.
+ * @throws RuntimeError when the credential is empty or contains whitespace/NUL.
+ */
 export function copilotSessionOptions(
   memory: MemorySessionFilesystem,
   input: ProviderInput,
@@ -202,7 +303,15 @@ export function copilotSessionOptions(
   };
 }
 
-/** Conservative byte-based admission is not measured token usage; the runtime still enforces its limit. */
+/**
+ * Reject input that exceeds a model's conservative admission budget without truncating it.
+ * @param input - Trusted instructions and selected evidence; lengths are measured as UTF-8 bytes.
+ * @param model - Catalog entry supplying prompt, context-window and optional output-token limits.
+ * @throws RuntimeError when the derived budget is unusable or input plus overhead exceeds it.
+ *
+ * The guard reserves overhead/output space; it is not a tokenizer or measured usage
+ * and does not guarantee provider acceptance. The runtime still enforces actual context limits.
+ */
 export function checkModelContext(
   input: ProviderInput,
   model: ModelInfo,
@@ -223,7 +332,14 @@ export function checkModelContext(
     );
 }
 
-/** An unresolved harness default is admitted against every available model, never silently selected here. */
+/**
+ * Check context admission without inventing or changing the harness's model selection.
+ * @param input - Prepared strings to check against applicable catalog budgets.
+ * @param models - Current account catalog; disabled models are excluded for an unresolved default.
+ * @param currentId - Concrete requested/reported model, or undefined/auto while routing is unresolved.
+ * @throws RuntimeError for an unknown concrete model, no usable candidates or an exceeded budget.
+ * Auto is a routing entry, not a concrete model with its own positive context limit.
+ */
 export function checkAvailableContext(
   input: ProviderInput,
   models: readonly ModelInfo[],
@@ -253,7 +369,13 @@ export function checkAvailableContext(
   for (const model of candidates) checkModelContext(input, model);
 }
 
-/** Resolve explicit paths or native PATH executables without invoking a shell or bundled fallback. */
+/**
+ * Locate an installed CLI candidate through read-only path/access checks.
+ * @param configured - Explicit path resolved from the process working directory, or null for PATH search.
+ * @returns First accessible canonical path, or null after missing/inaccessible candidates are exhausted.
+ * Unexpected filesystem errors reject. This does not prove that the candidate is a
+ * compatible executable; installedVersion performs that separate process probe.
+ */
 async function installedExecutable(
   configured: string | null,
 ): Promise<string | null> {
@@ -289,7 +411,12 @@ async function installedExecutable(
   return null;
 }
 
-/** Read a bounded version banner without starting a session or permitting auto-update. */
+/**
+ * Run the candidate's version command, not its chat/session mode.
+ * @param executable - Located path passed directly to execFile, never a shell command string.
+ * @returns Parsed numeric version or null for an unrecognized banner. Spawn failures,
+ * a five-second timeout or output exceeding the 4 KiB buffer reject the promise.
+ */
 async function installedVersion(executable: string): Promise<string | null> {
   const { stdout } = await execute(
     executable,
@@ -303,7 +430,19 @@ async function installedVersion(executable: string): Promise<string | null> {
   return /GitHub Copilot CLI (\d+\.\d+\.\d+)\./.exec(stdout)?.[1] ?? null;
 }
 
-/** Acquire the same reported account through supported authentication, retaining tokens only in memory. */
+/**
+ * Obtain session authentication through the reported existing account's supported flow.
+ * @param auth - Client-reported authenticated identity. Only environment-token and GitHub CLI modes
+ * are handled; reported host/user constrain GitHub CLI retrieval when present.
+ * @param signal - Cancels before retrieval or aborts the bounded GitHub CLI subprocess.
+ * @returns A nonempty credential string for SDK authentication only, never model prompt text.
+ * Rejects with controlled authentication errors for unsupported, invalid or unavailable
+ * credentials; cancellation propagates so the runner can report it as cancellation.
+ *
+ * The application does not copy authentication files, log the token or write it to
+ * payload files. GitHub CLI may refresh its own login as part of its supported token
+ * command. Callers must keep the returned value and SDK session configuration private.
+ */
 export async function managedSessionToken(
   auth: GetAuthStatusResponse,
   signal: AbortSignal,
@@ -365,7 +504,15 @@ export async function managedSessionToken(
   return token;
 }
 
-/** Each analysis owns a fresh process and virtual filesystem; metadata probes never send source content. */
+/**
+ * Copilot CLI-backed executor for source-independent, already-normalized evidence.
+ * It is not a VS Code extension integration and does not parse either VS Code or CLI history.
+ *
+ * Availability probes are cached, but each analysis rechecks the installed runtime.
+ * Every run owns a fresh client, virtual session store and physical operational
+ * directory. Cleanup releases ownership only after process stop and directory removal
+ * both succeed; failed cleanup makes the provider unavailable until close() succeeds.
+ */
 export class CopilotAnalysisProvider implements AnalysisProvider {
   private metadata: ReturnType<AnalysisProvider["status"]> | null = null;
   private readonly dependencies: CopilotDependencies;
@@ -373,7 +520,12 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
   private cleaning: Promise<void> | null = null;
   private cleanupFailed = false;
 
-  /** Retain startup preferences without connecting to Copilot or handling credential material. */
+  /**
+   * Retain stable startup preferences and trusted platform/test dependencies.
+   * @param config - Executable preference and requested model; the caller must not mutate it mid-run.
+   * @param dependencies - Optional internal overrides for probing, SDK construction or credentials.
+   * Construction alone does not authenticate, start the CLI or read session sources.
+   */
   constructor(
     private readonly config: Pick<RuntimeConfig, "copilotPath" | "model">,
     dependencies: Partial<CopilotDependencies> = {},
@@ -387,7 +539,12 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
     };
   }
 
-  /** Cache startup installation metadata; actual analysis independently rechecks the executable. */
+  /**
+   * Report cleanup blocking or the cached installation probe without creating an analysis.
+   * @returns Availability/version/reason. Missing, incompatible or failed version probes
+   * resolve as unavailable; unexpected path-resolution errors may reject.
+   * Installing/changing the CLI requires restart to refresh this cached display state.
+   */
   status(): ReturnType<AnalysisProvider["status"]> {
     if (this.cleanupFailed)
       return Promise.resolve({
@@ -399,12 +556,21 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
     return (this.metadata ??= this.inspect());
   }
 
-  /** Retry retained cleanup during shutdown; failure never drops the owned client or its memory store. */
+  /**
+   * Retry any process/storage cleanup retained by a completed or cancelled analysis.
+   * @returns Resolves when no owned resources remain; rejects while ownership must be retained.
+   * It does not authenticate, send a prompt or create a replacement client.
+   */
   close(): Promise<void> {
     return this.cleanupOwned();
   }
 
-  /** Serialize stop/removal attempts and retain ownership, including after partial cleanup. */
+  /**
+   * Serialize cleanup attempts against the retained ownership record.
+   * @returns The shared in-flight cleanup promise, or a resolved promise when nothing is owned.
+   * Stop is confirmed before memory disposal and directory removal. Failure rejects
+   * with COPILOT_CLEANUP_FAILED and retains enough state for a later close() retry.
+   */
   private cleanupOwned(): Promise<void> {
     if (this.cleaning) return this.cleaning;
     const owned = this.owned;
@@ -434,7 +600,12 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
     return this.cleaning;
   }
 
-  /** Require the qualified version; detecting a newer executable is not permission to upgrade support. */
+  /**
+   * Re-run location/version checks without consulting the cached status result.
+   * @returns Explicit compatibility metadata; an unqualified newer version stays unavailable.
+   * Version-command failures are redacted to an unavailable reason. Unexpected
+   * filesystem lookup failures reject rather than selecting a different provider.
+   */
   private async inspect() {
     const executable = await this.dependencies.locate(this.config.copilotPath);
     if (!executable)
@@ -464,7 +635,21 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
     }
   }
 
-  /** Connect only after consent; always stop the owned process before removing operational metadata. */
+  /**
+   * Execute one acknowledged analysis through the installed CLI, not through a VS Code chat.
+   * @param input - Selected normalized evidence and trusted instructions already bounded/authorized
+   * by the runner. This method is not a source reader or a substitute for the consent boundary.
+   * @param callbacks - Owned cancellation signal and nonthrowing progress/usage observers.
+   * @returns Raw bounded assistant text after confirmed cleanup. The runner, not this
+   * adapter, validates the common envelope, operation data and evidence citations.
+   *
+   * Execution creates an operational directory and SDK process, obtains session
+   * credentials, enforces runtime/model/policy checks and sends the prompt remotely.
+   * Reported analysis usage never modifies usage in the captured source session.
+   * Unavailable runtime/auth/model/context, missing/oversized output and SDK failures
+   * reject; cleanup failure can override an otherwise successful/cancelled result and
+   * retains ownership. Call close() to retry that cleanup, not analyze() to bypass it.
+   */
   async analyze(
     input: ProviderInput,
     callbacks: ProviderCallbacks,
@@ -503,7 +688,10 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
     this.owned = { client, memory, directory, stopped: false };
     let stopFailure: unknown;
     let abortedStop: Promise<void> | null = null;
-    /** Abort the owned transport immediately; retain cleanup errors for the awaited finalizer. */
+    /**
+     * Start owned cleanup when the run signal aborts. Errors are retained for the
+     * awaited finalizer; firing this callback alone is not confirmation of process exit.
+     */
     const abort = () => {
       abortedStop = this.cleanupOwned().catch((error: unknown) => {
         stopFailure = error;
@@ -603,7 +791,13 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
         if (event.type !== "assistant.usage" || seen.has(event.id)) return;
         seen.add(event.id);
         const reported = event.data;
-        /** Missing components poison the total instead of becoming measured zero. */
+        /**
+         * Accumulate one reported token component without converting absence into zero.
+         * @param previous - Aggregate from earlier events; null may mean unknown coverage.
+         * @param value - This event's reported count, or undefined when absent.
+         * @returns A safe nonnegative sum, or null after any missing/invalid component.
+         * seenUsage distinguishes an initially empty aggregate from an already-unknown total.
+         */
         const total = (
           previous: number | null,
           value: number | undefined,

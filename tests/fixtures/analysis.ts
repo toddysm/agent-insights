@@ -1,4 +1,11 @@
-/** Synthetic analysis definitions and readers for tests only; never registered in the shipped runtime. */
+/**
+ * Shared test doubles for exercising the analysis path before real VS Code readers
+ * and interpretation definitions are registered.
+ *
+ * All content and usage are fictional. The declared VS Code trace format only
+ * exercises registration/routing; syntheticReader does not parse those bytes.
+ * Production startup imports none of these definitions into its registries.
+ */
 import { z } from "zod";
 import {
   parseReadView,
@@ -11,7 +18,10 @@ import type {
 } from "../../src/analysis/contracts.js";
 import { exampleReadView } from "./read-view.js";
 
-/** Fixed synthetic output contract, deliberately unrelated to task counts or prompt ratings. */
+/**
+ * Test-only instruction/validation pair returning a fixed answer object.
+ * It tests transport/result handling, not task completion, steering or prompt ratings.
+ */
 export const syntheticOperation: AnalysisOperation = {
   id: "synthetic",
   label: "Synthetic analysis",
@@ -20,7 +30,12 @@ export const syntheticOperation: AnalysisOperation = {
   resultSchema: z.strictObject({ answer: z.string() }),
 };
 
-/** Echo only validated selection identifiers, preserving the common result envelope. */
+/**
+ * Build a deterministic fake model response for a runner-prepared input.
+ * @param input - Its JSON prompt must contain readId, sessionId and operationId.
+ * @returns JSON text echoing those identifiers and citing the known fixture message.
+ * Invalid fixture JSON/identifiers throw; no provider or source filesystem is used.
+ */
 export function syntheticResponse(input: ProviderInput): string {
   const selection = z
     .object({
@@ -36,13 +51,24 @@ export function syntheticResponse(input: ProviderInput): string {
   });
 }
 
-/** Deterministic mock transport with explicit analysis-only usage, not a real Copilot connection. */
+/**
+ * Immediate in-memory provider for control/result tests.
+ * Reported token counts and model identity are synthetic values, not measurements
+ * of either a real provider call or the captured subject session.
+ */
 export const syntheticProvider: AnalysisProvider = {
-  /** No external resources are owned by the synthetic transport. */
+  /** Resolve immediately: this fake owns no process, connection or filesystem resource. */
   async close() {},
+  /** Resolve as available for test UI routing, not as proof that Copilot is installed. */
   async status() {
     return { available: true, version: "synthetic", reason: "Test provider." };
   },
+  /**
+   * Return a fixture response while exercising the runner's notification path.
+   * @param input - Runner-prepared JSON selection to echo in the result.
+   * @param callbacks - Receives fixed progress/usage; this immediate fake has no external work to cancel.
+   * @returns Synthetic response text, or rejects if fixture construction fails.
+   */
   async analyze(input, callbacks) {
     callbacks.progress("running");
     callbacks.usage({ input: 7, output: 3, model: "synthetic" });
@@ -50,9 +76,18 @@ export const syntheticProvider: AnalysisProvider = {
   },
 };
 
-/** Bind a fictional fixture to the granted source/read identity; this does not parse capture bytes. */
+/**
+ * Registration-only fake reader for the VS Code trace format.
+ * It binds fictional normalized events to a source grant/read identity without
+ * consuming input.bytes. It must never be advertised as real capture support.
+ */
 export const syntheticReader: EvidenceReader = {
   format: "vscode-otel-jsonl",
+  /**
+   * Construct a fresh immutable fixture for this read generation.
+   * @param input - Supplies readId and sourceId for all fixture references; capture bytes are unused.
+   * @returns Structurally validated fictional evidence; invalid fixture identity rejects.
+   */
   async read(input) {
     const view = exampleReadView();
     return parseReadView({

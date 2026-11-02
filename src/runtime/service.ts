@@ -1,4 +1,14 @@
-/** One transient read generation and a fixed registry of trusted, application-owned readers. */
+/**
+ * Coordinate authorized source reads and retain one normalized generation in memory.
+ *
+ * SourceAccess owns native file access; registered EvidenceReader implementations
+ * own format parsing. VS Code Copilot Chat is the first planned reader family.
+ * The optional analysis runner consumes normalized evidence independently of that
+ * source format; using Copilot CLI to execute analysis does not change the source.
+ *
+ * No readers are discovered dynamically, and no read/result history is persisted.
+ * Refresh or a new read invalidates prior analysis as well as the current view.
+ */
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
@@ -15,7 +25,13 @@ import type { ReadRequest, ReadTiming, RuntimeStatus } from "./protocol.js";
 import { SourceAccess } from "./sources.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
 
-/** Await a cooperative adapter without allowing ignored cancellation to retain the current generation. */
+/**
+ * Stop waiting for an adapter when the owned signal aborts.
+ * @param operation - Already-started adapter work whose eventual rejection remains observed.
+ * @param signal - Read-owned cancellation/deadline signal; public cancellation errors are normalized.
+ * @returns The adapter result, or a rejection if it fails or cancellation wins.
+ * This does not preempt synchronous JavaScript or terminate the adapter itself.
+ */
 async function abortable<T>(
   operation: Promise<T>,
   signal: AbortSignal,
@@ -33,7 +49,13 @@ async function abortable<T>(
   }
 }
 
-/** Yield bounded captured bytes only while this read remains authorized and active. */
+/**
+ * Expose the bounded capture to an internal reader in at most 64 KiB views.
+ * @param bytes - Captured source buffer owned by this read, not a live file handle.
+ * @param signal - Checked before each yield to stop delivery after cancellation.
+ * @returns An asynchronous sequence of subarray views; readers must not mutate them.
+ * Iteration rejects with a controlled cancellation error when the signal aborts.
+ */
 async function* byteChunks(
   bytes: Uint8Array,
   signal: AbortSignal,
@@ -44,7 +66,12 @@ async function* byteChunks(
   }
 }
 
-/** Holds at most the current normalized view; refresh/cancellation discards it without saving history. */
+/**
+ * Own one current read, its exact selection and separate input/processing timestamps.
+ * Completed data is immutable in memory; invalidation drops it rather than saving
+ * history. Readers cannot relabel another source or publish after losing their generation.
+ * Analysis lifetime is delegated to the optional AnalysisRunner, not to a source parser.
+ */
 export class RuntimeService {
   private readonly readers = new Map<SourceFormat, EvidenceReader>();
   private current: ReadView | null = null;
@@ -52,7 +79,15 @@ export class RuntimeService {
   private currentTiming: ReadTiming | null = null;
   private active: { id: string; controller: AbortController } | null = null;
 
-  /** Register only explicitly supplied internal adapters; this is not a dynamic plugin loader. */
+  /**
+   * Register trusted readers against pre-approved source grants without reading content.
+   * @param sources - SourceAccess instance owning startup-approved file/directory locations.
+   * @param config - Stable launch/model preferences returned in status, not captured session evidence.
+   * @param readers - Application-owned format adapters; defaults to none and rejects ambiguous registrations.
+   * @param timeoutMs - Positive safe-integer read budget in milliseconds; defaults to 30,000.
+   * @param analysis - Runner to invalidate alongside source changes, or null when not configured.
+   * @throws Error for invalid timeout or reader registration.
+   */
   constructor(
     private readonly sources: SourceAccess,
     private readonly config: RuntimeConfig,
@@ -66,7 +101,13 @@ export class RuntimeService {
       this.readers.set(reader.format, selectReader(readers, reader.format));
   }
 
-  /** Report source access and actual adapter availability without connecting to a model. */
+  /**
+   * Recheck source availability and return the current read/analysis status.
+   * @returns Source metadata, registered formats, current capture bounds and the
+   * current analysis snapshot. Filesystem/provider inspection errors may reject.
+   * This does not parse source content or start analysis; provider status can probe
+   * an installed executable's version without creating an analysis session.
+   */
   async status(): Promise<RuntimeStatus> {
     const sources = await this.sources.list();
     const availability =
@@ -95,22 +136,36 @@ export class RuntimeService {
     };
   }
 
-  /** Return the current in-memory generation, not a rehydrated or persisted result. */
+  /**
+   * Borrow the immutable current read, or null before a successful read/after invalidation.
+   * No disk lookup or restoration of an older view occurs.
+   */
   get view(): ReadView | null {
     return this.current;
   }
 
-  /** Retain the exact file selection for the current generation, never a mutable UI selection. */
+  /**
+   * Return the frozen selection that produced the current generation, or null.
+   * It is not a live reference to whichever fields the browser currently displays.
+   */
   get selection(): Readonly<ReadRequest> | null {
     return this.currentSelection;
   }
 
-  /** Return capture bounds for this generation, distinct from parsing/normalization completion. */
+  /**
+   * Return this generation's actual input-capture interval and processing completion.
+   * Null means no current read. Analysis must match readId before using these bounds
+   * and must not reinterpret processing completion as the time evidence was observed.
+   */
   get readTiming(): ReadTiming | null {
     return this.currentTiming;
   }
 
-  /** Abort this runtime's active operation and discard its view; never touch source files. */
+  /**
+   * Request cancellation and immediately clear the visible view, selection and timing.
+   * Also invalidates analysis but does not await provider shutdown; the server/runner
+   * owns that asynchronous cleanup. No logical source data is modified.
+   */
   invalidate(): void {
     this.analysis?.invalidate();
     this.active?.controller.abort();
@@ -120,7 +175,17 @@ export class RuntimeService {
     this.currentTiming = null;
   }
 
-  /** Run a registered reader on approved bytes; reject stale, invalid or mis-scoped adapter results. */
+  /**
+   * Capture an authorized source and normalize it through its registered adapter.
+   * @param selection - Startup grant ID, relative path and installed format; a frozen
+   * copy prevents caller mutation from relabeling in-flight work.
+   * @param externalSignal - Caller/disconnect cancellation; its raw reason is never exposed publicly.
+   * @returns The immutable current ReadView after source, generation and schema checks.
+   * Input observation bounds are retained separately from parsing completion.
+   * @throws Rejects with controlled RuntimeError values for unavailable readers,
+   * source-access failures, timeout/cancellation, invalid output, stale work or clock changes.
+   * Starting a supported read invalidates the prior read and analysis first.
+   */
   async read(
     selection: ReadRequest,
     externalSignal: AbortSignal,

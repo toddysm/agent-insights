@@ -1,4 +1,12 @@
-/** Browser regressions for ambiguous starts and selection-scoped terminal states, using synthetic data only. */
+/**
+ * Browser regressions for accepted starts with lost responses and selection-scoped
+ * terminal data. Playwright supplies the isolated page used by each test callback.
+ *
+ * Each case owns its temporary capture placeholders and local runtime, injecting
+ * synthetic readers/operations/providers rather than invoking Copilot. Route
+ * interception introduces transport failures; finally blocks stop the runtime
+ * and remove only the case's files. Nothing here runs during normal application startup.
+ */
 import { test, expect } from "@playwright/test";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
