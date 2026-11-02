@@ -1,6 +1,7 @@
 /**
- * Browser regressions for accepted starts with lost responses and selection-scoped
- * terminal data. Playwright supplies the isolated page used by each test callback.
+ * Browser regressions for accepted starts with lost responses, selection-scoped
+ * terminal data and untruncated citation layout. Playwright supplies the isolated
+ * page used by each test callback; testInfo supplies case-scoped screenshot paths.
  *
  * Each case owns its temporary capture placeholders and local runtime, injecting
  * synthetic readers/operations/providers rather than invoking Copilot. Route
@@ -13,6 +14,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { RuntimeError } from "../../.build/src/runtime/errors.js";
+import { parseReadView } from "../../.build/src/evidence/contracts.js";
 import {
   syntheticOperation,
   syntheticProvider,
@@ -172,6 +174,112 @@ test("failed analysis errors and usage do not follow a different operation or so
       .selectOption({ label: files[1] });
     await expect(page.getByText("Synthetic terminal failure.")).toHaveCount(0);
     await expect(page.getByText(/Analysis input tokens:/)).toHaveCount(0);
+  } finally {
+    await runtime.close();
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("long evidence citations remain intact without horizontal overflow", async ({
+  page,
+}, testInfo) => {
+  const directory = await mkdtemp(
+    path.join(tmpdir(), "agent-insights-citation-layout-"),
+  );
+  const file = path.join(directory, "synthetic.jsonl");
+  await writeFile(file, "SYNTHETIC");
+  const eventIds = ["event-" + "x".repeat(320), "event-" + "y".repeat(512)];
+  const runtime = await startRuntime(
+    {
+      sources: [file],
+      port: 0,
+      harness: "copilot",
+      model: null,
+      copilotPath: null,
+    },
+    {
+      readers: [
+        {
+          ...syntheticReader,
+          /**
+           * Retain valid fixture provenance while replacing normalized IDs with long values.
+           * @param {import("../../src/evidence/contracts.js").ReaderInput} input - Granted source/read identity.
+           * @returns {Promise<import("../../src/evidence/contracts.js").ReadView>} Fictional evidence; no capture-format parsing occurs.
+           */
+          async read(input) {
+            const view = await syntheticReader.read(input);
+            expect(view.events).toHaveLength(eventIds.length);
+            return parseReadView({
+              ...view,
+              events: view.events.map((event, index) => ({
+                ...event,
+                id: eventIds[index],
+              })),
+            });
+          },
+        },
+      ],
+      analysisOperations: [syntheticOperation],
+      analysisProvider: {
+        ...syntheticProvider,
+        /**
+         * Cite both long identifiers through the normal response-validation path.
+         * @param {import("../../src/analysis/contracts.js").ProviderInput} input - Runner-prepared synthetic evidence.
+         * @param {import("../../src/analysis/contracts.js").ProviderCallbacks} callbacks - Receive synthetic progress/usage.
+         * @returns {Promise<string>} Valid synthetic result; no Copilot or remote model is invoked.
+         */
+        async analyze(input, callbacks) {
+          const response = JSON.parse(
+            await syntheticProvider.analyze(input, callbacks),
+          );
+          return JSON.stringify({ ...response, eventIds });
+        },
+      },
+    },
+  );
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByRole("button", { name: "Read source" }).click();
+    await page.getByLabel("Session to analyze").selectOption("session-fixture");
+    await page
+      .getByRole("combobox", { name: "Analysis", exact: true })
+      .selectOption("synthetic");
+    await page.getByRole("checkbox").check();
+    await page.getByRole("button", { name: "Analyze", exact: true }).click();
+    await expect(page.getByText("Analysis succeeded: finished.")).toBeVisible();
+    const citations = page
+      .locator(".analysis-result p")
+      .filter({ hasText: "Evidence records:" });
+    await expect(citations).toHaveText(
+      `Evidence records: ${eventIds.join(", ")}`,
+    );
+    for (const width of [390, 320, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      await expect
+        .poll(() =>
+          page.evaluate(
+            () =>
+              document.documentElement.scrollWidth <=
+              document.documentElement.clientWidth,
+          ),
+        )
+        .toBe(true);
+      await expect
+        .poll(() =>
+          citations.evaluate(
+            (element) => element.scrollWidth <= element.clientWidth,
+          ),
+        )
+        .toBe(true);
+      await expect(citations).toHaveText(
+        `Evidence records: ${eventIds.join(", ")}`,
+      );
+      if (width === 390)
+        await page.screenshot({
+          path: testInfo.outputPath("long-citations-mobile.png"),
+          fullPage: true,
+        });
+    }
   } finally {
     await runtime.close();
     await rm(directory, { recursive: true, force: true });

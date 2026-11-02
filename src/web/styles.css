@@ -276,6 +276,10 @@ dd {
   flex: none;
   margin-top: 4px;
 }
+/* Wrap original identifiers visually without shortening or changing their values. */
+.analysis-result {
+  overflow-wrap: anywhere;
+}
 .analysis-result pre {
   max-height: 24rem;
   overflow: auto;
