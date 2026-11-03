@@ -582,24 +582,31 @@ async function read(input: ReaderInput): Promise<ReadView> {
       );
       continue;
     }
+    if (
+      Array.isArray(raw.scopeMetrics) ||
+      (typeof raw.severityNumber === "number" &&
+        "body" in raw &&
+        ("hrTime" in raw || "timestamp" in raw))
+    ) {
+      recognized = true;
+      continue;
+    }
+    const spanHeader =
+      name(raw.name) !== null &&
+      typeof raw.kind === "number" &&
+      Number.isInteger(raw.kind) &&
+      raw.kind >= 0 &&
+      raw.kind <= 4;
     const isSpan =
       object(raw.attributes) &&
       ("traceId" in raw || "spanId" in raw) &&
-      ("startTime" in raw || "endTime" in raw);
+      ("startTime" in raw || "endTime" in raw || spanHeader);
     if (!isSpan) {
-      if (
-        Array.isArray(raw.scopeMetrics) ||
-        (typeof raw.severityNumber === "number" &&
-          "body" in raw &&
-          ("hrTime" in raw || "timestamp" in raw))
-      ) {
-        recognized = true;
-      } else
-        diagnostics.add(
-          "unknown-record",
-          "Unsupported telemetry record shape",
-          record.line,
-        );
+      diagnostics.add(
+        "unknown-record",
+        "Unsupported telemetry record shape",
+        record.line,
+      );
       continue;
     }
     recognized = true;
@@ -642,6 +649,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
   const { sessions, assignments } = associate(trusted, input, diagnostics);
   const events = trusted.map((candidate) => ({
     ...candidate.facts,
+    nativeIdentities: candidate.identities,
     id: `${input.readId}:event:${candidate.line}`,
     sessionId: assignments.get(candidate.key) ?? null,
     references: candidate.references,

@@ -74,6 +74,8 @@ normal command-line application. Its supported operations are `chat` and
 `embeddings` (model calls), `execute_tool` (tool calls) and `invoke_agent` (agent
 spans). Known log/metric records and standalone `content_event` records are not
 extra executions. Unqualified operations and unknown shapes produce limitations.
+Span name/kind fields also identify compatible spans when both timestamps are
+absent; missing timing does not discard otherwise usable execution or parent evidence.
 
 The adapter preserves trace-scoped span identity, parent context, reported
 model/tool names, timestamps, status and usage. Optional typed `trace`, `operation`,
@@ -91,8 +93,11 @@ The original span label is separate from the reported tool name/call ID. A gener
 `execute_tool` label does not manufacture a missing tool name. Cyclic native parent
 relationships are diagnosed even when records have explicit session identifiers.
 
-Session `nativeIdentities` preserve the distinct `vscode-chat` and
-`gen-ai-conversation` namespaces. An explicit editor identity can resolve a
+Execution-event `nativeIdentities` preserve only identifiers actually reported
+on that event, even when it cannot be assigned to a session. An inherited
+association does not manufacture per-event hints. Session `nativeIdentities`
+aggregate the distinct `vscode-chat` and `gen-ai-conversation` namespaces.
+An explicit editor identity can resolve a
 uniquely matching conversation alias within this read; ambiguous aliases remain
 unassigned. Missing identities can inherit only an unambiguous captured parent
 association, never a filename, trace-only guess or temporal match. Cross-source

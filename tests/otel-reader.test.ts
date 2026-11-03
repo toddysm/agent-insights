@@ -240,10 +240,28 @@ test("child-before-parent ordering inherits only an explicit within-read parent 
     },
     { "gen_ai.conversation.id": undefined },
   );
-  const view = await read([child, record()]);
+  const view = await read([
+    child,
+    record({ startTime: undefined, endTime: undefined }),
+  ]);
+  assert.equal(view.events.length, 2);
   assert.equal(view.sessions.length, 1);
   assert.equal(view.events[0]?.sessionId, view.events[1]?.sessionId);
   assert.equal(view.events[0]?.parentNativeId, "1".repeat(16));
+  const childEvent = view.events[0];
+  const parentEvent = view.events[1];
+  assert.ok(
+    childEvent &&
+      parentEvent &&
+      childEvent.kind !== "message" &&
+      parentEvent.kind !== "message",
+  );
+  assert.deepEqual(childEvent.nativeIdentities, []);
+  assert.deepEqual(parentEvent.nativeIdentities, [
+    { namespace: "gen-ai-conversation", value: nativeSession },
+  ]);
+  assert.equal(parentEvent.startedAtMs, null);
+  assert.equal(parentEvent.endedAtMs, null);
 });
 
 test("missing identities and missing or cyclic parents do not create synthetic native sessions", async () => {
@@ -329,6 +347,11 @@ test("editor and GenAI identity namespaces remain explicit and ambiguous aliases
   ]);
   assert.equal(view.sessions.length, 2);
   assert.equal(view.events[2]?.sessionId, null);
+  const unassigned = view.events[2];
+  assert.ok(unassigned && unassigned.kind !== "message");
+  assert.deepEqual(unassigned.nativeIdentities, [
+    { namespace: "gen-ai-conversation", value: nativeSession },
+  ]);
   assert.deepEqual(view.sessions[0]?.nativeIdentities, [
     { namespace: "vscode-chat", value: "editor-one" },
     { namespace: "gen-ai-conversation", value: nativeSession },
@@ -454,6 +477,42 @@ test("missing, unfinished, reversed and incorrectly scaled timing never fabricat
     assert.ok(event && event.kind === "model-call");
     assert.equal(event.endedAtMs, null);
     assert.equal(view.sources[0]?.coverage.timing.status, "partial");
+  }
+});
+
+test("untimed span headers preserve execution evidence while logs and metrics remain excluded", async () => {
+  for (const operation of ["chat", "execute_tool", "invoke_agent"]) {
+    const untimed = record(
+      { startTime: undefined, endTime: undefined },
+      {
+        "gen_ai.operation.name": operation,
+        "gen_ai.tool.name": "fictional_tool",
+      },
+    );
+    const view = await read([
+      {
+        ...untimed,
+        severityNumber: 9,
+        hrTime: [1760000000, 0],
+        body: "Fictional log",
+      },
+      { ...untimed, scopeMetrics: [] },
+      untimed,
+    ]);
+    assert.equal(view.events.length, 1);
+    const event = view.events[0];
+    assert.ok(event && event.kind !== "message");
+    assert.equal(event.startedAtMs, null);
+    assert.equal(event.endedAtMs, null);
+    assert.equal(event.usage?.input, 20);
+    assert.equal(event.usage?.output, 5);
+    assert.equal(view.sessions.length, 1);
+    assert.equal(view.sources[0]?.coverage.timing.status, "unavailable");
+    assert.ok(
+      view.issues.some((issue) =>
+        issue.message.includes("Incomplete recorded timing"),
+      ),
+    );
   }
 });
 

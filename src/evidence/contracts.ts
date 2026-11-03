@@ -155,6 +155,8 @@ export const eventSchema = z.discriminatedUnion("kind", [
         .readonly()
         .optional(),
       operation: id.optional(),
+      /** Identifiers actually reported on this event, independent of resolved session membership. */
+      nativeIdentities: z.array(nativeIdentitySchema).readonly().optional(),
       spanName: id.nullable().optional(),
       tool: z
         .strictObject({ name: id.nullable(), callId: id.nullable() })
