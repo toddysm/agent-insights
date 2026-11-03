@@ -616,6 +616,37 @@ test("unknown statuses, dropped fields and producer truncation markers surface l
   assert.equal(event.status, "unknown");
 });
 
+test("malformed status containers and absent status codes are not silently discarded", async () => {
+  for (const status of [
+    2,
+    null,
+    [],
+    "ok",
+    false,
+    {},
+    { message: "Fictional status" },
+  ]) {
+    const view = await read([record({ status })]);
+    const event = view.events[0];
+    assert.ok(event && event.kind === "model-call");
+    assert.equal(event.status, "unknown");
+    assert.ok(
+      view.issues.some((issue) =>
+        issue.message.includes("Unsupported recorded span status"),
+      ),
+    );
+    assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+  }
+  for (const status of [undefined, { code: 0 }]) {
+    const view = await read([record({ status })]);
+    const event = view.events[0];
+    assert.ok(event && event.kind === "model-call");
+    assert.equal(event.status, "unknown");
+    assert.equal(view.issues.length, 0);
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+  }
+});
+
 test("malformed producer flags and identity metadata cannot produce complete coverage", async () => {
   const view = await read([
     record(

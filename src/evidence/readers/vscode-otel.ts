@@ -350,7 +350,10 @@ function span(
     return value;
   };
   const status = object(raw.status) ? raw.status.code : undefined;
-  if (status !== undefined && status !== 0 && status !== 1 && status !== 2)
+  if (
+    Object.hasOwn(raw, "status") &&
+    (!object(raw.status) || (status !== 0 && status !== 1 && status !== 2))
+  )
     diagnostics.add("unknown-record", "Unsupported recorded span status", line);
   for (const key of [
     "droppedAttributesCount",
