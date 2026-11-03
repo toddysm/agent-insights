@@ -671,6 +671,60 @@ test("malformed producer flags and identity metadata cannot produce complete cov
   assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
 });
 
+test("missing or malformed exporter resource and scope metadata retain only partial evidence", async () => {
+  for (const fields of [
+    { resource: undefined },
+    { resource: null },
+    { resource: [] },
+    { resource: { attributes: null } },
+    { resource: {} },
+    { instrumentationScope: undefined },
+    { instrumentationScope: null },
+    { instrumentationScope: [] },
+    { instrumentationScope: {} },
+    { instrumentationScope: { name: 42 } },
+  ]) {
+    const view = await read([record(fields)]);
+    assert.equal(view.events.length, 1);
+    assert.ok(view.issues.some((issue) => issue.message.includes("exporter")));
+    assert.equal(view.sources[0]?.coverage.timing.status, "partial");
+    assert.equal(view.sources[0]?.coverage.tools.status, "partial");
+    assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+  }
+});
+
+test("reported names and identifiers with invalid types are diagnosed without coercion", async () => {
+  const view = await read([
+    record(
+      {
+        name: 42,
+        resource: {
+          attributes: { "service.name": 42, "service.version": false },
+        },
+      },
+      {
+        "gen_ai.request.model": 42,
+        "gen_ai.response.model": null,
+        "gen_ai.agent.name": [],
+        "gen_ai.tool.name": false,
+        "gen_ai.tool.call.id": {},
+      },
+    ),
+  ]);
+  const event = view.events[0];
+  assert.ok(event && event.kind === "model-call");
+  assert.equal(event.name, null);
+  assert.equal(event.spanName, null);
+  assert.deepEqual(event.model, { requested: null, responded: null });
+  assert.deepEqual(event.tool, { name: null, callId: null });
+  assert.equal(view.sources[0]?.identity.producer, null);
+  assert.equal(view.sources[0]?.identity.version, null);
+  assert.ok(
+    view.issues.some((issue) => issue.message.includes("Invalid reported")),
+  );
+  assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+});
+
 test("framing preserves UTF-8, BOM, CRLF and physical line references across byte boundaries", async () => {
   const raw = record({}, { "gen_ai.tool.call.result": "Fictional café 界 😀" });
   const text = "\ufeff\r\n \r\n" + JSON.stringify(raw);

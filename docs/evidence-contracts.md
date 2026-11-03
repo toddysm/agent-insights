@@ -83,6 +83,10 @@ Logs are recognized through their required time/resource/instrumentation-scope
 fields; optional severity and body fields are not prerequisites.
 Span name/kind fields also identify compatible spans when both timestamps are
 absent; missing timing does not discard otherwise usable execution or parent evidence.
+Missing or malformed required exporter resource/scope metadata retains usable
+records only with an explicit limitation and reduced coverage. Reported
+model/tool/producer names with unsupported types are not silently coerced or
+treated like ordinary omission.
 
 The adapter preserves trace-scoped span identity, parent context, reported
 model/tool names, timestamps, status and usage. Optional typed `trace`, `operation`,
@@ -130,6 +134,35 @@ recognized truncation markers, damaged records and incomplete timing/usage
 reduce coverage. Absence of a truncation marker does not prove that the producer
 captured all content; effective capture settings still matter. Raw parser errors
 and captured payloads are never diagnostic messages.
+
+### Producer mapping evidence
+
+The implementation inspected these public producer definitions at VS Code commit
+`2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, rather than treating filenames or the
+synthetic fixtures as proof of the wire format:
+
+| Definition | SHA-256 of inspected file bytes |
+| --- | --- |
+| [File exporter](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/node/fileExporters.ts) | `d5fd8f85c2e58d4d59283ec9c28c3339e5be9ca928a3ab8c4d8fafced3055138` |
+| [Attribute vocabulary](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/common/genAiAttributes.ts) | `c2e82f03f276d5efb0edb105c0dcf2e5bea9ba60842b7806678a70bea2d63e2c` |
+
+| Producer field/declaration | Reader interpretation |
+| --- | --- |
+| Direct span context, `parentSpanContext`, `resource.attributes`, `instrumentationScope` | Trace-scoped identity and reported metadata, not an OTLP wrapper or a path-derived identity. |
+| `startTime` / `endTime` tuples | Epoch seconds plus nanosecond remainder, converted to milliseconds; missing values stay unavailable. |
+| `gen_ai.operation.name` | Explicit mappings for `chat`, `embeddings`, `execute_tool` and `invoke_agent`; other operations are not guessed. |
+| `gen_ai.conversation.id` / `copilot_chat.chat_session_id` | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text. |
+| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` | Reported counts on the represented operation; no estimates or missing-to-zero conversion. |
+| Cache attributes and both reasoning-token attribute names | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
+| `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | Optional content-gated attributes retained only as captured strings and source references. |
+| Separate file span/log/metric exporters | A single destination can contain different signal types; non-execution records are not additional calls. |
+
+This is static compatibility evidence, not proof of producer authenticity,
+all-version support, content completeness or live private-capture qualification.
+Fixtures are independently authored and contain no copied source implementation
+or private capture. If a reviewer cannot retrieve the upstream definitions,
+that independent-verification gap must remain explicit rather than becoming a
+claimed successful check.
 
 ## Calculated metrics
 

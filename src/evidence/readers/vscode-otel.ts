@@ -89,6 +89,26 @@ function name(value: unknown): string | null {
 }
 
 /**
+ * Preserve a captured name while distinguishing omission from malformed reported data.
+ * @param fields - Parsed producer fields or attributes.
+ * @param key - Application-owned field name, never a key taken from captured content.
+ * @param diagnostics - Receives a payload-free limitation for a present invalid value.
+ * @param line - Original physical source line.
+ * @returns The verbatim nonempty string, or null without coercion.
+ */
+function reportedName(
+  fields: Record<string, unknown>,
+  key: string,
+  diagnostics: Diagnostics,
+  line: number,
+): string | null {
+  const value = name(fields[key]);
+  if (Object.hasOwn(fields, key) && value === null)
+    diagnostics.add("missing-field", `Invalid reported ${key}`, line);
+  return value;
+}
+
+/**
  * Validate an OpenTelemetry identity without coercing or changing its spelling.
  * @param value - Captured identity; malformed and all-zero IDs are unavailable.
  * @param length - Required hexadecimal width: 16 for a span or 32 for a trace.
@@ -371,14 +391,61 @@ function span(
         line,
       );
   }
+  if (!object(raw.resource) || !object(raw.resource.attributes))
+    diagnostics.add(
+      "missing-field",
+      "Missing or invalid exporter resource metadata",
+      line,
+    );
+  if (
+    !object(raw.instrumentationScope) ||
+    typeof raw.instrumentationScope.name !== "string"
+  )
+    diagnostics.add(
+      "missing-field",
+      "Missing or invalid exporter instrumentation scope",
+      line,
+    );
   const resource =
     object(raw.resource) && object(raw.resource.attributes)
       ? raw.resource.attributes
       : {};
-  const requested = name(attributes["gen_ai.request.model"]);
-  const responded = name(attributes["gen_ai.response.model"]);
-  const toolName = name(attributes["gen_ai.tool.name"]);
-  if (kind === "tool-call" && toolName === null)
+  const requested = reportedName(
+    attributes,
+    "gen_ai.request.model",
+    diagnostics,
+    line,
+  );
+  const responded = reportedName(
+    attributes,
+    "gen_ai.response.model",
+    diagnostics,
+    line,
+  );
+  const agentName = reportedName(
+    attributes,
+    "gen_ai.agent.name",
+    diagnostics,
+    line,
+  );
+  const toolName = reportedName(
+    attributes,
+    "gen_ai.tool.name",
+    diagnostics,
+    line,
+  );
+  const toolCallId = reportedName(
+    attributes,
+    "gen_ai.tool.call.id",
+    diagnostics,
+    line,
+  );
+  const spanName = reportedName(raw, "name", diagnostics, line);
+  if (
+    kind === "tool-call" &&
+    toolName === null &&
+    !Object.hasOwn(attributes, "gen_ai.tool.name")
+  )
     diagnostics.add("missing-field", "Tool name was not reported", line);
   return {
     line,
@@ -391,17 +458,16 @@ function span(
       name:
         kind === "tool-call"
           ? toolName
-          : ((kind === "model-call"
-              ? (responded ?? requested)
-              : name(attributes["gen_ai.agent.name"])) ?? name(raw.name)),
+          : ((kind === "model-call" ? (responded ?? requested) : agentName) ??
+            spanName),
       startedAtMs: start,
       endedAtMs: end,
       status: status === 1 ? "ok" : status === 2 ? "error" : "unknown",
       usage: usage(attributes, kind, diagnostics, line),
       trace: { id: traceId, parentId: parentTraceId },
       operation,
-      spanName: name(raw.name),
-      tool: { name: toolName, callId: name(attributes["gen_ai.tool.call.id"]) },
+      spanName,
+      tool: { name: toolName, callId: toolCallId },
       model: { requested, responded },
       content: {
         inputMessages: content("gen_ai.input.messages"),
@@ -412,8 +478,8 @@ function span(
     },
     references: refs,
     identities,
-    producer: name(resource["service.name"]),
-    version: name(resource["service.version"]),
+    producer: reportedName(resource, "service.name", diagnostics, line),
+    version: reportedName(resource, "service.version", diagnostics, line),
     conflict: false,
   };
 }
