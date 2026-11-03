@@ -107,6 +107,9 @@ Identical supported span facts/identities/producer metadata collapse to one
 execution with all original line references. Conflicting repeated native
 trace/span identities are excluded with a visible issue. Unsupported attributes
 are not interpreted; their original records remain referenced in the harness.
+Native execution identities are checked before unsupported operations are filtered:
+an unqualified operation cannot hide a conflict with a supported call in either
+source order. Intentionally ignored log/metric/content telemetry stays separate.
 
 Model-call token counts are per-call. Non-model usage accounting remains unknown,
 not additional model consumption. Cache/reasoning component overlap remains

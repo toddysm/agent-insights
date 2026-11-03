@@ -237,7 +237,14 @@ function span(
   diagnostics: Diagnostics,
 ): Candidate | null {
   const attributes = raw.attributes;
-  if (!object(attributes)) return null;
+  if (!object(attributes)) {
+    diagnostics.add(
+      "missing-field",
+      "Missing or invalid span attributes",
+      line,
+    );
+    return null;
+  }
   const operation = name(attributes["gen_ai.operation.name"]);
   let kind: Span["kind"];
   if (operation === "chat" || operation === "embeddings") kind = "model-call";
@@ -561,6 +568,8 @@ async function read(input: ReaderInput): Promise<ReadView> {
   const startedAtMs = Date.now();
   const diagnostics = new Diagnostics();
   const candidates = new Map<string, Candidate>();
+  const operations = new Map<string, string | null>();
+  const operationConflicts = new Set<string>();
   let recognized = false;
   for await (const record of jsonLines(input)) {
     if ("error" in record) {
@@ -598,7 +607,6 @@ async function read(input: ReaderInput): Promise<ReadView> {
       raw.kind >= 0 &&
       raw.kind <= 4;
     const isSpan =
-      object(raw.attributes) &&
       ("traceId" in raw || "spanId" in raw) &&
       ("startTime" in raw || "endTime" in raw || spanHeader);
     if (!isSpan) {
@@ -610,6 +618,25 @@ async function read(input: ReaderInput): Promise<ReadView> {
       continue;
     }
     recognized = true;
+    const operation = object(raw.attributes)
+      ? name(raw.attributes["gen_ai.operation.name"])
+      : null;
+    const traceId = hex(raw.traceId, 32);
+    const spanId = hex(raw.spanId, 16);
+    // Filtering an unqualified execution must not hide a conflicting native identity.
+    if (operation !== "content_event" && traceId !== null && spanId !== null) {
+      const key = `${traceId}/${spanId}`;
+      if (operations.has(key) && operations.get(key) !== operation) {
+        operationConflicts.add(key);
+        const previous = candidates.get(key);
+        if (previous) previous.conflict = true;
+        diagnostics.add(
+          "unknown-record",
+          "Conflicting execution operations share a native identity; excluded",
+          record.line,
+        );
+      } else operations.set(key, operation);
+    }
     const candidate = span(
       raw,
       input,
@@ -618,6 +645,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
       diagnostics,
     );
     if (candidate === null) continue;
+    if (operationConflicts.has(candidate.key)) candidate.conflict = true;
     const previous = candidates.get(candidate.key);
     if (previous) {
       if (

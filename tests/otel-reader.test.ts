@@ -232,6 +232,51 @@ test("conflicting duplicate facts or producer metadata are excluded rather than 
   }
 });
 
+test("unsupported execution operations cannot conceal native identity conflicts in either order", async () => {
+  const supported = record();
+  for (const unsupported of [
+    record({}, { "gen_ai.operation.name": "unqualified-execution" }),
+    record({ attributes: null }),
+    record({ attributes: [] }),
+  ]) {
+    for (const pair of [
+      [supported, unsupported],
+      [unsupported, supported],
+    ]) {
+      const view = await read(pair);
+      assert.equal(view.events.length, 0);
+      assert.equal(view.sessions.length, 0);
+      assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
+      assert.ok(
+        view.issues.some((issue) =>
+          issue.message.includes("Conflicting execution operations"),
+        ),
+      );
+      const withChild = await read([
+        ...pair,
+        record(
+          {
+            spanId: "2".repeat(16),
+            parentSpanContext: { traceId: trace, spanId: "1".repeat(16) },
+          },
+          { "gen_ai.conversation.id": undefined },
+        ),
+      ]);
+      assert.equal(withChild.events.length, 1);
+      assert.equal(withChild.events[0]?.sessionId, null);
+    }
+  }
+  const content = record({}, { "gen_ai.operation.name": "content_event" });
+  for (const pair of [
+    [supported, content],
+    [content, supported],
+  ]) {
+    const view = await read(pair);
+    assert.equal(view.events.length, 1);
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+  }
+});
+
 test("child-before-parent ordering inherits only an explicit within-read parent session", async () => {
   const child = record(
     {
