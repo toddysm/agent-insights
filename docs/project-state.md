@@ -4,7 +4,7 @@ Capability inventory as of 2026-11-03. This records project delivery status,
 not session data or analysis results.
 
 The merged baseline is main at `d767c31665fffb72154fbccb23ecbd2494072c97`.
-The current scope is lightweight revision 9 in
+The current scope is lightweight revision 10 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
 The user approved the plan, runtime baseline and unattended review/merge scope
@@ -16,7 +16,7 @@ On 2026-11-02 the user approved the reader refinement in
 [#11](https://github.com/toddysm/agent-insights/issues/11), including immediate
 implementation after publication. On 2026-11-03 the user clarified that
 **Copilot Agent Host is the intended everyday workflow** and authorized filing
-the adjustment, then authorized source qualification in #30. Revision 9 records
+the adjustment, then authorized source qualification in #30. Revision 10 records
 the native-history-first proposal; its implementation design is not yet approved.
 The prior revision-7 approval is historical, not
 permission to continue the Local-only source plan unchanged.
@@ -73,7 +73,7 @@ source qualification and the revised design.
 
 | Capability | Feature slug | Tracking issue | PRD doc | Documentation status |
 | ---------- | ------------ | -------------- | ------- | -------------------- |
-| Copilot Agent Host read-only execution/conversation support; qualification research in progress | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Revision 9 proposal: static source findings in #30; selected live-source verification and implementation approval pending | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
+| Copilot Agent Host read-only execution/conversation support; selected-source verification complete, implementation pending | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Revision 10 proposal and source draft 2 in #30; implementation approval pending | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
 
 These are required adjustments to the existing feature, not optional future
 harness support. No new implementation has started.
@@ -100,9 +100,14 @@ Agent Host telemetry for detailed per-call evidence. Host telemetry uses
 `chat.agentHost.otel.*`; personal changes require a full application restart.
 Reading existing harness databases is not an application-owned session store.
 A shared bounded, read-only database/multi-source access prerequisite is proposed
-but not yet filed or implemented. Eighteen static schema/source assertions passed;
-no private session contents/database rows were read and no live compatibility
-pass or production reader implementation is claimed.
+but not yet filed or implemented. Eighteen static schema/source assertions passed.
+A separately authorized inspection then verified one harmless native Agent Host
+exchange and its exact catalog/turn-usage linkage. Only sanitized findings are
+published; no capture content, identifiers or raw usage values are stored here.
+Native history, database main files and write-ahead logs were unchanged; existing
+SQLite shared-memory sidecars changed, so byte-for-byte sidecar immutability is
+not claimed. No source replicas, model requests or settings changes were made.
+This is not a production-reader, optional-telemetry or all-version qualification.
 
 Harness-owned data is the sole evidence authority. The approved initial scope
 reads sources in place and analyzes them transiently in memory. It excludes an
@@ -131,7 +136,7 @@ remains the selected testing mode.
 
 | Gap                                                                      | Evidence and next work                                                                                                                                                                           |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Agent Host live-source verification and implementation approval remain open | #30 contains static findings and the revision-9 source proposal; obtain selected-session read permission and verify actual sources before completing qualification. An enabled Local exporter or empty capture is not Agent Host verification |
+| Agent Host implementation approval and broader compatibility remain open | #30 records a successful selected native-source inspection and revision-10 proposal. Optional trace capture, tool-bearing histories and the product readers remain unverified; approval is still required before implementation |
 | Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
 | Real-session readers, reports and interpretation definitions are not implemented yet | The transport is available, but the local shell reports missing consumers explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
 | End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |
