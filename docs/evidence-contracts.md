@@ -8,8 +8,13 @@ in-memory views; they must never be serialized into an application session store
 
 ## Read generations and provenance
 
-- Every read has an independent `id`, wall-clock read-start/read-finish bounds,
-  source metadata, sessions, events and visible issues.
+- Every read has an independent `id`, source metadata, sessions, events and visible
+  issues. In runtime-published views, `startedAtMs` is input-capture start and
+  `finishedAtMs` is processing completion, including adapter work and validation.
+  The separate `readTiming.inputStartedAtMs`/`inputFinishedAtMs` values describe
+  physical source observation; processing completion is not an observation bound.
+  Direct adapter results have only provisional assembly timestamps because
+  `ReaderInput` does not carry filesystem capture timing.
 - At least one source must be retained, including for unavailable or unsupported
   input; a completely empty view must not disguise a failed read.
 - Timestamps are Unix milliseconds. Durations use milliseconds, including
@@ -74,6 +79,8 @@ normal command-line application. Its supported operations are `chat` and
 `embeddings` (model calls), `execute_tool` (tool calls) and `invoke_agent` (agent
 spans). Known log/metric records and standalone `content_event` records are not
 extra executions. Unqualified operations and unknown shapes produce limitations.
+Logs are recognized through their required time/resource/instrumentation-scope
+fields; optional severity and body fields are not prerequisites.
 Span name/kind fields also identify compatible spans when both timestamps are
 absent; missing timing does not discard otherwise usable execution or parent evidence.
 

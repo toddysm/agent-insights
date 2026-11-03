@@ -150,6 +150,8 @@ test("mixed telemetry and duplicate wrappers do not become extra executions", as
     {
       severityNumber: 9,
       hrTime: [1760000000, 0],
+      resource: { attributes: {} },
+      instrumentationScope: { name: "fictional" },
       body: "Fictional telemetry log",
     },
     agent,
@@ -177,6 +179,33 @@ test("same native span ID in different traces remains distinct", async () => {
   const view = await read([record(), record({ traceId: otherTrace })]);
   assert.equal(view.events.length, 2);
   assert.equal(new Set(view.events.map((event) => event.id)).size, 2);
+});
+
+test("valid log records without optional severity or body do not degrade execution coverage", async () => {
+  for (const optional of [
+    {},
+    { severityNumber: 9 },
+    { body: "Fictional log" },
+    { severityNumber: 9, body: "Fictional log" },
+  ]) {
+    const view = await read([
+      {
+        hrTime: [1760000000, 0],
+        hrTimeObserved: [1760000000, 1],
+        resource: { attributes: {} },
+        instrumentationScope: { name: "fictional" },
+        attributes: {},
+        droppedAttributesCount: 0,
+        ...optional,
+      },
+      record(),
+    ]);
+    assert.equal(view.events.length, 1);
+    assert.equal(view.issues.length, 0);
+    assert.equal(view.sources[0]?.coverage.timing.status, "complete");
+    assert.equal(view.sources[0]?.coverage.tools.status, "complete");
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+  }
 });
 
 test("original record fingerprints distinguish replacements even when interpreted fields match", async () => {

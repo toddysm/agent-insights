@@ -105,10 +105,22 @@ newer read or refresh. Source-change metadata is a best-effort observation, not
 a claim of an atomic filesystem snapshot. This is not a security sandbox against
 a hostile process already running with the same operating-system account.
 
-The view's read bounds describe input capture. Authenticated status retains those
-bounds and the separate processing-finish timestamp in `readTiming`, so parsing
-latency is not mistaken for newer source observation. Source-change
-checks apply to that input-capture interval, not to later adapter computation.
+The published view's `startedAtMs` is the input-capture start, but its
+`finishedAtMs` includes adapter processing and validation. It is not the time
+through which the harness source was observed. Authenticated status separates
+these meanings:
+
+| Field | Meaning |
+| --- | --- |
+| `readTiming.inputStartedAtMs` | Physical source capture started. |
+| `readTiming.inputFinishedAtMs` | Physical source capture finished. |
+| `readTiming.finishedAtMs` | Processing finished; equals the published view's `finishedAtMs`. |
+
+Use the two `input*` fields for source observation. Never substitute processing
+completion for `inputFinishedAtMs`; if capture timing is unavailable, report it
+as unavailable. Source-change checks apply to the capture interval, not later
+adapter computation. Low-level adapter results contain provisional assembly
+timestamps that the runtime replaces before publishing a read view.
 The read deadline also uses a monotonic elapsed-time check before publication:
 synchronous parsing cannot publish an overdue result merely because it delayed
 the timeout callback. Cancellation cannot preempt JavaScript that is currently

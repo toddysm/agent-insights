@@ -561,7 +561,8 @@ function associate(
 /**
  * Consume the extension file exporter without reading or persisting any other source.
  * @param input - Authorized bounded byte stream and generation-owned cancellation.
- * @returns Immutable partial/unavailable/complete evidence with original source anchors.
+ * @returns Immutable adapter candidate with original anchors and provisional assembly
+ * timestamps. RuntimeService supplies published read timing and separate capture bounds.
  * @throws Rejects on cancellation, stream errors or an internal contract violation.
  */
 async function read(input: ReaderInput): Promise<ReadView> {
@@ -593,9 +594,9 @@ async function read(input: ReaderInput): Promise<ReadView> {
     }
     if (
       Array.isArray(raw.scopeMetrics) ||
-      (typeof raw.severityNumber === "number" &&
-        "body" in raw &&
-        ("hrTime" in raw || "timestamp" in raw))
+      (milliseconds(raw.hrTime) !== null &&
+        object(raw.resource) &&
+        object(raw.instrumentationScope))
     ) {
       recognized = true;
       continue;

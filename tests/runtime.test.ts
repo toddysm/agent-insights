@@ -514,6 +514,8 @@ test("read completion includes adapter work while retaining the actual input obs
   const timing = (await service.status()).readTiming;
   assert.ok(timing);
   assert.equal(timing.readId, view.id);
+  assert.equal(view.startedAtMs, timing.inputStartedAtMs);
+  assert.ok(view.startedAtMs <= timing.inputFinishedAtMs);
   assert.ok(timing.inputFinishedAtMs <= adapterStartedAt);
   assert.ok(view.finishedAtMs >= adapterFinishedAt);
   assert.equal(timing.finishedAtMs, view.finishedAtMs);

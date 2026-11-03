@@ -478,7 +478,13 @@ export interface ReaderInput {
 /** Adapter extension point: no source writes, persistence, model calls or hidden fallback formats. */
 export interface EvidenceReader {
   readonly format: SourceFormat;
-  /** Consume only the supplied stream, honor cancellation and reject unsupported/corrupt input explicitly. */
+  /**
+   * Parse borrowed bytes, honor cancellation and report unsupported/corrupt input.
+   * @param input - Current identity, borrowed stream and cancellation; no filesystem capture bounds.
+   * @returns Adapter candidate with provisional timestamps. The runtime replaces
+   * read timing before publication; only its readTiming.input* fields identify
+   * physical source observation. Never treat adapter timestamps as that interval.
+   */
   read(input: ReaderInput): Promise<ReadView>;
 }
 
