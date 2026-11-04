@@ -1,0 +1,10 @@
+[package]
+name = "agent-insights-sqlite-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+description = "SQLite engine and native interface qualification for Agent Insights"
+
+[dependencies]
+libsqlite3-sys = { version = "=0.39.1", features = ["bundled"] }

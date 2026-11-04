@@ -24,6 +24,11 @@ the analysis executor, not the first history source being imported; see the
 [source/executor distinction](docs/copilot-analysis.md#vs-code-evidence-and-the-analysis-executor-are-different).
 See the [capability inventory](docs/project-state.md) for the current plan.
 
+Native source-safety work has begun in the
+[Rust guard crate](native/sqlite-guard/README.md). Its initial engine and
+application binary interface (ABI) checks do not yet provide a working source
+guard or change reader availability.
+
 To validate the implementation with Node.js 24:
 
 ```bash
