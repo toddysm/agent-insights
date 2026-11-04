@@ -44,6 +44,8 @@ read-only, no-follow descriptors and binds canonicalization to the opened main
 object. All retained rollback journals, including empty ones, are rejected;
 only the producer may finish its journal lifecycle. Descriptors close before SQLite takes locks;
 Unix transaction-time identity checks do not open extra same-inode descriptors.
+Journal absence is rechecked around native open and reads, including empty
+journals SQLite can hide from its own file-open checks.
 
 The core is not an operating-system sandbox or protection against arbitrary
 native-code exploitation or a hostile same-account process. SHM coordination

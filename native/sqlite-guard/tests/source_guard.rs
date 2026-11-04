@@ -141,6 +141,7 @@ fn guarded_source_contract() {
         shared_memory_extents_are_not_extended();
         replacement_at_native_open_is_rejected();
         replacement_during_preflight_is_rejected();
+        journal_at_native_open_requires_recovery();
         #[cfg(unix)]
         symlink_at_native_open_is_source_change();
         // This scenario permanently poisons the engine; it must remain last.
@@ -264,13 +265,16 @@ fn admission_and_query_failures() {
     assert_eq!(std::fs::read(fixture.path()).unwrap(), before);
 
     let journal = fixture.path().with_file_name("source.db-journal");
-    let source = ApprovedSource::capture(&fixture.path()).unwrap();
-    std::fs::write(&journal, b"journal appeared after capture").unwrap();
-    // This process owns the reader engine; the new journal is never admitted.
-    assert!(matches!(
-        unsafe { GuardedDatabase::open(source) },
-        Err(GuardError::RecoveryRequired)
-    ));
+    for contents in [b"journal appeared after capture".as_slice(), b""] {
+        let source = ApprovedSource::capture(&fixture.path()).unwrap();
+        std::fs::write(&journal, contents).unwrap();
+        // This process owns the reader engine; neither new journal is admitted.
+        assert!(matches!(
+            unsafe { GuardedDatabase::open(source) },
+            Err(GuardError::RecoveryRequired)
+        ));
+        std::fs::remove_file(&journal).unwrap();
+    }
     for contents in [b"unfinished fixture journal".as_slice(), b""] {
         std::fs::write(&journal, contents).unwrap();
         assert!(matches!(
@@ -278,7 +282,17 @@ fn admission_and_query_failures() {
             Err(GuardError::RecoveryRequired)
         ));
     }
-    std::fs::remove_file(journal).unwrap();
+    std::fs::remove_file(&journal).unwrap();
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    // The test owns the reader engine; a journal appearing during its lifetime invalidates reads.
+    let mut database = unsafe { GuardedDatabase::open(source) }.unwrap();
+    std::fs::write(&journal, b"").unwrap();
+    assert_eq!(
+        database.scalar_i64(c"SELECT 1"),
+        Err(GuardError::RecoveryRequired)
+    );
+    assert_eq!(database.close(), Err(GuardError::RecoveryRequired));
+    std::fs::remove_file(&journal).unwrap();
     let file = std::fs::OpenOptions::new()
         .write(true)
         .open(fixture.path())
@@ -497,6 +511,30 @@ fn replacement_during_preflight_is_rejected() {
         std::fs::rename(other, &path).unwrap();
     });
     assert!(matches!(result, Err(GuardError::SourceChanged)));
+}
+
+/// A zero-length journal created after the pre-open check must still fail before a connection is exposed.
+#[cfg(feature = "qualification-hooks")]
+fn journal_at_native_open_requires_recovery() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let fixture = Fixture::new(false);
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    let ran = Arc::new(AtomicBool::new(false));
+    let observed = ran.clone();
+    let source = source.with_open_barrier(move |path| {
+        if !ran.swap(true, Ordering::SeqCst) {
+            std::fs::write(path.with_file_name("source.db-journal"), b"").unwrap();
+        }
+    });
+    // SQLite may hide an empty journal from xOpen; source verification must still reject it.
+    assert!(matches!(
+        unsafe { GuardedDatabase::open(source) },
+        Err(GuardError::RecoveryRequired)
+    ));
+    assert!(observed.load(Ordering::SeqCst));
 }
 
 /// SQLite's ignored unmap error must override a prior violation and prevent all later admission.

@@ -189,8 +189,14 @@ impl ApprovedSource {
         Ok(source)
     }
 
-    /// Recheck identities and aggregate bounds without opening extra transaction-time handles.
+    /// Recheck journal absence, identities and bounds without extra transaction-time handles.
     pub(crate) fn verify(&self) -> Result<bool, GuardError> {
+        // SQLite's xAccess can hide zero-length journals, so checking xOpen alone is insufficient.
+        match symlink_metadata(companion(&self.main, "-journal")) {
+            Ok(_) => return Err(GuardError::RecoveryRequired),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(io_error(&error)),
+        }
         let mut total = 0u64;
         let mut changed = false;
         for entry in &self.entries {
