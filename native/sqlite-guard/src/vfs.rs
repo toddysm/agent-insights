@@ -1,0 +1,244 @@
+//! Inspect the pinned native VFS interception seam before implementing source I/O.
+//! A passing probe establishes pointer replacement/restoration only. It neither
+//! installs the source policy nor certifies prevention of filesystem mutations.
+
+use crate::{GuardError, inspect_engine};
+use libsqlite3_sys as ffi;
+use std::ffi::CStr;
+use std::sync::Mutex;
+
+/// Serialize this crate's probes; the unsafe caller must also exclude all other SQLite use.
+static PROBE_LOCK: Mutex<()> = Mutex::new(());
+
+/// One named operating-system slot observed in the linked VFS.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookCapability {
+    /// SQLite's exact slot name, without pointer addresses or private source data.
+    pub name: &'static str,
+    /// Whether this build originally had an implementation in the slot.
+    pub active: bool,
+}
+
+/// A source-independent ABI observation, not a guard-installed or source-safe result.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeAbi {
+    /// Qualified candidate VFS family; alternate locking VFSes are not substituted.
+    pub vfs_name: &'static str,
+    /// Slots whose replace/read-back/restore behavior was checked.
+    pub hooks: Vec<HookCapability>,
+}
+
+/// Minimum audited slots and their compile-time availability requirements.
+#[derive(Clone, Copy)]
+struct Requirement {
+    name: &'static CStr,
+    active: bool,
+}
+
+/// Require a live native implementation for this audited slot.
+const fn required(name: &'static CStr) -> Requirement {
+    Requirement { name, active: true }
+}
+
+/// Require the slot to exist, permitting it to be compiled out in this target.
+const fn conditional(name: &'static CStr) -> Requirement {
+    Requirement {
+        name,
+        active: false,
+    }
+}
+
+/// Unix mutations/mappings inspected in the pinned os_unix.c; this is not a full policy.
+const UNIX_SLOTS: &[Requirement] = &[
+    required(c"open"),
+    required(c"close"),
+    required(c"ftruncate"),
+    required(c"write"),
+    conditional(c"pwrite"),
+    conditional(c"pwrite64"),
+    conditional(c"fchmod"),
+    conditional(c"fallocate"),
+    required(c"unlink"),
+    conditional(c"fchown"),
+    required(c"mmap"),
+    conditional(c"mremap"),
+];
+
+/// Windows mutations/mappings inspected in the pinned desktop Win32 VFS.
+const WINDOWS_SLOTS: &[Requirement] = &[
+    required(c"CreateFileW"),
+    required(c"CloseHandle"),
+    required(c"WriteFile"),
+    required(c"SetEndOfFile"),
+    required(c"DeleteFileW"),
+    required(c"CreateFileMappingW"),
+    conditional(c"CreateFileMappingFromApp"),
+    required(c"MapViewOfFile"),
+    required(c"UnmapViewOfFile"),
+];
+
+/// Select only the four proposed desktop targets; other targets remain unavailable.
+fn profile() -> Result<(&'static CStr, &'static [Requirement]), GuardError> {
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64" | "x86_64") | ("linux", "x86_64") => Ok((c"unix", UNIX_SLOTS)),
+        ("windows", "x86_64") => Ok((c"win32", WINDOWS_SLOTS)),
+        _ => Err(GuardError::GuardUnavailable),
+    }
+}
+
+/// Verify the pinned VFS exists and its audited callback slots can be restored.
+///
+/// No database is opened and no source operations are performed. This is the
+/// initial ABI qualification step, not installation of the source mutation guard.
+///
+/// # Safety
+/// The caller must own this SQLite engine exclusively: no connections, ongoing
+/// SQLite operations, callback mutation or other VFS consumers may exist during
+/// the probe. Probe callbacks deliberately have no callable I/O implementation.
+/// If the probe fails, abandon the engine/process rather than using it for I/O,
+/// because a broken VFS may also have refused callback restoration.
+///
+/// # Errors
+/// Returns [`GuardError::EngineMismatch`] for unqualified engine/build metadata,
+/// or [`GuardError::GuardUnavailable`] for unsupported targets or a broken seam.
+pub unsafe fn inspect_native_abi() -> Result<NativeAbi, GuardError> {
+    let _exclusive = PROBE_LOCK
+        .lock()
+        .map_err(|_| GuardError::GuardUnavailable)?;
+    inspect_engine()?;
+    let (name, requirements) = profile()?;
+    // The engine is pinned and the caller guarantees it has no concurrent consumers.
+    let vfs = unsafe { ffi::sqlite3_vfs_find(name.as_ptr()) };
+    // The pointer belongs to the initialized engine and the selected profile is static.
+    unsafe { probe(vfs, name, requirements) }
+}
+
+/// Sentinel used only for pointer round trips; it must never be called as a syscall.
+extern "C" fn sentinel() {}
+
+/// Compare function addresses explicitly; ordinary function equality is not a semantic proof.
+fn same(left: ffi::sqlite3_syscall_ptr, right: ffi::sqlite3_syscall_ptr) -> bool {
+    match (left, right) {
+        (Some(left), Some(right)) => std::ptr::fn_addr_eq(left, right),
+        (None, None) => true,
+        _ => false,
+    }
+}
+
+/// Probe exact callback replacement and restoration without invoking any I/O callback.
+///
+/// # Safety
+/// `vfs` must be null or a live SQLite VFS for the duration of this call. The
+/// engine must be exclusively owned and abandoned after any probe failure.
+unsafe fn probe(
+    vfs: *mut ffi::sqlite3_vfs,
+    expected: &'static CStr,
+    requirements: &[Requirement],
+) -> Result<NativeAbi, GuardError> {
+    // Check the interface version before accessing the version-3 callback fields.
+    if vfs.is_null() || unsafe { (*vfs).iVersion } != 3 {
+        return Err(GuardError::GuardUnavailable);
+    }
+    // The caller supplies a valid VFS; SQLite owns its static name and function pointers.
+    let table = unsafe { *vfs };
+    if table.zName.is_null() || unsafe { CStr::from_ptr(table.zName) } != expected {
+        return Err(GuardError::GuardUnavailable);
+    }
+    let get = table.xGetSystemCall.ok_or(GuardError::GuardUnavailable)?;
+    let set = table.xSetSystemCall.ok_or(GuardError::GuardUnavailable)?;
+    if table.xNextSystemCall.is_none() {
+        return Err(GuardError::GuardUnavailable);
+    }
+    let mut hooks = Vec::with_capacity(requirements.len());
+    for requirement in requirements {
+        // Names are static C strings and the caller excludes all concurrent consumers.
+        let original = unsafe { get(vfs, requirement.name.as_ptr()) };
+        if requirement.active && original.is_none() {
+            return Err(GuardError::GuardUnavailable);
+        }
+        if original.is_none() {
+            // SQLite remembers defaults lazily. Installing into a compiled-out
+            // slot can make the sentinel its default and cannot be undone with NULL.
+            let reset = unsafe { set(vfs, requirement.name.as_ptr(), None) };
+            if reset != ffi::SQLITE_OK || unsafe { get(vfs, requirement.name.as_ptr()) }.is_some() {
+                return Err(GuardError::GuardUnavailable);
+            }
+            hooks.push(HookCapability {
+                name: requirement
+                    .name
+                    .to_str()
+                    .map_err(|_| GuardError::GuardUnavailable)?,
+                active: false,
+            });
+            continue;
+        }
+        // Always attempt restoration, even if replacement reports an error.
+        let assigned = unsafe { set(vfs, requirement.name.as_ptr(), Some(sentinel)) };
+        let observed = unsafe { get(vfs, requirement.name.as_ptr()) };
+        let restored = unsafe { set(vfs, requirement.name.as_ptr(), original) };
+        let after = unsafe { get(vfs, requirement.name.as_ptr()) };
+        if assigned != ffi::SQLITE_OK
+            || restored != ffi::SQLITE_OK
+            || !same(observed, Some(sentinel))
+            || !same(after, original)
+        {
+            return Err(GuardError::GuardUnavailable);
+        }
+        hooks.push(HookCapability {
+            name: requirement
+                .name
+                .to_str()
+                .map_err(|_| GuardError::GuardUnavailable)?,
+            active: original.is_some(),
+        });
+    }
+    Ok(NativeAbi {
+        vfs_name: expected
+            .to_str()
+            .map_err(|_| GuardError::GuardUnavailable)?,
+        hooks,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn actual_native_slots_support_replace_and_restore() {
+        // This test binary opens no databases; the probe mutex serializes actual VFS probes.
+        let abi = unsafe { inspect_native_abi() }
+            .expect("qualified target must expose its audited slots");
+        assert!(!abi.hooks.is_empty());
+        assert!(abi.hooks.iter().any(|hook| hook.active));
+        // Repeating the probe must see the same restored callbacks and compiled-out slots.
+        assert_eq!(unsafe { inspect_native_abi() }.unwrap(), abi);
+    }
+
+    #[test]
+    fn null_unknown_or_missing_interfaces_are_unavailable() {
+        // Null is explicitly accepted as a negative input by probe's contract.
+        assert_eq!(
+            unsafe { probe(std::ptr::null_mut(), c"unix", UNIX_SLOTS) },
+            Err(GuardError::GuardUnavailable)
+        );
+        // Zero is valid for this C structure's integers, pointers and optional function pointers.
+        let mut table: ffi::sqlite3_vfs = unsafe { std::mem::zeroed() };
+        table.iVersion = 2;
+        assert_eq!(
+            unsafe { probe(&mut table, c"unix", UNIX_SLOTS) },
+            Err(GuardError::GuardUnavailable)
+        );
+        table.iVersion = 3;
+        table.zName = c"unapproved".as_ptr();
+        assert_eq!(
+            unsafe { probe(&mut table, c"unix", UNIX_SLOTS) },
+            Err(GuardError::GuardUnavailable)
+        );
+        table.zName = c"unix".as_ptr();
+        assert_eq!(
+            unsafe { probe(&mut table, c"unix", UNIX_SLOTS) },
+            Err(GuardError::GuardUnavailable)
+        );
+    }
+}
