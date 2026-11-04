@@ -128,6 +128,7 @@ fn guarded_source_contract() {
     admission_and_query_failures();
     bounded_lock_wait();
     readonly_shm_without_producer_requires_recovery();
+    invalid_shm_header_requires_producer_recovery();
     #[cfg(unix)]
     unix_source_boundaries();
     #[cfg(windows)]
@@ -139,6 +140,11 @@ fn guarded_source_contract() {
         denied_mutations_stay_fatal();
         shared_memory_extents_are_not_extended();
         replacement_at_native_open_is_rejected();
+        replacement_during_preflight_is_rejected();
+        #[cfg(unix)]
+        symlink_at_native_open_is_source_change();
+        // This scenario permanently poisons the engine; it must remain last.
+        failed_unmap_prevents_engine_reuse();
     }
 }
 
@@ -230,9 +236,16 @@ fn admission_and_query_failures() {
         c"SELECT value FROM items; SELECT 1",
         c"UPDATE items SET value=9 RETURNING value",
         c"PRAGMA query_only=OFF",
+        c"PRAGMA busy_timeout=2147483647",
+        c"PRAGMA trusted_schema=ON",
+        c"PRAGMA user_version=2",
     ] {
         assert_eq!(database.scalar_i64(sql), Err(GuardError::InvalidInput));
     }
+    assert_eq!(database.scalar_i64(c"PRAGMA query_only"), Ok(1));
+    assert_eq!(database.scalar_i64(c"PRAGMA busy_timeout"), Ok(1000));
+    assert_eq!(database.scalar_i64(c"PRAGMA trusted_schema"), Ok(0));
+    assert_eq!(database.scalar_i64(c"PRAGMA user_version"), Ok(1));
     assert!(
         database
             .scalar_i64(c"ATTACH DATABASE 'unapproved.db' AS other")
@@ -251,11 +264,20 @@ fn admission_and_query_failures() {
     assert_eq!(std::fs::read(fixture.path()).unwrap(), before);
 
     let journal = fixture.path().with_file_name("source.db-journal");
-    std::fs::write(&journal, b"unfinished fixture journal").unwrap();
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    std::fs::write(&journal, b"journal appeared after capture").unwrap();
+    // This process owns the reader engine; the new journal is never admitted.
     assert!(matches!(
-        ApprovedSource::capture(&fixture.path()),
+        unsafe { GuardedDatabase::open(source) },
         Err(GuardError::RecoveryRequired)
     ));
+    for contents in [b"unfinished fixture journal".as_slice(), b""] {
+        std::fs::write(&journal, contents).unwrap();
+        assert!(matches!(
+            ApprovedSource::capture(&fixture.path()),
+            Err(GuardError::RecoveryRequired)
+        ));
+    }
     std::fs::remove_file(journal).unwrap();
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -415,6 +437,7 @@ fn readonly_shm_without_producer_requires_recovery() {
                 .set_len(1)
                 .unwrap();
         }
+
         let source = ApprovedSource::capture(&fixture.path()).unwrap();
         let writable = std::fs::metadata(&shm).unwrap().permissions();
         #[cfg(unix)]
@@ -437,4 +460,96 @@ fn readonly_shm_without_producer_requires_recovery() {
             "Read-only SHM without a live producer must require recovery (undersized={undersized})"
         );
     }
+}
+
+/// A live producer's invalid index must not be repaired through the reader's writable SHM mapping.
+fn invalid_shm_header_requires_producer_recovery() {
+    let fixture = Fixture::new(true);
+    let shm = fixture.path().with_file_name("source.db-shm");
+    let wal = fixture.path().with_file_name("source.db-wal");
+    let mut file = std::fs::OpenOptions::new().write(true).open(&shm).unwrap();
+    file.write_all(&[0; 96]).unwrap();
+    drop(file);
+    let shm_before = std::fs::read(&shm).unwrap();
+    let wal_before = std::fs::read(&wal).unwrap();
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    // Only the separate producer owns the dead-man lock; this process owns the reader engine.
+    let result = unsafe { GuardedDatabase::open(source) };
+    assert!(matches!(result, Err(GuardError::RecoveryRequired)));
+    assert_eq!(std::fs::read(&shm).unwrap(), shm_before);
+    assert_eq!(std::fs::read(&wal).unwrap(), wal_before);
+}
+
+/// Retargeting an authorized path during preflight must not authorize its replacement.
+#[cfg(feature = "qualification-hooks")]
+fn replacement_during_preflight_is_rejected() {
+    let mut fixture = Fixture::new(false);
+    assert_eq!(fixture.command("close"), "closed");
+    let path = fixture.path();
+    let result = ApprovedSource::capture_with_preflight_barrier(&path, || {
+        let original = path.with_file_name("original.db");
+        let other = path.with_file_name("other.db");
+        std::fs::rename(&path, &original).unwrap();
+        std::fs::copy(original, &other).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(other, &path).unwrap();
+        #[cfg(windows)]
+        std::fs::rename(other, &path).unwrap();
+    });
+    assert!(matches!(result, Err(GuardError::SourceChanged)));
+}
+
+/// SQLite's ignored unmap error must override a prior violation and prevent all later admission.
+#[cfg(feature = "qualification-hooks")]
+fn failed_unmap_prevents_engine_reuse() {
+    let fixture = Fixture::new(true);
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    let retry = source.clone();
+    // This final scenario owns the engine exclusively and deliberately poisons it.
+    let mut database = unsafe { GuardedDatabase::open(source) }.unwrap();
+    database
+        .qualification_deny(agent_insights_sqlite_guard::QualificationOperation::Write)
+        .unwrap();
+    assert_eq!(
+        database.scalar_i64(c"SELECT 1"),
+        Err(GuardError::PolicyViolation)
+    );
+    database.qualification_fail_unmap();
+    assert_eq!(database.close(), Err(GuardError::Cleanup));
+    assert!(matches!(
+        ApprovedSource::capture(&fixture.path()),
+        Err(GuardError::Cleanup)
+    ));
+    // Failed cleanup may never expose the engine even with a previously captured grant.
+    assert!(matches!(
+        unsafe { GuardedDatabase::open(retry) },
+        Err(GuardError::Cleanup)
+    ));
+}
+
+/// Native O_NOFOLLOW rejection must distinguish a link replacement from an ordinary I/O error.
+#[cfg(all(unix, feature = "qualification-hooks"))]
+fn symlink_at_native_open_is_source_change() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    let mut fixture = Fixture::new(false);
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    assert_eq!(fixture.command("close"), "closed");
+    let ran = Arc::new(AtomicBool::new(false));
+    let observed = ran.clone();
+    let source = source.with_open_barrier(move |path| {
+        if !ran.swap(true, Ordering::SeqCst) {
+            let other = path.with_file_name("other.db");
+            std::fs::rename(path, &other).unwrap();
+            std::os::unix::fs::symlink(other, path).unwrap();
+        }
+    });
+    // No other consumer owns this reader engine.
+    assert!(matches!(
+        unsafe { GuardedDatabase::open(source) },
+        Err(GuardError::SourceChanged)
+    ));
+    assert!(observed.load(Ordering::SeqCst));
 }

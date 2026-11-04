@@ -2,7 +2,7 @@
 //! Preflight is not the no-create guard; native opens must recheck actual handles.
 
 use crate::{GuardError, platform};
-use std::fs::{File, Metadata, symlink_metadata};
+use std::fs::{Metadata, symlink_metadata};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -36,8 +36,8 @@ pub(crate) struct Entry {
 /// One caller-approved source set. It contains no database/session data cache.
 ///
 /// The application must authorize the supplied main path before calling
-/// [`ApprovedSource::capture`]. Only its exact WAL/SHM/journal companions are
-/// included; this type never follows paths discovered inside captured content.
+/// [`ApprovedSource::capture`]. Only its exact WAL/SHM companions are admitted;
+/// retained journals are rejected. Captured content never grants another path.
 #[derive(Clone)]
 pub struct ApprovedSource {
     pub(crate) main: PathBuf,
@@ -48,6 +48,10 @@ pub struct ApprovedSource {
 
 /// Classify filesystem errors without retaining paths or native error text.
 pub(crate) fn io_error(error: &std::io::Error) -> GuardError {
+    #[cfg(unix)]
+    if error.raw_os_error() == Some(libc::ELOOP) {
+        return GuardError::SourceChanged;
+    }
     match error.kind() {
         std::io::ErrorKind::PermissionDenied => GuardError::AccessDenied,
         std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory => {
@@ -82,15 +86,33 @@ impl ApprovedSource {
     ///
     /// # Errors
     /// Rejects missing/inaccessible/nonregular files, invalid SQLite headers,
-    /// missing live-WAL companions, nonempty rollback journals and size excess.
+    /// missing live-WAL companions, retained rollback journals and size excess.
     /// All preflight descriptors close before a SQLite connection is started.
     pub fn capture(path: &Path) -> Result<Self, GuardError> {
+        Self::capture_bound(path, || {})
+    }
+
+    /// Bind canonicalization to the already-opened object; the callback is only exposed in qualification builds.
+    fn capture_bound(path: &Path, before_canonical: impl FnOnce()) -> Result<Self, GuardError> {
         let _exclusive = crate::policy::exclusive()?;
         if !path.is_absolute() {
             return Err(GuardError::InvalidInput);
         }
-        regular(path)?;
+        let initial = regular(path)?;
+        let main_file = platform::preflight_file(path)?;
+        let main_identity = platform::identity_file(&main_file)?;
+        if !platform::matches_path(path, &initial, &main_identity)? {
+            return Err(GuardError::SourceChanged);
+        }
+        before_canonical();
+        if !platform::matches_path(path, &regular(path)?, &main_identity)? {
+            return Err(GuardError::SourceChanged);
+        }
         let main = path.canonicalize().map_err(|error| io_error(&error))?;
+        if !platform::matches_path(&main, &regular(&main)?, &main_identity)? {
+            return Err(GuardError::SourceChanged);
+        }
+        let mut main_file = Some(main_file);
         let mut entries = Vec::new();
         let mut header = [0; 100];
         for (role, selected) in [
@@ -111,14 +133,19 @@ impl ApprovedSource {
                 }
                 Err(error) => return Err(error),
             };
-            if role == Role::Journal && metadata.len() != 0 {
+            if role == Role::Journal {
                 return Err(GuardError::RecoveryRequired);
             }
-            let mut file = File::open(&selected).map_err(|error| io_error(&error))?;
+            let mut file = if role == Role::Main {
+                main_file.take().ok_or(GuardError::GuardUnavailable)?
+            } else {
+                platform::preflight_file(&selected)?
+            };
             let identity = platform::identity_file(&file)?;
             if !platform::matches_path(&selected, &metadata, &identity)? {
                 return Err(GuardError::SourceChanged);
             }
+            let metadata = file.metadata().map_err(|error| io_error(&error))?;
             if role == Role::Main {
                 file.read_exact(&mut header).map_err(|error| {
                     if error.kind() == std::io::ErrorKind::UnexpectedEof {
@@ -199,6 +226,18 @@ impl ApprovedSource {
     pub fn with_open_barrier(mut self, callback: impl Fn(&Path) + Send + Sync + 'static) -> Self {
         self.before_open = Some(std::sync::Arc::new(callback));
         self
+    }
+
+    /// Inject a preflight replacement after opening the approved object but before canonicalization.
+    ///
+    /// # Errors
+    /// Returns capture errors, including replacement/link rejection. Qualification builds only.
+    #[cfg(feature = "qualification-hooks")]
+    pub fn capture_with_preflight_barrier(
+        path: &Path,
+        callback: impl FnOnce(),
+    ) -> Result<Self, GuardError> {
+        Self::capture_bound(path, callback)
     }
 }
 

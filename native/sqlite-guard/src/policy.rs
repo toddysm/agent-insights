@@ -4,7 +4,7 @@
 use crate::{ApprovedSource, GuardError, inspect_native_abi, platform, source::Role};
 use libsqlite3_sys as ffi;
 use std::collections::HashMap;
-use std::ffi::{CStr, CString, c_int};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::path::Path;
 use std::ptr;
 use std::sync::{
@@ -83,7 +83,11 @@ pub(crate) fn deny(error: GuardError) {
     if let Ok(mut state) = STATE.lock()
         && let Some(state) = state.as_mut()
     {
-        state.failure.get_or_insert(error);
+        if error == GuardError::Cleanup {
+            state.failure = Some(error);
+        } else {
+            state.failure.get_or_insert(error);
+        }
     }
 }
 
@@ -222,9 +226,48 @@ fn sqlite_error(code: c_int) -> GuardError {
         ffi::SQLITE_BUSY | ffi::SQLITE_LOCKED => GuardError::Busy,
         ffi::SQLITE_CANTOPEN => io.unwrap_or(GuardError::SourceUnavailable),
         ffi::SQLITE_IOERR => io.unwrap_or(GuardError::Io),
-        ffi::SQLITE_PERM | ffi::SQLITE_AUTH => io.unwrap_or(GuardError::AccessDenied),
+        ffi::SQLITE_PERM => io.unwrap_or(GuardError::AccessDenied),
+        ffi::SQLITE_AUTH => GuardError::InvalidInput,
         ffi::SQLITE_READONLY => GuardError::RecoveryRequired,
         _ => GuardError::Data,
+    }
+}
+
+/// Reject configuration changes during preparation, before PRAGMA side effects can run.
+///
+/// # Safety
+/// SQLite supplies optional NUL-terminated authorizer arguments valid for this call.
+unsafe extern "C" fn authorize(
+    _context: *mut c_void,
+    action: c_int,
+    first: *const c_char,
+    second: *const c_char,
+    _database: *const c_char,
+    _trigger: *const c_char,
+) -> c_int {
+    let allowed = match action {
+        ffi::SQLITE_SELECT | ffi::SQLITE_READ | ffi::SQLITE_FUNCTION | ffi::SQLITE_RECURSIVE => {
+            true
+        }
+        ffi::SQLITE_PRAGMA if !first.is_null() => {
+            let name = unsafe { CStr::from_ptr(first) }.to_bytes();
+            [
+                b"query_only".as_slice(),
+                b"trusted_schema",
+                b"busy_timeout",
+                b"user_version",
+                b"data_version",
+            ]
+            .iter()
+            .any(|allowed| name.eq_ignore_ascii_case(allowed))
+                && second.is_null()
+        }
+        _ => false,
+    };
+    if allowed {
+        ffi::SQLITE_OK
+    } else {
+        ffi::SQLITE_DENY
     }
 }
 
@@ -241,6 +284,14 @@ pub struct GuardedDatabase {
 }
 
 impl GuardedDatabase {
+    /// Inject a native unmap error during close; the test mapping is still released to allow fixture cleanup.
+    ///
+    /// Qualification builds only. Closing must fail and permanently poison this process's engine.
+    #[cfg(feature = "qualification-hooks")]
+    pub fn qualification_fail_unmap(&mut self) {
+        platform::qualification_fail_unmap();
+    }
+
     /// Attempt out-of-bounds SHM mapping or resize through the real native guard.
     ///
     /// Qualification-only: this does not add a protocol operation or release capability.
@@ -408,6 +459,11 @@ impl GuardedDatabase {
                 ffi::sqlite3_limit(owned.db, ffi::SQLITE_LIMIT_SQL_LENGTH, 4096);
             }
             owned.exec(c"PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN; SELECT count(*) FROM sqlite_schema")?;
+            if unsafe { ffi::sqlite3_set_authorizer(owned.db, Some(authorize), ptr::null_mut()) }
+                != ffi::SQLITE_OK
+            {
+                return Err(GuardError::GuardUnavailable);
+            }
             owned.source.verify()?;
             check()
         })();
@@ -473,7 +529,7 @@ impl GuardedDatabase {
     /// instructions as SQL.
     ///
     /// # Errors
-    /// Rejects multi-statements, writes, oversized SQL, non-integer/multiple rows,
+    /// Rejects multi-statements, writes/configuration changes, oversized SQL, non-integer/multiple rows,
     /// source changes and every latched policy violation.
     pub fn scalar_i64(&mut self, sql: &CStr) -> Result<i64, GuardError> {
         check()?;

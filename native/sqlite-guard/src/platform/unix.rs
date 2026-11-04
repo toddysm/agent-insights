@@ -7,9 +7,12 @@ use crate::{
 };
 use libsqlite3_sys as ffi;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::os::fd::AsRawFd;
-use std::os::unix::{ffi::OsStrExt, fs::MetadataExt};
+use std::os::unix::{
+    ffi::OsStrExt,
+    fs::{MetadataExt, OpenOptionsExt},
+};
 use std::path::{Path, PathBuf};
 
 /// Stable native file identity, independent of pathname/content changes.
@@ -22,6 +25,15 @@ pub(crate) struct Identity {
 /// Inspect an existing preflight descriptor; this does not create another descriptor.
 pub(crate) fn identity_file(file: &File) -> Result<Identity, GuardError> {
     Ok(fd_info(file.as_raw_fd())?.0)
+}
+
+/// Open preflight evidence without following a final symlink or blocking on a substituted FIFO.
+pub(crate) fn preflight_file(path: &Path) -> Result<File, GuardError> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|error| io_error(&error))
 }
 
 /// Attempt SHM growth/mapping through native callbacks, not a pure-policy mock.
@@ -145,6 +157,7 @@ pub(crate) fn hooks() -> Vec<(&'static CStr, ffi::sqlite3_syscall_ptr, bool)> {
             (c"fallocate", policy::erased(allocate as *const ()), false),
             (c"unlink", policy::erased(unlink as *const ()), true),
             (c"mmap", policy::erased(map as *const ()), true),
+            (c"munmap", policy::erased(unmap as *const ()), true),
         ]
     }
 }
@@ -190,7 +203,12 @@ unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_i
     policy::before_open(&path_buf);
     let fd = unsafe { call(path, safe, mode) };
     if fd < 0 {
-        policy::note_io(io_error(&std::io::Error::last_os_error()));
+        let error = io_error(&std::io::Error::last_os_error());
+        if error == GuardError::SourceChanged {
+            policy::deny(error);
+        } else {
+            policy::note_io(error);
+        }
         return fd;
     }
     let validated = validate_open(fd, &selected);
@@ -328,4 +346,21 @@ unsafe extern "C" fn map(
         libc::off_t,
     ) -> *mut c_void = unsafe { std::mem::transmute(original) };
     unsafe { call(address, length, protection, flags, fd, offset) }
+}
+
+/// Check native unmapping even when SQLite ignores its return value.
+///
+/// # Safety
+/// Address and length must satisfy the pinned Unix munmap contract.
+unsafe extern "C" fn unmap(address: *mut c_void, length: usize) -> c_int {
+    let Some(original) = policy::original(c"munmap") else {
+        return denied(GuardError::Cleanup);
+    };
+    let call: unsafe extern "C" fn(*mut c_void, usize) -> c_int =
+        unsafe { std::mem::transmute(original) };
+    let result = unsafe { call(address, length) };
+    if !super::unmap_succeeded(result == 0) {
+        return denied(GuardError::Cleanup);
+    }
+    result
 }

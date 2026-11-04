@@ -47,6 +47,10 @@ pub(super) unsafe extern "C" fn open(
     unsafe {
         (*file).pMethods = ptr::null();
     }
+    if flags & ffi::SQLITE_OPEN_MAIN_JOURNAL != 0 {
+        deny(GuardError::RecoveryRequired);
+        return ffi::SQLITE_READONLY;
+    }
     if name.is_null() {
         deny(GuardError::PolicyViolation);
         return ffi::SQLITE_CANTOPEN;
@@ -177,7 +181,39 @@ forward!(unlock, xUnlock, (level:c_int), ffi::SQLITE_IOERR_UNLOCK);
 forward!(reserved, xCheckReservedLock, (result:*mut c_int), ffi::SQLITE_IOERR_CHECKRESERVEDLOCK);
 forward!(sector, xSectorSize, (), 0);
 forward!(characteristics, xDeviceCharacteristics, (), 0);
-forward!(shm_lock, xShmLock, (offset:c_int, count:c_int, flags:c_int), ffi::SQLITE_IOERR_SHMLOCK);
+
+/// Preserve reader locks but deny the pinned engine's exclusive WAL-index recovery range.
+///
+/// # Safety
+/// Arguments must satisfy SQLite's xShmLock contract.
+unsafe extern "C" fn shm_lock(
+    file: *mut ffi::sqlite3_file,
+    offset: c_int,
+    count: c_int,
+    flags: c_int,
+) -> c_int {
+    // SQLite 3.54.1 wal.c defines WAL_RECOVER_LOCK as byte 2.
+    const RECOVERY_LOCK: c_int = 2;
+    if flags & (ffi::SQLITE_SHM_LOCK | ffi::SQLITE_SHM_EXCLUSIVE)
+        == ffi::SQLITE_SHM_LOCK | ffi::SQLITE_SHM_EXCLUSIVE
+        && offset <= RECOVERY_LOCK
+        && offset
+            .checked_add(count)
+            .is_some_and(|end| end > RECOVERY_LOCK)
+    {
+        deny(GuardError::RecoveryRequired);
+        return ffi::SQLITE_IOERR_SHMLOCK;
+    }
+    let Some((real, methods)) = (unsafe { underlying(file) }) else {
+        unavailable();
+        return ffi::SQLITE_IOERR_SHMLOCK;
+    };
+    let Some(call) = methods.xShmLock else {
+        unavailable();
+        return ffi::SQLITE_IOERR_SHMLOCK;
+    };
+    unsafe { call(real, offset, count, flags) }
+}
 
 /// Read only bounded offsets; SQLite retains its required short-read zero-fill semantics.
 ///

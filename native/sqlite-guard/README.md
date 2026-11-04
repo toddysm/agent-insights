@@ -30,12 +30,19 @@ Ordinary VFS operations and internal Unix/Win32 file calls are guarded:
   operation remains a failed read even when the native caller ignores its result.
 - SQLite retains its own locking protocol. Source limits, a bounded native busy
   wait, normal close and failed-setup cleanup are tested with a separate producer.
+- Exclusive WAL-index recovery locks are rejected, including when a live producer
+  retains invalid SHM. Native unmap failures poison the engine even if SQLite
+  ignores the return value.
 
 The public scalar-read seam accepts only code-owned, single read-only integer
-queries. It is not a browser/model query console. Source matching, domain schema
+queries. A preparation-time authorizer rejects configuration changes; only
+read-only `query_only`, `trusted_schema`, `busy_timeout`, `user_version` and
+`data_version` PRAGMAs are admitted. It is not a browser/model query console. Source matching, domain schema
 admission and named projections remain the protocol/runtime readers' responsibility.
 The application must authorize the main path before preflight. Preflight uses
-read-only standard-library descriptors and closes them before SQLite takes locks;
+read-only, no-follow descriptors and binds canonicalization to the opened main
+object. All retained rollback journals, including empty ones, are rejected;
+only the producer may finish its journal lifecycle. Descriptors close before SQLite takes locks;
 Unix transaction-time identity checks do not open extra same-inode descriptors.
 
 The core is not an operating-system sandbox or protection against arbitrary
@@ -96,6 +103,8 @@ required on each declared target before claiming that target qualified.
 
 `qualification-hooks` adds deterministic race barriers and denied-operation
 probes for testing only. It must not be enabled in released helpers. The
+unmap fault reports failure after releasing the test-owned mapping so temporary
+fixture cleanup remains possible; engine reuse must still fail. The
 production build has no barrier callbacks or qualification operations. The
 protocol/packaging items must verify that distinction in their handshake/artifacts.
 

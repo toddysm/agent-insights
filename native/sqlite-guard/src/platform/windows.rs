@@ -7,9 +7,10 @@ use crate::{
 };
 use libsqlite3_sys as ffi;
 use std::ffi::{CStr, CString, c_void};
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::os::windows::{
     ffi::{OsStrExt, OsStringExt},
+    fs::OpenOptionsExt,
     io::AsRawHandle,
 };
 use std::path::{Path, PathBuf};
@@ -80,6 +81,15 @@ pub(crate) fn identity_file(file: &File) -> Result<Identity, GuardError> {
     Ok(handle_info(file.as_raw_handle())?.0)
 }
 
+/// Open the final object itself; identity inspection rejects reparse points before admission.
+pub(crate) fn preflight_file(path: &Path) -> Result<File, GuardError> {
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| io_error(&error))
+}
+
 /// Probe native SHM resize/mapping denial using an actual open source handle.
 #[cfg(feature = "qualification-hooks")]
 pub(crate) fn qualification_shm_limit(handle: usize, resize: bool) -> Result<(), GuardError> {
@@ -116,7 +126,7 @@ pub(crate) fn matches_path(
     _metadata: &Metadata,
     expected: &Identity,
 ) -> Result<bool, GuardError> {
-    let file = File::open(path).map_err(|error| io_error(&error))?;
+    let file = preflight_file(path)?;
     Ok(identity_file(&file)? == *expected)
 }
 /// Normalize only Win32 spelling differences; actual opened identity is checked independently.
@@ -220,6 +230,7 @@ pub(crate) fn hooks() -> Vec<(&'static CStr, ffi::sqlite3_syscall_ptr, bool)> {
                 true,
             ),
             (c"MapViewOfFile", policy::erased(view as *const ()), true),
+            (c"UnmapViewOfFile", policy::erased(unmap as *const ()), true),
         ]
     }
 }
@@ -469,4 +480,23 @@ unsafe extern "system" fn view(
     let call: unsafe extern "system" fn(HANDLE, u32, u32, u32, usize) -> *mut c_void =
         unsafe { std::mem::transmute(original) };
     unsafe { call(section, access, high, low, bytes) }
+}
+
+/// Check view release even when SQLite ignores a failed UnmapViewOfFile result.
+///
+/// # Safety
+/// The address must satisfy the pinned UnmapViewOfFile contract.
+unsafe extern "system" fn unmap(address: *const c_void) -> i32 {
+    let Some(original) = policy::original(c"UnmapViewOfFile") else {
+        denied(GuardError::Cleanup);
+        return 0;
+    };
+    let call: unsafe extern "system" fn(*const c_void) -> i32 =
+        unsafe { std::mem::transmute(original) };
+    let result = unsafe { call(address) };
+    if !super::unmap_succeeded(result != 0) {
+        denied(GuardError::Cleanup);
+        return 0;
+    }
+    result
 }
