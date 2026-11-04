@@ -13,6 +13,7 @@
 import { z } from "zod";
 import { sourceFormatSchema } from "../evidence/contracts.js";
 import { analysisRunSchema } from "../analysis/contracts.js";
+import { sourceObservationSchema } from "../evidence/source-access.js";
 
 /** Explicitly available/unavailable configured location; paths are returned only after authentication. */
 export const locationSchema = z.strictObject({
@@ -33,6 +34,19 @@ export const statusSchema = z.strictObject({
   checkedAtMs: z.number(),
   sources: z.array(locationSchema),
   readers: z.array(sourceFormatSchema),
+  multiSourceReaders: z.array(
+    z.strictObject({
+      id: z.string(),
+      inputs: z.array(
+        z.strictObject({
+          key: z.string(),
+          kind: z.enum(["file", "sqlite"]),
+          format: sourceFormatSchema,
+          optional: z.boolean(),
+        }),
+      ),
+    }),
+  ),
   hasReadView: z.boolean(),
   readTiming: z
     .strictObject({
@@ -40,6 +54,7 @@ export const statusSchema = z.strictObject({
       inputStartedAtMs: z.number(),
       inputFinishedAtMs: z.number(),
       finishedAtMs: z.number(),
+      sources: z.array(sourceObservationSchema).readonly().optional(),
     })
     .readonly()
     .nullable(),
@@ -74,6 +89,33 @@ export const readRequestSchema = z.strictObject({
 
 /** Validated source selection passed to the source boundary. */
 export type ReadRequest = z.infer<typeof readRequestSchema>;
+
+/** Composite controls bind explicit grants to code-owned roles; no SQL or schema is accepted. */
+export const readSetRequestSchema = z.strictObject({
+  readerId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+  sources: z
+    .array(
+      z
+        .strictObject({
+          key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+          sourceId: z.string().min(1),
+          relativePath: z
+            .string()
+            .max(4096)
+            .refine((value) => !value.includes("\0")),
+        })
+        .readonly(),
+    )
+    .min(1)
+    .max(8)
+    .refine(
+      (inputs) =>
+        new Set(inputs.map((input) => input.key)).size === inputs.length,
+    )
+    .readonly(),
+});
+/** Immutable selection for one installed multi-source adapter. */
+export type ReadSetRequest = z.infer<typeof readSetRequestSchema>;
 
 /** Public failures contain controlled messages, never raw exceptions or captured payloads. */
 export const errorSchema = z.strictObject({

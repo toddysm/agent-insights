@@ -15,6 +15,9 @@ limitations, and validation instructions.
 The [local runtime](docs/local-runtime.md) provides a loopback-only source
 interface and read-only access boundary, built on the
 [in-memory evidence contract](docs/evidence-contracts.md).
+Its shared access layer can coordinate explicitly authorized files and existing
+harness-owned SQLite databases without creating an application session store.
+This is infrastructure for the Agent Host readers, not installed reader support.
 The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
 memory-only model execution. Real source readers, report views and interpretation
 definitions are not installed yet; the interface reports those capabilities as

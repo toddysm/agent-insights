@@ -539,8 +539,10 @@ test("an in-flight selection cannot be relabeled by mutating the caller's reques
   selection.relativePath = "different.jsonl";
   const view = await pending;
   assert.equal(view.sources[0]?.id, "source-1");
-  assert.equal(service.selection?.sourceId, "source-1");
-  assert.equal(service.selection?.relativePath, "");
+  const actualSelection = service.selection;
+  assert.ok(actualSelection && "sourceId" in actualSelection);
+  assert.equal(actualSelection.sourceId, "source-1");
+  assert.equal(actualSelection.relativePath, "");
   assert.ok(Object.isFrozen(service.selection));
   service.invalidate();
   assert.equal(service.selection, null);

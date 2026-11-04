@@ -21,9 +21,112 @@ import {
 } from "../evidence/contracts.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError, cancelledRead } from "./errors.js";
-import type { ReadRequest, ReadTiming, RuntimeStatus } from "./protocol.js";
-import { SourceAccess } from "./sources.js";
+import type {
+  ReadRequest,
+  ReadSetRequest,
+  ReadTiming,
+  RuntimeStatus,
+} from "./protocol.js";
+import { SourceAccess, byteChunks } from "./sources.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
+import { SourceReadSet } from "./source-read.js";
+import {
+  sourceRequirementSchema,
+  type MultiSourceReader,
+  type SourceObservation,
+} from "../evidence/source-access.js";
+
+/** Validated adapter output with runtime-owned physical observation bounds. */
+interface ReadResult {
+  readonly view: ReadView;
+  readonly observations: readonly SourceObservation[];
+  readonly unavailable: readonly { sourceId: string; reason: string }[];
+  readonly composite: boolean;
+}
+
+/**
+ * Reduce coverage for source changes/failures without inventing evidence or timestamps.
+ * @param result - Structurally checked output plus authoritative capture observations.
+ * @returns A validated read view with source-scoped controlled issues.
+ */
+function observedView(result: ReadResult): ReadView {
+  const issues = [...result.view.issues];
+  const sources = result.view.sources.map((source) => {
+    const observation = result.observations.find(
+      (value) => value.sourceId === source.id,
+    );
+    if (!observation)
+      throw new RuntimeError(
+        "INVALID_READER_RESULT",
+        "Source evidence has no read observation.",
+        502,
+      );
+    const failure = result.unavailable.find(
+      (value) => value.sourceId === source.id,
+    );
+    const changed = observation.changed || source.changedDuringRead === true;
+    if (failure) {
+      issues.push({
+        sourceId: source.id,
+        code: "unreadable-source",
+        message: failure.reason,
+      });
+      const unavailable = {
+        status: "unavailable" as const,
+        reason: failure.reason,
+      };
+      return {
+        ...source,
+        format: null,
+        changedDuringRead: false,
+        coverage: {
+          messages: unavailable,
+          timing: unavailable,
+          tools: unavailable,
+          tokens: unavailable,
+        },
+      };
+    }
+    if (
+      changed &&
+      !issues.some(
+        (issue) =>
+          issue.sourceId === source.id && issue.code === "source-changed",
+      )
+    )
+      issues.push({
+        sourceId: source.id,
+        code: "source-changed",
+        message: "Source changed during read",
+      });
+    const coverage = { ...source.coverage };
+    if (changed)
+      for (const dimension of [
+        "messages",
+        "timing",
+        "tools",
+        "tokens",
+      ] as const) {
+        if (coverage[dimension].status === "complete")
+          coverage[dimension] = {
+            status: "partial",
+            reason: "Source changed during read",
+          };
+      }
+    return { ...source, changedDuringRead: changed, coverage };
+  });
+  return parseReadView({
+    ...result.view,
+    sources,
+    issues,
+    startedAtMs: Math.min(
+      ...result.observations.map((value) => value.startedAtMs),
+    ),
+    finishedAtMs: Math.max(
+      ...result.observations.map((value) => value.finishedAtMs),
+    ),
+  });
+}
 
 /**
  * Stop waiting for an adapter when the owned signal aborts.
@@ -50,23 +153,6 @@ async function abortable<T>(
 }
 
 /**
- * Expose the bounded capture to an internal reader in at most 64 KiB views.
- * @param bytes - Captured source buffer owned by this read, not a live file handle.
- * @param signal - Checked before each yield to stop delivery after cancellation.
- * @returns An asynchronous sequence of subarray views; readers must not mutate them.
- * Iteration rejects with a controlled cancellation error when the signal aborts.
- */
-async function* byteChunks(
-  bytes: Uint8Array,
-  signal: AbortSignal,
-): AsyncIterable<Uint8Array> {
-  for (let offset = 0; offset < bytes.length; offset += 64 * 1024) {
-    if (signal.aborted) throw cancelledRead(signal);
-    yield bytes.subarray(offset, offset + 64 * 1024);
-  }
-}
-
-/**
  * Own one current read, its exact selection and separate input/processing timestamps.
  * Completed data is immutable in memory; invalidation drops it rather than saving
  * history. Readers cannot relabel another source or publish after losing their generation.
@@ -74,8 +160,12 @@ async function* byteChunks(
  */
 export class RuntimeService {
   private readonly readers = new Map<SourceFormat, EvidenceReader>();
+  private readonly multiReaders = new Map<string, MultiSourceReader>();
+  private readonly readSets = new Set<SourceReadSet>();
+  private cleanupFailed = false;
   private current: ReadView | null = null;
-  private currentSelection: Readonly<ReadRequest> | null = null;
+  private currentSelection: Readonly<ReadRequest | ReadSetRequest> | null =
+    null;
   private currentTiming: ReadTiming | null = null;
   private active: { id: string; controller: AbortController } | null = null;
 
@@ -86,6 +176,7 @@ export class RuntimeService {
    * @param readers - Application-owned format adapters; defaults to none and rejects ambiguous registrations.
    * @param timeoutMs - Positive safe-integer read budget in milliseconds; defaults to 30,000.
    * @param analysis - Runner to invalidate alongside source changes, or null when not configured.
+   * @param multiReaders - Code-owned composite readers; no schemas/queries are accepted from the browser.
    * @throws Error for invalid timeout or reader registration.
    */
   constructor(
@@ -94,11 +185,36 @@ export class RuntimeService {
     readers: readonly EvidenceReader[] = [],
     private readonly timeoutMs = 30_000,
     readonly analysis: AnalysisRunner | null = null,
+    multiReaders: readonly MultiSourceReader[] = [],
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
       throw new Error("Read timeout must be a positive integer");
     for (const reader of readers)
       this.readers.set(reader.format, selectReader(readers, reader.format));
+    for (const reader of multiReaders) {
+      if (
+        !/^[A-Za-z0-9._-]{1,64}$/.test(reader.id) ||
+        this.multiReaders.has(reader.id)
+      )
+        throw new Error("Composite reader identity is invalid or duplicated");
+      const inputs = Object.freeze(
+        reader.inputs.map((input) => sourceRequirementSchema.parse(input)),
+      );
+      if (
+        inputs.length === 0 ||
+        inputs.length > 8 ||
+        new Set(inputs.map((input) => input.key)).size !== inputs.length
+      )
+        throw new Error("Composite reader inputs are invalid or duplicated");
+      this.multiReaders.set(
+        reader.id,
+        Object.freeze({
+          id: reader.id,
+          inputs,
+          read: reader.read.bind(reader),
+        }),
+      );
+    }
   }
 
   /**
@@ -123,6 +239,15 @@ export class RuntimeService {
       checkedAtMs: Date.now(),
       sources,
       readers: [...this.readers.keys()],
+      multiSourceReaders: [...this.multiReaders.values()].map((reader) => ({
+        id: reader.id,
+        inputs: reader.inputs.map((input) => ({
+          key: input.key,
+          kind: input.kind,
+          format: input.format,
+          optional: input.optional === true,
+        })),
+      })),
       hasReadView: this.current !== null,
       readTiming: this.currentTiming,
       analysis: {
@@ -148,7 +273,7 @@ export class RuntimeService {
    * Return the frozen selection that produced the current generation, or null.
    * It is not a live reference to whichever fields the browser currently displays.
    */
-  get selection(): Readonly<ReadRequest> | null {
+  get selection(): Readonly<ReadRequest | ReadSetRequest> | null {
     return this.currentSelection;
   }
 
@@ -198,6 +323,139 @@ export class RuntimeService {
         "No reader is installed for the selected format.",
         501,
       );
+    return this.runRead(
+      request,
+      externalSignal,
+      async (id, signal, ensureCurrent) => {
+        const captured = await abortable(
+          this.sources.read(request.sourceId, request.relativePath, signal),
+          signal,
+        );
+        ensureCurrent();
+        const candidate = await abortable(
+          reader.read({
+            readId: id,
+            sourceId: request.sourceId,
+            signal,
+            bytes: byteChunks(captured.bytes, signal),
+          }),
+          signal,
+        );
+        ensureCurrent();
+        const view = parseReadView(candidate);
+        const firstSource = view.sources[0];
+        if (
+          view.id !== id ||
+          view.sources.length !== 1 ||
+          !firstSource ||
+          firstSource.id !== request.sourceId ||
+          (firstSource.format !== null && firstSource.format !== request.format)
+        )
+          throw new RuntimeError(
+            "INVALID_READER_RESULT",
+            "The reader returned evidence for an unrelated read or source.",
+            502,
+          );
+        return {
+          view,
+          observations: [
+            {
+              sourceId: request.sourceId,
+              kind: "file",
+              available: true,
+              startedAtMs: captured.startedAtMs,
+              finishedAtMs: captured.finishedAtMs,
+              changed: captured.changed,
+            },
+          ],
+          unavailable: [],
+          composite: false,
+        };
+      },
+    );
+  }
+
+  /**
+   * Execute an installed composite reader over explicit, immutable role bindings.
+   * @param selection - Reader identity and authorized grant/relative-path bindings only.
+   * @param externalSignal - Caller cancellation; no source content or SQL arrives in controls.
+   * @returns Validated in-memory view after all owned database processes have exited.
+   */
+  async readSet(
+    selection: ReadSetRequest,
+    externalSignal: AbortSignal,
+  ): Promise<ReadView> {
+    const request = Object.freeze({
+      readerId: selection.readerId,
+      sources: Object.freeze(
+        selection.sources.map((binding) => Object.freeze({ ...binding })),
+      ),
+    });
+    const reader = this.multiReaders.get(request.readerId);
+    if (!reader)
+      throw new RuntimeError(
+        "READER_UNAVAILABLE",
+        "No composite reader is installed for this selection.",
+        501,
+      );
+    return this.runRead(
+      request,
+      externalSignal,
+      async (id, signal, ensureCurrent) => {
+        const set = new SourceReadSet(id, signal, this.sources, reader);
+        this.readSets.add(set);
+        try {
+          await set.prepare(request.sources);
+          ensureCurrent();
+          const view = parseReadView(await abortable(reader.read(set), signal));
+          ensureCurrent();
+          const observations = await set.finish();
+          set.validate(view);
+          return {
+            view,
+            observations,
+            unavailable: set.unavailable(),
+            composite: true,
+          };
+        } finally {
+          try {
+            await set.dispose();
+            this.readSets.delete(set);
+          } catch {
+            this.cleanupFailed = true;
+            throw new RuntimeError(
+              "SOURCE_CLEANUP_FAILED",
+              "Source cleanup failed; no further reads are admitted until cleanup succeeds.",
+              500,
+            );
+          }
+        }
+      },
+    );
+  }
+
+  /**
+   * Own common read invalidation, deadlines and publication for both input families.
+   * @param request - Frozen selection retained only after successful publication.
+   * @param externalSignal - Caller/disconnect cancellation, with untrusted reasons discarded.
+   * @param execute - Trusted adapter operation; must retain and clean every source owner.
+   * @returns Current read, with physical capture bounds separate from processing completion.
+   */
+  private async runRead(
+    request: Readonly<ReadRequest | ReadSetRequest>,
+    externalSignal: AbortSignal,
+    execute: (
+      id: string,
+      signal: AbortSignal,
+      ensureCurrent: () => void,
+    ) => Promise<ReadResult>,
+  ): Promise<ReadView> {
+    if (this.cleanupFailed)
+      throw new RuntimeError(
+        "SOURCE_CLEANUP_FAILED",
+        "Retry source cleanup before reading again.",
+        503,
+      );
     this.invalidate();
     const id = randomUUID();
     const controller = new AbortController();
@@ -227,103 +485,14 @@ export class RuntimeService {
     };
     timeout.unref();
     try {
-      const captured = await abortable(
-        this.sources.read(
-          request.sourceId,
-          request.relativePath,
-          controller.signal,
-        ),
-        controller.signal,
-      );
+      const result = await execute(id, controller.signal, ensureCurrent);
       ensureCurrent();
-      const input = {
-        readId: id,
-        sourceId: request.sourceId,
-        signal: controller.signal,
-        bytes: byteChunks(captured.bytes, controller.signal),
-      };
-      const candidate = await abortable(reader.read(input), controller.signal);
-      ensureCurrent();
-      const view = parseReadView(candidate);
-      const firstSource = view.sources[0];
-      if (
-        view.id !== id ||
-        view.sources.length !== 1 ||
-        firstSource === undefined ||
-        firstSource.id !== request.sourceId ||
-        (firstSource.format !== null && firstSource.format !== request.format)
-      ) {
-        throw new RuntimeError(
-          "INVALID_READER_RESULT",
-          "The reader returned evidence for an unrelated read or source.",
-          502,
-        );
-      }
-      const sources = view.sources.map((source) =>
-        captured.changed
-          ? {
-              ...source,
-              changedDuringRead: true,
-              coverage: {
-                messages:
-                  source.coverage.messages.status === "complete"
-                    ? {
-                        status: "partial",
-                        reason: "Source changed during read",
-                      }
-                    : source.coverage.messages,
-                timing:
-                  source.coverage.timing.status === "complete"
-                    ? {
-                        status: "partial",
-                        reason: "Source changed during read",
-                      }
-                    : source.coverage.timing,
-                tools:
-                  source.coverage.tools.status === "complete"
-                    ? {
-                        status: "partial",
-                        reason: "Source changed during read",
-                      }
-                    : source.coverage.tools,
-                tokens:
-                  source.coverage.tokens.status === "complete"
-                    ? {
-                        status: "partial",
-                        reason: "Source changed during read",
-                      }
-                    : source.coverage.tokens,
-              },
-            }
-          : source,
-      );
-      const issues = [...view.issues];
-      if (
-        captured.changed &&
-        !issues.some(
-          (issue) =>
-            issue.code === "source-changed" &&
-            issue.sourceId === request.sourceId,
-        )
-      ) {
-        issues.push({
-          code: "source-changed",
-          sourceId: request.sourceId,
-          message: "Source changed during read",
-        });
-      }
-      const normalized = parseReadView({
-        ...view,
-        startedAtMs: captured.startedAtMs,
-        finishedAtMs: captured.finishedAtMs,
-        sources,
-        issues,
-      });
+      const normalized = observedView(result);
       ensureCurrent();
       const finishedAtMs = Date.now();
       if (
         !Number.isSafeInteger(finishedAtMs) ||
-        finishedAtMs < captured.finishedAtMs
+        finishedAtMs < normalized.finishedAtMs
       ) {
         throw new RuntimeError(
           "CLOCK_CHANGED",
@@ -335,12 +504,19 @@ export class RuntimeService {
       this.currentSelection = request;
       this.currentTiming = Object.freeze({
         readId: id,
-        inputStartedAtMs: captured.startedAtMs,
-        inputFinishedAtMs: captured.finishedAtMs,
+        inputStartedAtMs: normalized.startedAtMs,
+        inputFinishedAtMs: normalized.finishedAtMs,
         finishedAtMs,
+        ...(result.composite ? { sources: result.observations } : {}),
       });
       return this.current;
     } catch (error) {
+      if (this.cleanupFailed)
+        throw new RuntimeError(
+          "SOURCE_CLEANUP_FAILED",
+          "Source cleanup failed; retry shutdown.",
+          500,
+        );
       if (controller.signal.aborted) throw cancelledRead(controller.signal);
       if (error instanceof z.ZodError)
         throw new RuntimeError(
@@ -354,5 +530,23 @@ export class RuntimeService {
       externalSignal.removeEventListener("abort", abort);
       if (this.active?.id === id) this.active = null;
     }
+  }
+
+  /** Cancel reads and retry retained source cleanup; caller owns analysis-provider shutdown separately. */
+  async close(): Promise<void> {
+    this.invalidate();
+    const results = await Promise.allSettled(
+      [...this.readSets].map(async (set) => {
+        await set.dispose();
+        this.readSets.delete(set);
+      }),
+    );
+    this.cleanupFailed = results.some((result) => result.status === "rejected");
+    if (this.cleanupFailed)
+      throw new RuntimeError(
+        "SOURCE_CLEANUP_FAILED",
+        "Source cleanup did not complete; retry shutdown.",
+        500,
+      );
   }
 }

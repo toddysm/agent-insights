@@ -61,17 +61,21 @@ correct it and restart to grant access. Existing authorized locations can be
 rechecked with "Refresh sources."
 
 For a directory grant, a reader request must name a relative file inside it.
-A file grant cannot read neighboring files. Traversal, cross-drive paths, links
+A regular-file read cannot select neighboring files through a file grant.
+For a database, the grant also covers its exact existing `-wal`, `-shm` and
+`-journal` companions, subject to the same identity and size checks, not arbitrary
+neighboring paths. Traversal, cross-drive paths, links
 escaping the canonical grant, and retargeted configured links are rejected.
 Only regular files are read, using read-only descriptors. A single read is
 limited to 64 MiB; oversized captures produce an explicit error, not silent
 truncation. There are no filesystem watchers.
 
 No production reader is registered yet, so "Read source" is disabled in this
-build. Internal adapters use the existing
+build. Internal adapters use the
 [reader contract](evidence-contracts.md); tests use synthetic adapters, not real
-capture support. Future readers receive a bounded byte stream and cancellation
-signal, not permission to select arbitrary paths.
+capture support. Single-file readers receive a bounded byte stream and cancellation
+signal. Composite readers receive only their declared, explicitly authorized
+file/database roles, not permission to select arbitrary paths.
 
 Read views remain in process memory. Refresh, cancellation and process shutdown
 discard the current view. An older operation cannot publish a result after a
@@ -87,6 +91,68 @@ The read deadline also uses a monotonic elapsed-time check before publication:
 synchronous parsing cannot publish an overdue result merely because it delayed
 the timeout callback. Cancellation cannot preempt JavaScript that is currently
 blocking the event loop, but its eventual result is rejected.
+
+### Shared file and SQLite access
+
+The shared foundation for
+[#33](https://github.com/toddysm/agent-insights/issues/33) reads **existing
+harness-owned databases in place**. It does not create an Agent Insights database,
+replica, archive, synchronization process or saved analysis history. Native Agent
+Host conversation/execution readers remain separate work in
+[#31](https://github.com/toddysm/agent-insights/issues/31) and
+[#32](https://github.com/toddysm/agent-insights/issues/32); this build registers none.
+
+Trusted embedding code can register `multiSourceReaders`. The authenticated
+`POST /api/read-set` control selects a registered `readerId` and one
+`{ key, sourceId, relativePath }` binding per declared role. The same launch-token,
+origin and 8,192-byte request-body checks apply as for `POST /api/read`.
+Status exposes role metadata, **not** query/schema declarations. There is no
+generic SQL endpoint, automatic source discovery or model call during reading.
+A path mentioned inside captured evidence does not authorize another file.
+
+Adapters declare supported `user_version` values, ordinary tables, exact primary
+keys, selected columns and named equality queries. Values are bound parameters;
+optional JSON field paths are code-owned identifier/index segments. Views,
+virtual tables and generated-column tables are rejected. Adapters cannot issue
+writes, `ATTACH`, extension-loading commands or arbitrary SQL through this
+interface. No producer store constructor, migration or session restoration is used.
+
+Each database runs in a short-lived application reader process with SQLite
+read-only/query-only settings, extension loading disabled and temporary storage
+in memory. This is **not** a Copilot/model process and inherits no provider
+credentials or Node.js debugger/preload configuration. Cancellation/deadlines
+terminate the owned process and await exit; cleanup failures remain explicit and
+block further reads until cleanup is retried. Refresh/cancel and shutdown also
+await source cleanup. The process-exit confirmation limit is five seconds.
+
+| Bound | Limit |
+| --- | --- |
+| Roles per composite read | 1–8 |
+| One database, including existing WAL/SHM/journal sidecars | 64 MiB total |
+| Combined captured file bytes plus encoded database results | 64 MiB |
+| Database rows across all queries in one read | 10,000 |
+| Encoded database result per query | 8 MiB |
+| Tagged parameter values per query | 8,192 bytes |
+| Queries per composite read, including empty results | 256 |
+| Overall read deadline / SQLite lock wait | 30 seconds / at most 1 second per lock wait |
+
+Database result cost includes canonical tagged values and original key/table/
+fingerprint metadata; it is not a promise about total process memory or transport
+overhead. Limits reject one-over requests/results rather than truncating them.
+Each database has a consistent read transaction; independently updated files
+and databases **do not form a global atomic snapshot**. Status retains per-source
+observation intervals, admitted database versions and detected changes.
+Source-specific readers still own identity matching and accounting.
+
+Live write-ahead logging (WAL) databases require their existing WAL and
+shared-memory (SHM) sidecars. Missing sidecars, links/replacements or a nonempty
+rollback journal fail explicitly; the harness must finish recovery. The reader
+never changes journal mode, checkpoints, repairs, copies the database or uses
+`immutable=true` to bypass live coordination. Read-only SQLite may update
+**existing shared-memory coordination bytes**; it does not promise byte-for-byte
+immutability of that sidecar. Main/WAL metadata changes reduce coverage, while
+SHM coordination changes alone do not. Identity checks are best effort, not an
+atomic defense against a hostile same-account replace-and-revert race.
 
 ## Copilot configuration and remote processing
 
@@ -141,6 +207,10 @@ individual interpretation definitions remain separate work.
   no example data or zero-valued report replaces it.
 - **Read cancelled / timed out:** retry through the interface. A stale result is
   never attached to a newer read.
+- **Database schema, sidecar or recovery error:** use a supported source and let
+  the owning harness finish its operation; do not copy/repair it through this app.
+- **Source cleanup failed:** retry cancellation/shutdown. A successful view or
+  a new read is not substituted while a source owner remains uncleaned.
 - **Unexpected failure:** the server reports a diagnostic code, not raw request
   bodies, source text, credentials or exception stacks.
 

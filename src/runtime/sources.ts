@@ -1,6 +1,6 @@
 /** Read-only access to startup-authorized locations; no scanning, writes or retained byte cache. */
 import { constants } from "node:fs";
-import { access, open, realpath, stat } from "node:fs/promises";
+import { access, open, realpath, stat, lstat } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import path from "node:path";
 import { RuntimeError, cancelledRead, filesystemError } from "./errors.js";
@@ -23,6 +23,80 @@ export interface CapturedSource {
   readonly changed: boolean;
   readonly startedAtMs: number;
   readonly finishedAtMs: number;
+}
+
+/**
+ * Borrow a bounded capture in at most 64 KiB views, rejecting cancellation before each yield.
+ * Readers must not mutate/persist these views; they are not live filesystem handles.
+ */
+export async function* byteChunks(
+  bytes: Uint8Array,
+  signal: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+    if (signal.aborted) throw cancelledRead(signal);
+    yield bytes.subarray(offset, offset + CHUNK_BYTES);
+  }
+}
+
+/** Serializable identity/content observations for a database or one of its exact sidecars. */
+export interface FileState {
+  readonly dev: string;
+  readonly ino: string;
+  readonly size: string;
+  readonly mtime: string;
+  readonly ctime: string;
+}
+
+/** Internal runtime lease, never exposed to readers or browser controls. */
+export interface DatabaseLease {
+  readonly path: string;
+  readonly main: FileState;
+  readonly sidecars: Readonly<Record<string, FileState | null>>;
+  readonly startedAtMs: number;
+  /** Revalidate grant/identity and return whether main/WAL content metadata changed. */
+  verify(): Promise<boolean>;
+  /** Release the pinned read-only descriptor after the database process has exited. */
+  close(): Promise<void>;
+}
+
+/** Preserve nanosecond identity observations across the database-process boundary. */
+export function fileState(info: BigIntStats): FileState {
+  return {
+    dev: String(info.dev),
+    ino: String(info.ino),
+    size: String(info.size),
+    mtime: String(info.mtimeNs),
+    ctime: String(info.ctimeNs),
+  };
+}
+
+/**
+ * Inspect only an exact SQLite sidecar; absence is distinct from access failure.
+ * @param file - Runtime-selected main path plus a fixed SQLite suffix.
+ * @returns Metadata or null when absent; rejects links/non-files and permission errors.
+ */
+export async function inspectSidecar(file: string): Promise<FileState | null> {
+  try {
+    const info = await lstat(file, { bigint: true });
+    if (!info.isFile() || info.isSymbolicLink())
+      throw new RuntimeError(
+        "SOURCE_LINK",
+        "A database sidecar is not a regular file.",
+        403,
+      );
+    if (info.size > BigInt(MAX_SOURCE_BYTES))
+      throw new RuntimeError(
+        "SOURCE_TOO_LARGE",
+        "A database sidecar exceeds the source limit.",
+        413,
+      );
+    return fileState(info);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return null;
+    filesystemError(error);
+  }
 }
 
 /** Check containment using platform-native path rules, including cross-drive rejection. */
@@ -183,13 +257,16 @@ export class SourceAccess {
     );
   }
 
-  /** Read an authorized regular file prefix through a read-only descriptor; reject escapes before reading bytes. */
-  async read(
+  /** Resolve one authorized regular source; shared by byte capture and database leases. */
+  private async resolve(
     sourceId: string,
     relativePath: string,
     signal: AbortSignal,
-  ): Promise<CapturedSource> {
-    const startedAtMs = Date.now();
+  ): Promise<{
+    grant: SourceGrant;
+    canonical: string;
+    candidate: string;
+  }> {
     const grant = this.grants.find((candidate) => candidate.id === sourceId);
     if (
       grant === undefined ||
@@ -239,6 +316,39 @@ export class SourceAccess {
         );
       }
       if (signal.aborted) throw cancelledRead(signal);
+      return { grant, canonical, candidate };
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * Capture an authorized regular file prefix through a read-only descriptor.
+   * Reject escapes and sizes over the remaining byte budget (default 64 MiB) before allocation.
+   */
+  async read(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+    budget = MAX_SOURCE_BYTES,
+  ): Promise<CapturedSource> {
+    if (
+      !Number.isSafeInteger(budget) ||
+      budget < 0 ||
+      budget > MAX_SOURCE_BYTES
+    )
+      throw new RuntimeError(
+        "INVALID_READ_BUDGET",
+        "The file capture budget is invalid.",
+        500,
+      );
+    const startedAtMs = Date.now();
+    const { grant, canonical, candidate } = await this.resolve(
+      sourceId,
+      relativePath,
+      signal,
+    );
+    try {
       const flags =
         constants.O_RDONLY |
         (process.platform === "win32"
@@ -260,6 +370,12 @@ export class SourceAccess {
             413,
           );
         }
+        if (before.size > BigInt(budget))
+          throw new RuntimeError(
+            "READ_LIMIT",
+            "The combined read exceeded its capture-byte limit.",
+            413,
+          );
         if (!(await pointsToOpenedFile(candidate, canonical, before))) {
           throw new RuntimeError(
             "SOURCE_CHANGED",
@@ -296,6 +412,147 @@ export class SourceAccess {
         await handle.close();
       }
     } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * Pin a database and validate its exact sidecars without invoking SQLite.
+   * @param sourceId - Explicit startup grant identity.
+   * @param relativePath - Empty for a file grant, or a confined relative path.
+   * @param signal - Read-generation cancellation.
+   * @returns Runtime-only lease; caller must close it after database process cleanup.
+   * @throws Controlled source errors, including WAL databases missing pre-existing sidecars.
+   */
+  async database(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+  ): Promise<DatabaseLease> {
+    const startedAtMs = Date.now();
+    const { grant, canonical, candidate } = await this.resolve(
+      sourceId,
+      relativePath,
+      signal,
+    );
+    const handle = await open(
+      canonical,
+      constants.O_RDONLY |
+        (process.platform === "win32"
+          ? 0
+          : constants.O_NOFOLLOW | constants.O_NONBLOCK),
+    ).catch(filesystemError);
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.size > BigInt(MAX_SOURCE_BYTES))
+        throw new RuntimeError(
+          "SOURCE_TOO_LARGE",
+          "Database exceeds the bounded regular-source limit.",
+          413,
+        );
+      const header = Buffer.alloc(100);
+      const { bytesRead } = await handle.read(header, 0, header.length, 0);
+      if (
+        bytesRead !== 100 ||
+        header.subarray(0, 16).toString("binary") !== "SQLite format 3\0"
+      )
+        throw new RuntimeError(
+          "SQLITE_FORMAT",
+          "The selected source is not a supported SQLite database.",
+          422,
+        );
+      const sidecars: Record<string, FileState | null> = {};
+      for (const suffix of ["-wal", "-shm", "-journal"])
+        sidecars[suffix] = await inspectSidecar(canonical + suffix);
+      if (
+        before.size +
+          Object.values(sidecars).reduce(
+            (size, value) => size + BigInt(value?.size ?? 0),
+            0n,
+          ) >
+        BigInt(MAX_SOURCE_BYTES)
+      )
+        throw new RuntimeError(
+          "SOURCE_TOO_LARGE",
+          "Database and sidecars exceed the source limit.",
+          413,
+        );
+      if (
+        (header[18] === 2 || header[19] === 2) &&
+        (!sidecars["-wal"] || !sidecars["-shm"])
+      )
+        throw new RuntimeError(
+          "SQLITE_SIDECARS",
+          "A live WAL database requires existing WAL and shared-memory sidecars; none will be created.",
+          409,
+        );
+      if (sidecars["-journal"] && BigInt(sidecars["-journal"].size) > 0n)
+        throw new RuntimeError(
+          "SQLITE_RECOVERY_REQUIRED",
+          "The harness must finish database recovery before a read-only read.",
+          409,
+        );
+      if (signal.aborted) throw cancelledRead(signal);
+      const main = fileState(before);
+      /**
+       * Check grant/descriptor identity after SQLite access. Shared-memory coordination
+       * is not a content-change signal, but sidecar replacement is an explicit failure.
+       */
+      const verify = async (): Promise<boolean> => {
+        await this.inspect(grant);
+        if (!(await pointsToOpenedFile(candidate, canonical, before)))
+          throw new RuntimeError(
+            "SOURCE_CHANGED",
+            "Database identity changed during the read.",
+            409,
+          );
+        const now = await handle.stat({ bigint: true });
+        let changed = !sameFileState(before, now);
+        let totalSize = now.size;
+        for (const suffix of ["-wal", "-shm", "-journal"]) {
+          const previous = sidecars[suffix];
+          const current = await inspectSidecar(canonical + suffix);
+          totalSize += BigInt(current?.size ?? 0);
+          if (
+            (previous === null) !== (current === null) ||
+            (previous &&
+              current &&
+              (previous.dev !== current.dev || previous.ino !== current.ino))
+          )
+            throw new RuntimeError(
+              "SOURCE_CHANGED",
+              "Database sidecar identity changed during the read.",
+              409,
+            );
+          if (
+            suffix !== "-shm" &&
+            previous &&
+            current &&
+            (previous.size !== current.size ||
+              previous.mtime !== current.mtime ||
+              previous.ctime !== current.ctime)
+          )
+            changed = true;
+        }
+        if (totalSize > BigInt(MAX_SOURCE_BYTES))
+          throw new RuntimeError(
+            "SOURCE_TOO_LARGE",
+            "Database and sidecars exceed the source limit.",
+            413,
+          );
+        return changed;
+      };
+      await verify();
+      return {
+        path: canonical,
+        main,
+        sidecars: Object.freeze(sidecars),
+        startedAtMs,
+        verify,
+        close: () => handle.close(),
+      };
+    } catch (error) {
+      await handle.close();
       filesystemError(error);
     }
   }
