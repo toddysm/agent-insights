@@ -312,6 +312,14 @@ pub struct GuardedDatabase {
 }
 
 impl GuardedDatabase {
+    /// Arm one close error at a qualification barrier; the real test handle is released before failure is reported.
+    ///
+    /// Qualification builds only. Rejected-open cleanup must poison later engine admission.
+    #[cfg(feature = "qualification-hooks")]
+    pub fn qualification_fail_close() {
+        platform::qualification_fail_close();
+    }
+
     /// Inject a native unmap error during close; the test mapping is still released to allow fixture cleanup.
     ///
     /// Qualification builds only. Closing must fail and permanently poison this process's engine.

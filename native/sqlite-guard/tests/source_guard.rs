@@ -1,5 +1,6 @@
 //! Native guarded reads against an independently running synthetic producer.
-//! One test serializes all engine ownership; no private capture is opened.
+//! The main test serializes engine ownership; a separate child isolates rejected-close poisoning.
+//! No private capture is opened.
 use agent_insights_sqlite_guard::{ApprovedSource, GuardError, GuardedDatabase};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
@@ -155,6 +156,60 @@ fn guarded_source_contract() {
         // This scenario permanently poisons the engine; it must remain last.
         failed_unmap_prevents_engine_reuse();
     }
+}
+
+/// A rejected actual handle still needs checked cleanup; run poisoning in a dedicated test process.
+#[cfg(feature = "qualification-hooks")]
+#[test]
+fn rejected_open_close_failure_is_sticky() {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+    const CHILD: &str = "AGENT_INSIGHTS_REJECTED_CLOSE_TEST";
+    if std::env::var_os(CHILD).is_none() {
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "rejected_open_close_failure_is_sticky",
+                "--nocapture",
+            ])
+            .env(CHILD, "child")
+            .status()
+            .unwrap();
+        assert!(status.success(), "Rejected-close child must pass");
+        return;
+    }
+    assert_eq!(std::env::var(CHILD).unwrap(), "child");
+    let mut fixture = Fixture::new(false);
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    assert_eq!(fixture.command("close"), "closed");
+    let retry = source.clone();
+    let ran = Arc::new(AtomicBool::new(false));
+    let observed = ran.clone();
+    let source = source.with_open_barrier(move |path| {
+        if !ran.swap(true, Ordering::SeqCst) {
+            let original = path.with_file_name("original.db");
+            std::fs::rename(path, &original).unwrap();
+            std::fs::copy(original, path).unwrap();
+            GuardedDatabase::qualification_fail_close();
+        }
+    });
+    // This child exclusively owns its engine; the opened replacement must be rejected and closed.
+    assert!(matches!(
+        unsafe { GuardedDatabase::open(source) },
+        Err(GuardError::Cleanup)
+    ));
+    assert!(observed.load(Ordering::SeqCst));
+    assert!(matches!(
+        ApprovedSource::capture(&fixture.path()),
+        Err(GuardError::Cleanup)
+    ));
+    // A previously captured grant cannot bypass the poisoned admission check either.
+    assert!(matches!(
+        unsafe { GuardedDatabase::open(retry) },
+        Err(GuardError::Cleanup)
+    ));
 }
 
 /// Close the real producer after preflight but before the guard's actual main-file open.

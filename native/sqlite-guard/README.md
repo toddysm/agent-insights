@@ -38,6 +38,9 @@ Ordinary VFS operations and internal Unix/Win32 file calls are guarded:
 - Exclusive WAL-index recovery locks are rejected, including when a live producer
   retains invalid SHM. Native unmap failures poison the engine even if SQLite
   ignores the return value.
+- Failed cleanup also poisons admission for a rejected descriptor/handle that
+  never entered the tracked source set; the original validation error is
+  preserved only when its native close succeeds.
 
 The public scalar-read seam accepts only code-owned, single read-only integer
 queries. A preparation-time authorizer rejects configuration changes; only
@@ -109,14 +112,15 @@ The [native workflow](../../.github/workflows/native-guard.yml) executes on
 macOS arm64/x64, GNU/Linux x64 and MSVC Windows x64 and verifies the actual
 host target. The crate embeds Cargo's exact target triple; musl, Windows
 GNU/gnullvm, x32 and other unqualified ABIs are explicitly rejected.
-Source qualification uses a separate Node.js 24+ synthetic writer. One integration
+Source qualification uses a separate Node.js 24+ synthetic writer. The main integration
 test serializes real engine ownership and exercises multiple source scenarios;
-its test count is not a count of the individual scenarios. Native execution is
+a separate child process isolates the rejected-close poisoning scenario.
+Test counts are not counts of the individual scenarios. Native execution is
 required on each declared target before claiming that target qualified.
 
 `qualification-hooks` adds deterministic race barriers and denied-operation
 probes for testing only. It must not be enabled in released helpers. The
-unmap fault reports failure after releasing the test-owned mapping so temporary
+unmap/close faults report failure after releasing test-owned resources so temporary
 fixture cleanup remains possible; engine reuse must still fail. The
 production build has no barrier callbacks or qualification operations. The
 protocol/packaging items must verify that distinction in their handshake/artifacts.

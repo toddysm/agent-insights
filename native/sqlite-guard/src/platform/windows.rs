@@ -316,7 +316,7 @@ unsafe extern "system" fn open(
     })();
     if let Err(error) = result {
         unsafe {
-            CloseHandle(handle);
+            close(handle);
         }
         denied(error);
         return INVALID_HANDLE_VALUE;
@@ -333,9 +333,18 @@ unsafe extern "system" fn close(handle: HANDLE) -> i32 {
         Ok(mut maps) => maps.retain(|(key, _)| *key != handle as usize),
         Err(_) => policy::deny(GuardError::Cleanup),
     }
+    unsafe { close_native(handle) }
+}
+
+/// Check a native close even for handles rejected before registration.
+///
+/// # Safety
+/// The caller owns this live handle and relinquishes it here; no mapping-table lock is acquired.
+unsafe fn close_native(handle: HANDLE) -> i32 {
     let result = unsafe { CloseHandle(handle) };
-    if result == 0 {
-        policy::deny(GuardError::Cleanup);
+    if !super::close_succeeded(result != 0) {
+        denied(GuardError::Cleanup);
+        return 0;
     }
     result
 }
@@ -421,7 +430,7 @@ unsafe extern "system" fn mapping(
     if !handle.is_null() {
         let Ok(mut maps) = MAPPINGS.lock() else {
             unsafe {
-                CloseHandle(handle);
+                close_native(handle);
             }
             denied(GuardError::GuardUnavailable);
             return std::ptr::null_mut();

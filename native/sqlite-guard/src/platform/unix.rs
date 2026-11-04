@@ -214,7 +214,7 @@ unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_i
     let validated = validate_open(fd, &selected);
     if let Err(error) = validated {
         unsafe {
-            libc::close(fd);
+            close(fd);
         }
         return denied(error);
     }
@@ -240,8 +240,8 @@ fn validate_open(fd: c_int, entry: &Entry) -> Result<(), GuardError> {
 unsafe extern "C" fn close(fd: c_int) -> c_int {
     policy::forget(fd as usize);
     let result = unsafe { libc::close(fd) };
-    if result != 0 {
-        policy::deny(GuardError::Cleanup);
+    if !super::close_succeeded(result == 0) {
+        return denied(GuardError::Cleanup);
     }
     result
 }
