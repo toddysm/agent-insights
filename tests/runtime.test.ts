@@ -934,7 +934,7 @@ test("the packaged CLI starts a responsive loopback service and shuts down witho
   const child = spawn(process.execPath, [".build/src/runtime/cli.js"], {
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const exited = once(child, "exit");
+  const exited: Promise<unknown[]> = once(child, "exit");
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null)
       child.kill("SIGTERM");
@@ -943,7 +943,8 @@ test("the packaged CLI starts a responsive loopback service and shuts down witho
   let output = "";
   const signal = AbortSignal.timeout(10_000);
   while (!output.includes("\n")) {
-    const [chunk] = await once(child.stdout, "data", { signal });
+    const data: unknown[] = await once(child.stdout, "data", { signal });
+    const [chunk] = data;
     output += String(chunk);
   }
   const match = output.match(
@@ -981,8 +982,8 @@ test("the packaged CLI prints usage and rejects unsupported configuration withou
     child.stderr.on("data", (chunk) => {
       output += String(chunk);
     });
-    const [code] = await once(child, "exit");
-    assert.equal(code, expected);
+    const exit: unknown[] = await once(child, "exit");
+    assert.equal(exit[0], expected);
     assert.match(
       output,
       expected === 0 ? /--source PATH/ : /UNSUPPORTED_HARNESS/,

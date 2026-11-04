@@ -56,6 +56,7 @@ async function abortable<T>(
  * @returns An asynchronous sequence of subarray views; readers must not mutate them.
  * Iteration rejects with a controlled cancellation error when the signal aborts.
  */
+// eslint-disable-next-line @typescript-eslint/require-await -- In-memory views implement the reader's async-iterator contract without artificial I/O.
 async function* byteChunks(
   bytes: Uint8Array,
   signal: AbortSignal,

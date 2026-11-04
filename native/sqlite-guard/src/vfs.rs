@@ -66,6 +66,7 @@ const UNIX_SLOTS: &[Requirement] = &[
     required(c"unlink"),
     conditional(c"fchown"),
     required(c"mmap"),
+    required(c"munmap"),
     conditional(c"mremap"),
 ];
 

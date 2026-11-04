@@ -24,18 +24,34 @@ the analysis executor, not the first history source being imported; see the
 [source/executor distinction](docs/copilot-analysis.md#vs-code-evidence-and-the-analysis-executor-are-different).
 See the [capability inventory](docs/project-state.md) for the current plan.
 
-Native source-safety work has begun in the
-[Rust guard crate](native/sqlite-guard/README.md). Its initial engine and
-application binary interface (ABI) checks do not yet provide a working source
-guard or change reader availability.
+Native source-safety work lives in the
+[Rust guard crate](native/sqlite-guard/README.md), including guarded existing-file
+reads and native qualification tests. The helper protocol, artifact delivery and
+Node integration remain separate work; this does not change installed reader availability.
 
 To validate the implementation with Node.js 24:
 
 ```bash
 npm ci --ignore-scripts
+npm run lint
+npm run test:lint
 npm run check
 npm test
 ```
+
+ESLint uses [flat configuration](eslint.config.js), recommended JavaScript rules,
+type-aware TypeScript rules for the compiler project, and recommended React
+Hooks rules. Generated build, native target and browser-report files are ignored.
+Application continuous integration runs lint with zero warnings allowed.
+
+The initial lint findings were corrected rather than stored in a debt baseline.
+Documented exceptions preserve intentional contracts: synchronous test doubles
+may keep async signatures; the in-memory SDK adapter and byte-stream adapter
+retain asynchronous rejection/iteration without artificial waits; cleanup failure
+may deliberately override success or cancellation. Object-rest omissions are
+allowed for stripping credentials. Other type-aware checks remain enabled,
+including floating promises except the known-safe `node:test` registrations.
+Configuration tests check both accepted fixtures and rejected floating promises.
 
 To open the local interface from a fresh checkout:
 
