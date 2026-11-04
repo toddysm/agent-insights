@@ -97,6 +97,15 @@ The historical #35 review lacked Codex quota; that is not a permanent global
 review status. Both configured reviewers completed for the #40 merge, and #41
 uses fresh hosted reviews. No prior quota exception carries over.
 
+The user subsequently reviewed #41 and explicitly requested including tooling
+item [#42](https://github.com/toddysm/agent-insights/issues/42) in that same pull
+request. Its type-aware ESLint configuration, configuration tests and zero-warning
+application validation are implemented but unmerged. Actionable findings were
+corrected; narrow documented exceptions preserve intentional async and cleanup
+contracts rather than introducing a debt baseline. The native review fixes
+release idle rollback-mode read locks and distinguish journal presence from
+required recovery, while preserving WAL snapshots.
+
 ## Planned
 
 | Capability | Feature slug | Tracking issue | PRD doc | Documentation status |
@@ -111,8 +120,10 @@ harness support. The native guard core is implemented but unmerged; the bounded
 helper protocol, verified artifacts, runtime integration and Agent Host readers
 remain unfinished.
 
-The required tracker now has 24 native children and 38 immediate dependency links,
-verified without cycles. The execution order is #36 -> #37 -> #38 -> #33 ->
+Revision 13 established 24 native children and 38 immediate dependency links,
+verified without cycles. The user's later #42 tooling addition brings the
+tracker to 25 children without adding native prerequisite edges. The execution
+order remains #36 -> #37 -> #38 -> #33 ->
 #39 -> complete delivery #20. Existing #1/#21 remain the documentation items.
 Local-only #10/#11 remain open outside that completion gate; #12/#14 no longer
 depend on them. #33 follows the existing runtime and precedes #31/#32.
