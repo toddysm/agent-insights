@@ -11,6 +11,7 @@ fn public_inspection_reports_the_pinned_engine_and_restored_native_slots() {
     let before = unsafe { inspect_native_abi() }.expect("the native ABI must be available");
     assert!(matches!(before.vfs_name, "unix" | "win32"));
     assert!(!before.hooks.is_empty());
+    assert!(before.hooks.iter().any(|hook| hook.active));
     // A second probe checks that the first one did not leave sentinels installed.
     let after = unsafe { inspect_native_abi() }.expect("callback restoration must be repeatable");
     assert_eq!(before, after);

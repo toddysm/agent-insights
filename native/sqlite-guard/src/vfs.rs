@@ -205,17 +205,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn actual_native_slots_support_replace_and_restore() {
-        // This test binary opens no databases; the probe mutex serializes actual VFS probes.
-        let abi = unsafe { inspect_native_abi() }
-            .expect("qualified target must expose its audited slots");
-        assert!(!abi.hooks.is_empty());
-        assert!(abi.hooks.iter().any(|hook| hook.active));
-        // Repeating the probe must see the same restored callbacks and compiled-out slots.
-        assert_eq!(unsafe { inspect_native_abi() }.unwrap(), abi);
-    }
-
-    #[test]
     fn null_unknown_or_missing_interfaces_are_unavailable() {
         // Null is explicitly accepted as a negative input by probe's contract.
         assert_eq!(
@@ -240,5 +229,117 @@ mod tests {
             unsafe { probe(&mut table, c"unix", UNIX_SLOTS) },
             Err(GuardError::GuardUnavailable)
         );
+    }
+
+    /// Local callback-table fixture; never registered with the actual SQLite engine.
+    struct Mock {
+        current: ffi::sqlite3_syscall_ptr,
+        default: ffi::sqlite3_syscall_ptr,
+        sets: u32,
+        fail_on: Option<u32>,
+        activated: bool,
+    }
+
+    /// Distinct original callback address; the probe never executes it.
+    extern "C" fn original_callback() {
+        std::hint::black_box(1);
+    }
+
+    /// Read the fixture's current slot without touching the actual engine.
+    ///
+    /// # Safety
+    /// The VFS must contain a live, exclusively borrowed Mock in pAppData.
+    unsafe extern "C" fn mock_get(
+        vfs: *mut ffi::sqlite3_vfs,
+        _name: *const std::ffi::c_char,
+    ) -> ffi::sqlite3_syscall_ptr {
+        unsafe { (*((*vfs).pAppData.cast::<Mock>())).current }
+    }
+
+    /// Model lazy default registration and selected callback failures.
+    ///
+    /// # Safety
+    /// The VFS must contain a live, exclusively borrowed Mock in pAppData.
+    unsafe extern "C" fn mock_set(
+        vfs: *mut ffi::sqlite3_vfs,
+        _name: *const std::ffi::c_char,
+        callback: ffi::sqlite3_syscall_ptr,
+    ) -> std::ffi::c_int {
+        let state = unsafe { &mut *((*vfs).pAppData.cast::<Mock>()) };
+        state.sets += 1;
+        if state.fail_on == Some(state.sets) {
+            return ffi::SQLITE_ERROR;
+        }
+        state.activated |= callback.is_some();
+        if state.default.is_none() {
+            state.default = state.current;
+        }
+        state.current = callback.or(state.default);
+        ffi::SQLITE_OK
+    }
+
+    /// Supply the unused enumeration entry required by the VFS interface contract.
+    extern "C" fn mock_next(
+        _vfs: *mut ffi::sqlite3_vfs,
+        _name: *const std::ffi::c_char,
+    ) -> *const std::ffi::c_char {
+        std::ptr::null()
+    }
+
+    /// Construct a local table without registering or modifying any global VFS.
+    ///
+    /// # Safety
+    /// `state` must remain live and unmoved until all probe callbacks have returned.
+    unsafe fn mock_table(state: *mut Mock) -> ffi::sqlite3_vfs {
+        // All zero representations are valid for this C structure's fields.
+        let mut table: ffi::sqlite3_vfs = unsafe { std::mem::zeroed() };
+        table.iVersion = 3;
+        table.zName = c"fixture".as_ptr();
+        table.pAppData = state.cast();
+        table.xGetSystemCall = Some(mock_get);
+        table.xSetSystemCall = Some(mock_set);
+        table.xNextSystemCall = Some(mock_next);
+        table
+    }
+
+    #[test]
+    fn compiled_out_slots_are_not_activated() {
+        let mut state = Mock {
+            current: None,
+            default: None,
+            sets: 0,
+            fail_on: None,
+            activated: false,
+        };
+        // The local state remains in place throughout this synchronous probe.
+        let mut table = unsafe { mock_table(&mut state) };
+        let result = unsafe { probe(&mut table, c"fixture", &[conditional(c"disabled")]) }.unwrap();
+        assert!(!state.activated);
+        assert_eq!(state.sets, 1);
+        assert!(!result.hooks[0].active);
+        assert!(state.current.is_none());
+    }
+
+    #[test]
+    fn replacement_and_restoration_failures_remain_unavailable() {
+        for fail_on in [1, 2] {
+            let mut state = Mock {
+                current: Some(original_callback),
+                default: None,
+                sets: 0,
+                fail_on: Some(fail_on),
+                activated: false,
+            };
+            // This table and its state are isolated from the real engine and remain live.
+            let mut table = unsafe { mock_table(&mut state) };
+            assert_eq!(
+                unsafe { probe(&mut table, c"fixture", &[required(c"active")]) },
+                Err(GuardError::GuardUnavailable)
+            );
+            assert_eq!(
+                state.sets, 2,
+                "Restoration must be attempted even after failed replacement"
+            );
+        }
     }
 }
