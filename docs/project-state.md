@@ -1,10 +1,10 @@
 # Project state
 
-Capability inventory as of 2026-11-03. This records project delivery status,
+Capability inventory as of 2026-11-04. This records project delivery status,
 not session data or analysis results.
 
 The merged baseline is main at `d767c31665fffb72154fbccb23ecbd2494072c97`.
-The current scope is lightweight revision 11 in
+The current proposed scope is lightweight revision 12 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
 The user approved the plan, runtime baseline and unattended review/merge scope
@@ -17,10 +17,15 @@ On 2026-11-02 the user approved the reader refinement in
 implementation after publication. On 2026-11-03 the user clarified that
 **Copilot Agent Host is the intended everyday workflow** and authorized filing
 the adjustment, then authorized source qualification in #30. The user subsequently
-approved the shared read-only SQLite/multi-source direction and requested its
-work items. Revision 11 records that direction and published breakdown, not
-implementation or merge authorization. The prior revision-7 build scope is
-historical, not permission to continue the Local-only plan unchanged.
+approved the shared read-only SQLite/multi-source direction, requested its
+work items and authorized #33 implementation. The partial implementation is
+preserved in draft [#35](https://github.com/toddysm/agent-insights/pull/35).
+After review exposed a source-side file-creation race, the user approved revising
+the safety boundary. Revision 12 proposes the
+[native guard design](https://github.com/toddysm/agent-insights/issues/33#issuecomment-6621343238);
+that detailed revision awaits confirmation before implementation resumes.
+No merge or native-binary release is authorized. Earlier approved revisions are
+historical, not approval of the new design or the superseded Local-only plan.
 
 Tracking currently uses GitHub issues and native sub-issues/dependencies.
 GitHub Project access is unavailable; no board status is claimed.
@@ -70,16 +75,27 @@ longer block the required Agent Host delivery.
 | Capability                                                                                                                                                                 | Feature slug            | Tracking issue                                           | PRD doc                                                                   | Docs                                                                                                                                                                              |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Local, read-only analysis of Visual Studio Code Copilot Chat sessions: timing, tools, tokens, tasks/outcomes, steering, artifacts and prompt coaching with source evidence | vscode-session-analysis | [#2](https://github.com/toddysm/agent-insights/issues/2) | [Issue-backed design](https://github.com/toddysm/agent-insights/issues/2) | Capture prerequisites [#1](https://github.com/toddysm/agent-insights/issues/1) and final usage guide [#21](https://github.com/toddysm/agent-insights/issues/21) remain incomplete |
+| Shared authorized read-only SQLite/multi-source access and original references | vscode-session-analysis | [#33](https://github.com/toddysm/agent-insights/issues/33) | [Proposed native guard](https://github.com/toddysm/agent-insights/issues/33#issuecomment-6621343238), revision 12 | Partial implementation in draft [#35](https://github.com/toddysm/agent-insights/pull/35), blocked on guard design/qualification; not shipped. Runtime/evidence guides accompany implementation; final user docs remain #1/#21 |
+
+At #35 head `7ef06a70cd1884e3a050f3aba2eef834a93955de`, 91 local
+unit/integration/startup tests, six Chromium cases and all four hosted checks
+passed. Copilot's initial cleanup-overlap finding was fixed, but its fresh
+review found a producer-shutdown race that can recreate write-ahead-log (WAL)
+and shared-memory (SHM) files, plus unreadable-WAL error misclassification.
+Synthetic probes confirmed that Node read-only/query-only settings and Node
+filesystem permission mode do not enforce the no-create guarantee.
+Those passing checks do not qualify the missing native guard.
+Codex review quota remains unavailable; no exception is assumed.
 
 ## Planned
 
 | Capability | Feature slug | Tracking issue | PRD doc | Documentation status |
 | ---------- | ------------ | -------------- | ------- | -------------------- |
-| Shared authorized read-only SQLite/multi-source access and original evidence references | vscode-session-analysis | [#33](https://github.com/toddysm/agent-insights/issues/33) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Direction approved; work item published, implementation not started | Update evidence/runtime guides alongside implementation; required user docs remain #1/#21 |
-| Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Revision 11 and source draft 3 in #30; #31/#32 depend on #33/#30; no implementation authorization | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
+| Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Proposed revision 12 and source draft 3 in #30; #31/#32 remain blocked on #33/#30 and are not implemented | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
 
 These are required adjustments to the existing feature, not optional future
-harness support. No new implementation has started.
+harness support. The shared foundation has started, but the native guard and
+Agent Host readers have not been implemented.
 
 The required tracker now has 20 native children and 31 immediate dependency links.
 Local-only #10/#11 remain open outside that completion gate; #12/#14 no longer
@@ -105,9 +121,18 @@ harness-owned catalog/session databases as the proposed baseline, with optional
 Agent Host telemetry for detailed per-call evidence. Host telemetry uses
 `chat.agentHost.otel.*`; personal changes require a full application restart.
 Reading existing harness databases is not an application-owned session store.
-Shared access [#33](https://github.com/toddysm/agent-insights/issues/33) is filed
-but not implemented. It owns bounded queries/cancellation, coordinated transient
-read generations and row/file provenance, not source-specific accounting.
+Shared access [#33](https://github.com/toddysm/agent-insights/issues/33) owns
+bounded queries/cancellation, transient read generations and row/file provenance,
+not source-specific accounting. Its proposed native helper uses a pinned SQLite
+engine, a virtual file system (VFS) policy and audited operating-system call
+guards, including internal SHM operations. It preserves SQLite locking and
+permits only existing-file access and bounded existing-SHM coordination.
+Missing or unqualified enforcement disables SQLite explicitly, with no
+unguarded or copied-database fallback. Existing file-only behavior remains.
+Rust/C build tooling and verified per-platform artifacts are new delivery work,
+not already available dependencies. The initial native qualification targets
+are macOS arm64/x64, Linux x64 and Windows x64; support is not claimed before
+native tests pass. Binary publication needs separate authorization.
 Eighteen static schema/source assertions passed.
 A separately authorized inspection then verified one harmless native Agent Host
 exchange and its exact catalog/turn-usage linkage. Only sanitized findings are
@@ -147,7 +172,7 @@ remains the selected testing mode.
 
 | Gap                                                                      | Evidence and next work                                                                                                                                                                           |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Shared source-access and Agent Host readers are not implemented | Direction/work-item publication is approved; #33/#31/#32 require explicit build authorization and passing validation. Optional trace qualification remains in #34, not a fabricated baseline requirement or success |
+| Shared source-access guard is blocked; Agent Host readers remain unimplemented | #33/#35 retain a partial implementation with verified safety gaps. Direction approval is recorded; detailed revision 12 awaits confirmation, native implementation and qualification. #31/#32 remain prerequisite-blocked. Optional telemetry remains #34, not a baseline requirement or claimed success |
 | Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
 | Real-session readers, reports and interpretation definitions are not implemented yet | The transport is available, but the local shell reports missing consumers explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
 | End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |
