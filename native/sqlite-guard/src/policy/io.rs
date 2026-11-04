@@ -101,10 +101,9 @@ pub(super) unsafe extern "C" fn open(
     if rc != ffi::SQLITE_OK {
         if !unsafe { (*real).pMethods }.is_null()
             && let Some(close) = unsafe { (*(*real).pMethods).xClose }
+            && unsafe { close(real) } != ffi::SQLITE_OK
         {
-            unsafe {
-                close(real);
-            }
+            deny(GuardError::Cleanup);
         }
         unsafe {
             ffi::sqlite3_free(real.cast());

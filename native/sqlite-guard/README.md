@@ -115,7 +115,9 @@ by pretending that synchronous library calls can be interrupted by a promise.
 
 The pinned SQLite engine is [public domain](https://sqlite.org/copyright.html).
 The [libsqlite3-sys bindings](https://github.com/rusqlite/rusqlite) are MIT
-licensed. Build dependencies retain their upstream license notices in their
+licensed. The `libc` and `windows-sys` platform bindings and the `tempfile` test
+dependency are available under MIT or Apache-2.0. Dependencies retain their
+upstream license notices in their
 source packages. No upstream source implementation is copied into this
 repository; Cargo builds the checksum-pinned dependency. Binary packaging must
 include the required notices under #38 before release authorization in #39.

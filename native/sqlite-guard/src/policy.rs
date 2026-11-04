@@ -182,6 +182,13 @@ fn check() -> Result<(), GuardError> {
         .map_or(Ok(()), Err)
 }
 
+/// Scope ordinary OS errors to one native call, without clearing sticky guard failures.
+fn reset_io_error() -> Result<(), GuardError> {
+    let mut state = STATE.lock().map_err(|_| GuardError::GuardUnavailable)?;
+    state.as_mut().ok_or(GuardError::GuardUnavailable)?.io_error = None;
+    Ok(())
+}
+
 /// Convert native errors without preserving SQLite's source-dependent messages.
 fn sqlite_error(code: c_int) -> GuardError {
     if let Err(error) = check() {
@@ -421,6 +428,7 @@ impl GuardedDatabase {
 
     /// Execute only fixed connection setup/teardown statements, never caller input.
     fn exec(&mut self, sql: &CStr) -> Result<(), GuardError> {
+        reset_io_error()?;
         let rc = unsafe {
             ffi::sqlite3_exec(
                 self.db,
@@ -454,6 +462,7 @@ impl GuardedDatabase {
         }
         let mut statement = ptr::null_mut();
         let mut tail = ptr::null();
+        reset_io_error()?;
         let rc = unsafe {
             ffi::sqlite3_prepare_v2(self.db, sql.as_ptr(), -1, &mut statement, &mut tail)
         };
@@ -473,6 +482,7 @@ impl GuardedDatabase {
             {
                 return Err(GuardError::InvalidInput);
             }
+            reset_io_error()?;
             let rc = unsafe { ffi::sqlite3_step(statement) };
             check()?;
             if rc == ffi::SQLITE_DONE {
@@ -485,6 +495,7 @@ impl GuardedDatabase {
                 return Err(GuardError::Data);
             }
             let value = unsafe { ffi::sqlite3_column_int64(statement, 0) };
+            reset_io_error()?;
             let rc = unsafe { ffi::sqlite3_step(statement) };
             check()?;
             if rc == ffi::SQLITE_ROW {
@@ -604,4 +615,30 @@ fn same(left: ffi::sqlite3_syscall_ptr, right: ffi::sqlite3_syscall_ptr) -> bool
 /// The callback must have the exact native signature for the slot it will replace.
 pub(crate) unsafe fn erased(pointer: *const ()) -> ffi::sqlite3_syscall_ptr {
     Some(unsafe { std::mem::transmute::<*const (), unsafe extern "C" fn()>(pointer) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resetting_io_diagnostics_does_not_clear_a_policy_failure() {
+        let _owner = exclusive().unwrap();
+        *STATE.lock().unwrap() = Some(State {
+            source: ApprovedSource {
+                main: std::path::PathBuf::from("synthetic-unused"),
+                entries: Vec::new(),
+                #[cfg(feature = "qualification-hooks")]
+                before_open: None,
+            },
+            handles: HashMap::new(),
+            hooks: Vec::new(),
+            failure: Some(GuardError::PolicyViolation),
+            io_error: Some(GuardError::AccessDenied),
+        });
+        reset_io_error().unwrap();
+        assert_eq!(check(), Err(GuardError::PolicyViolation));
+        let state = STATE.lock().unwrap().take().unwrap();
+        assert_eq!(state.io_error, None);
+    }
 }

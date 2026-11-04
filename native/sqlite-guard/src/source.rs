@@ -201,3 +201,23 @@ impl ApprovedSource {
         self
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn filesystem_failures_are_distinct_from_malformed_data() {
+        for (kind, expected) in [
+            (std::io::ErrorKind::NotFound, GuardError::SourceUnavailable),
+            (
+                std::io::ErrorKind::PermissionDenied,
+                GuardError::AccessDenied,
+            ),
+            (std::io::ErrorKind::Other, GuardError::Io),
+            (std::io::ErrorKind::InvalidInput, GuardError::InvalidInput),
+        ] {
+            assert_eq!(io_error(&std::io::Error::from(kind)), expected);
+        }
+    }
+}
