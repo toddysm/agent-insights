@@ -262,10 +262,11 @@ unsafe extern "system" fn open(
             return INVALID_HANDLE_VALUE;
         }
     };
-    if entry.role == Role::Journal
-        || flags & FILE_FLAG_DELETE_ON_CLOSE != 0
-        || access & !(GENERIC_READ | GENERIC_WRITE) != 0
-    {
+    if entry.role == Role::Journal {
+        denied(GuardError::JournalPresent);
+        return INVALID_HANDLE_VALUE;
+    }
+    if flags & FILE_FLAG_DELETE_ON_CLOSE != 0 || access & !(GENERIC_READ | GENERIC_WRITE) != 0 {
         denied(GuardError::PolicyViolation);
         return INVALID_HANDLE_VALUE;
     }

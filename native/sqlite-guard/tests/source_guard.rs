@@ -16,11 +16,16 @@ struct Fixture {
 impl Fixture {
     /// Create a fictional database and wait for the producer's ready acknowledgement.
     fn new(wal: bool) -> Self {
+        Self::with_mode(if wal { "wal" } else { "delete" })
+    }
+
+    /// Start a producer with one of the fixture's fixed journal modes.
+    fn with_mode(mode: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let mut writer = Command::new("node")
             .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/writer.mjs"))
             .arg(root.path().join("source.db"))
-            .arg(if wal { "wal" } else { "delete" })
+            .arg(mode)
             .env_remove("NODE_OPTIONS")
             .env_remove("NODE_PATH")
             .stdin(Stdio::piped())
@@ -96,18 +101,20 @@ fn guarded_source_contract() {
                 before
             );
         }
+        assert_eq!(std::fs::read(fixture.path()).unwrap(), before);
+        assert_eq!(fixture.command("update"), "updated");
+        let main_after_writer = std::fs::read(fixture.path()).unwrap();
+        assert_eq!(
+            database.scalar_i64(c"SELECT value FROM items WHERE id=1"),
+            Ok(if wal { 7 } else { 8 })
+        );
         if wal {
-            assert_eq!(fixture.command("update"), "updated");
-            assert_eq!(
-                database.scalar_i64(c"SELECT value FROM items WHERE id=1"),
-                Ok(7)
-            );
             assert_eq!(database.source_changed(), Ok(true));
         }
         let wal_after_writer =
             wal.then(|| std::fs::read(fixture.path().with_file_name("source.db-wal")).unwrap());
         database.close().unwrap();
-        assert_eq!(std::fs::read(fixture.path()).unwrap(), before);
+        assert_eq!(std::fs::read(fixture.path()).unwrap(), main_after_writer);
         if let Some(before) = wal_after_writer {
             assert_eq!(
                 std::fs::read(fixture.path().with_file_name("source.db-wal")).unwrap(),
@@ -127,6 +134,7 @@ fn guarded_source_contract() {
     assert!(!fixture.path().with_file_name("source.db-shm").exists());
     admission_and_query_failures();
     bounded_lock_wait();
+    journal_presence_is_not_a_recovery_diagnosis();
     readonly_shm_without_producer_requires_recovery();
     invalid_shm_header_requires_producer_recovery();
     #[cfg(unix)]
@@ -141,7 +149,7 @@ fn guarded_source_contract() {
         shared_memory_extents_are_not_extended();
         replacement_at_native_open_is_rejected();
         replacement_during_preflight_is_rejected();
-        journal_at_native_open_requires_recovery();
+        journal_at_native_open_is_rejected();
         #[cfg(unix)]
         symlink_at_native_open_is_source_change();
         // This scenario permanently poisons the engine; it must remain last.
@@ -271,7 +279,7 @@ fn admission_and_query_failures() {
         // This process owns the reader engine; neither new journal is admitted.
         assert!(matches!(
             unsafe { GuardedDatabase::open(source) },
-            Err(GuardError::RecoveryRequired)
+            Err(GuardError::JournalPresent)
         ));
         std::fs::remove_file(&journal).unwrap();
     }
@@ -279,7 +287,7 @@ fn admission_and_query_failures() {
         std::fs::write(&journal, contents).unwrap();
         assert!(matches!(
             ApprovedSource::capture(&fixture.path()),
-            Err(GuardError::RecoveryRequired)
+            Err(GuardError::JournalPresent)
         ));
     }
     std::fs::remove_file(&journal).unwrap();
@@ -289,9 +297,9 @@ fn admission_and_query_failures() {
     std::fs::write(&journal, b"").unwrap();
     assert_eq!(
         database.scalar_i64(c"SELECT 1"),
-        Err(GuardError::RecoveryRequired)
+        Err(GuardError::JournalPresent)
     );
-    assert_eq!(database.close(), Err(GuardError::RecoveryRequired));
+    assert_eq!(database.close(), Err(GuardError::JournalPresent));
     std::fs::remove_file(&journal).unwrap();
     let file = std::fs::OpenOptions::new()
         .write(true)
@@ -307,6 +315,28 @@ fn admission_and_query_failures() {
         Err(GuardError::Limit)
     ));
     file.set_len(before.len() as u64).unwrap();
+}
+
+/// Retained journals and a writer's live journal are unavailable without asserting corrupt/recovery state.
+fn journal_presence_is_not_a_recovery_diagnosis() {
+    for mode in ["truncate", "persist"] {
+        let fixture = Fixture::with_mode(mode);
+        assert!(matches!(
+            ApprovedSource::capture(&fixture.path()),
+            Err(GuardError::JournalPresent)
+        ));
+    }
+    let mut fixture = Fixture::new(false);
+    assert_eq!(fixture.command("begin-write"), "writing");
+    assert!(matches!(
+        ApprovedSource::capture(&fixture.path()),
+        Err(GuardError::JournalPresent)
+    ));
+    assert_eq!(fixture.command("unlock"), "unlocked");
+    let source = ApprovedSource::capture(&fixture.path()).unwrap();
+    // The test owns the reader engine and retries only after the producer removes its journal.
+    let database = unsafe { GuardedDatabase::open(source) }.unwrap();
+    database.close().unwrap();
 }
 
 /// A separate writer's native lock must time out, not become an empty successful read.
@@ -515,7 +545,7 @@ fn replacement_during_preflight_is_rejected() {
 
 /// A zero-length journal created after the pre-open check must still fail before a connection is exposed.
 #[cfg(feature = "qualification-hooks")]
-fn journal_at_native_open_requires_recovery() {
+fn journal_at_native_open_is_rejected() {
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -532,7 +562,7 @@ fn journal_at_native_open_requires_recovery() {
     // SQLite may hide an empty journal from xOpen; source verification must still reject it.
     assert!(matches!(
         unsafe { GuardedDatabase::open(source) },
-        Err(GuardError::RecoveryRequired)
+        Err(GuardError::JournalPresent)
     ));
     assert!(observed.load(Ordering::SeqCst));
 }

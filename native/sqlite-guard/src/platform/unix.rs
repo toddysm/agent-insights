@@ -189,7 +189,7 @@ unsafe extern "C" fn open(path: *const c_char, flags: c_int, mode: c_int) -> c_i
         Err(error) => return denied(error),
     };
     if selected.role == Role::Journal {
-        return denied(GuardError::RecoveryRequired);
+        return denied(GuardError::JournalPresent);
     }
     if flags & libc::O_TRUNC != 0 {
         return denied(GuardError::PolicyViolation);

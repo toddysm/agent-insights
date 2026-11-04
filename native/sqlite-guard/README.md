@@ -30,6 +30,11 @@ Ordinary VFS operations and internal Unix/Win32 file calls are guarded:
   operation remains a failed read even when the native caller ignores its result.
 - SQLite retains its own locking protocol. Source limits, a bounded native busy
   wait, normal close and failed-setup cleanup are tested with a separate producer.
+- WAL mode retains a connection-lifetime read snapshot, so later commits do not
+  change its query values. Rollback mode uses a separate implicit transaction per
+  scalar statement; an idle reader does not block a DELETE-mode producer's commit.
+  Separate rollback-mode calls may observe different commits. Individual reads
+  can still contend with writers; process-level deadlines remain #37.
 - Exclusive WAL-index recovery locks are rejected, including when a live producer
   retains invalid SHM. Native unmap failures poison the engine even if SQLite
   ignores the return value.
@@ -41,11 +46,17 @@ read-only `query_only`, `trusted_schema`, `busy_timeout`, `user_version` and
 admission and named projections remain the protocol/runtime readers' responsibility.
 The application must authorize the main path before preflight. Preflight uses
 read-only, no-follow descriptors and binds canonicalization to the opened main
-object. All retained rollback journals, including empty ones, are rejected;
-only the producer may finish its journal lifecycle. Descriptors close before SQLite takes locks;
+object. All retained rollback journals, including empty ones, return
+`JournalPresent`, not a claim that recovery is required. Retry after an active
+DELETE-mode writer finishes and removes its journal. Idle TRUNCATE/PERSIST
+sources retaining a journal are deliberately not admitted; the application
+neither deletes it nor changes the producer's journal mode. Only the producer
+may finish its journal lifecycle. Descriptors close before SQLite takes locks;
 Unix transaction-time identity checks do not open extra same-inode descriptors.
 Journal absence is rechecked around native open and reads, including empty
 journals SQLite can hide from its own file-open checks.
+`source_changed()` reports observed main/WAL metadata changes separately from
+source identity rejection; a content change does not invalidate a WAL snapshot.
 
 The core is not an operating-system sandbox or protection against arbitrary
 native-code exploitation or a hostile same-account process. SHM coordination

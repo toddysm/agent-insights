@@ -134,7 +134,7 @@ impl ApprovedSource {
                 Err(error) => return Err(error),
             };
             if role == Role::Journal {
-                return Err(GuardError::RecoveryRequired);
+                return Err(GuardError::JournalPresent);
             }
             let mut file = if role == Role::Main {
                 main_file.take().ok_or(GuardError::GuardUnavailable)?
@@ -193,7 +193,7 @@ impl ApprovedSource {
     pub(crate) fn verify(&self) -> Result<bool, GuardError> {
         // SQLite's xAccess can hide zero-length journals, so checking xOpen alone is insufficient.
         match symlink_metadata(companion(&self.main, "-journal")) {
-            Ok(_) => return Err(GuardError::RecoveryRequired),
+            Ok(_) => return Err(GuardError::JournalPresent),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_error(&error)),
         }

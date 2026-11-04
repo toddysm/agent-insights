@@ -46,6 +46,8 @@ pub enum GuardError {
     Limit,
     /// The owning harness must finish recovery or initialize its shared memory.
     RecoveryRequired,
+    /// A rollback journal is present; retry after the producer removes it. Retained-journal modes are not admitted.
+    JournalPresent,
     /// A forbidden source operation was attempted; this read is permanently failed.
     PolicyViolation,
     /// Native lock waiting exhausted its bounded busy timeout.
@@ -72,6 +74,9 @@ impl fmt::Display for GuardError {
             Self::Limit => "A source operation exceeded its fixed limit.",
             Self::RecoveryRequired => {
                 "The owning harness must finish source recovery or initialization."
+            }
+            Self::JournalPresent => {
+                "A rollback journal is present; retry after the owning harness removes it. Retained-journal modes are not supported."
             }
             Self::PolicyViolation => "A forbidden source operation was prevented.",
             Self::Busy => "The source remained locked beyond the bounded wait.",

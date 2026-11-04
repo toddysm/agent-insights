@@ -48,7 +48,7 @@ pub(super) unsafe extern "C" fn open(
         (*file).pMethods = ptr::null();
     }
     if flags & ffi::SQLITE_OPEN_MAIN_JOURNAL != 0 {
-        deny(GuardError::RecoveryRequired);
+        deny(GuardError::JournalPresent);
         return ffi::SQLITE_READONLY;
     }
     if name.is_null() {

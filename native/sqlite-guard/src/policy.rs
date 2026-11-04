@@ -271,7 +271,35 @@ unsafe extern "C" fn authorize(
     }
 }
 
-/// A read-only native transaction with owned policy hooks. It cannot be sent across threads.
+/// Record the one fixed PRAGMA result; unknown shapes fail initialization rather than selecting a default mode.
+///
+/// # Safety
+/// SQLite supplies valid row pointers; context points to the live `Option<bool>` passed by `uses_wal`.
+unsafe extern "C" fn observe_journal_mode(
+    context: *mut c_void,
+    columns: c_int,
+    values: *mut *mut c_char,
+    _names: *mut *mut c_char,
+) -> c_int {
+    if context.is_null() || columns != 1 || values.is_null() || unsafe { *values }.is_null() {
+        return 1;
+    }
+    let mode = unsafe { &mut *context.cast::<Option<bool>>() };
+    if mode.is_some() {
+        return 1;
+    }
+    *mode = match unsafe { CStr::from_ptr(*values) }.to_bytes() {
+        b"wal" => Some(true),
+        b"delete" | b"truncate" | b"persist" | b"memory" | b"off" => Some(false),
+        _ => return 1,
+    };
+    0
+}
+
+/// A read-only connection with owned policy hooks. It cannot be sent across threads.
+///
+/// WAL reads share a connection-lifetime snapshot. Rollback-mode statements use
+/// separate implicit snapshots so an idle connection does not block producer commits.
 ///
 /// The application still owns source authorization, named query selection and
 /// process-level cancellation. This core does not discover sources or restore a producer runtime.
@@ -385,7 +413,7 @@ impl GuardedDatabase {
         }
         Ok(())
     }
-    /// Install enforcement before opening an admitted source and begin a read snapshot.
+    /// Install enforcement and establish a WAL snapshot, or release initial rollback-mode read locks.
     ///
     /// # Safety
     /// This process must own this SQLite engine exclusively, without foreign
@@ -459,6 +487,9 @@ impl GuardedDatabase {
                 ffi::sqlite3_limit(owned.db, ffi::SQLITE_LIMIT_SQL_LENGTH, 4096);
             }
             owned.exec(c"PRAGMA query_only=ON; PRAGMA trusted_schema=OFF; BEGIN; SELECT count(*) FROM sqlite_schema")?;
+            if !owned.uses_wal()? {
+                owned.exec(c"ROLLBACK")?;
+            }
             if unsafe { ffi::sqlite3_set_authorizer(owned.db, Some(authorize), ptr::null_mut()) }
                 != ffi::SQLITE_OK
             {
@@ -503,6 +534,26 @@ impl GuardedDatabase {
         Ok(())
     }
 
+    /// Observe the actual locked connection's mode, rather than a potentially stale preflight header.
+    fn uses_wal(&mut self) -> Result<bool, GuardError> {
+        let mut mode = None;
+        reset_io_error()?;
+        let rc = unsafe {
+            ffi::sqlite3_exec(
+                self.db,
+                c"PRAGMA main.journal_mode".as_ptr(),
+                Some(observe_journal_mode),
+                (&mut mode as *mut Option<bool>).cast(),
+                ptr::null_mut(),
+            )
+        };
+        check()?;
+        if rc != ffi::SQLITE_OK {
+            return Err(sqlite_error(rc));
+        }
+        mode.ok_or(GuardError::GuardUnavailable)
+    }
+
     /// Execute only fixed connection setup/teardown statements, never caller input.
     fn exec(&mut self, sql: &CStr) -> Result<(), GuardError> {
         reset_io_error()?;
@@ -526,11 +577,14 @@ impl GuardedDatabase {
     ///
     /// This is a core qualification seam, not a browser/model SQL console. The
     /// protocol item supplies named projections; callers must not pass captured
-    /// instructions as SQL.
+    /// instructions as SQL. WAL calls retain the original snapshot; rollback-mode
+    /// calls each finish their implicit transaction before returning and may
+    /// observe different commits. [`Self::source_changed`] reports observed
+    /// metadata changes separately, without invalidating a WAL snapshot.
     ///
     /// # Errors
     /// Rejects multi-statements, writes/configuration changes, oversized SQL, non-integer/multiple rows,
-    /// source changes and every latched policy violation.
+    /// source identity changes and every latched policy violation.
     pub fn scalar_i64(&mut self, sql: &CStr) -> Result<i64, GuardError> {
         check()?;
         self.source.verify()?;
@@ -601,7 +655,7 @@ impl GuardedDatabase {
         self.source.verify()
     }
 
-    /// End the read transaction and restore native callbacks; no source checkpoint occurs.
+    /// Close the connection and release any WAL snapshot before restoring callbacks; no source checkpoint occurs.
     ///
     /// # Errors
     /// Returns source/policy failures or [`GuardError::Cleanup`] if native teardown fails.

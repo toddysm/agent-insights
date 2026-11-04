@@ -2,7 +2,15 @@
 import { DatabaseSync } from "node:sqlite";
 import { createInterface } from "node:readline";
 const database = new DatabaseSync(process.argv[2]);
-if (process.argv[3] === "wal") database.exec("PRAGMA journal_mode=WAL");
+const modes = new Map([
+  ["wal", "PRAGMA journal_mode=WAL"],
+  ["delete", "PRAGMA journal_mode=DELETE"],
+  ["truncate", "PRAGMA journal_mode=TRUNCATE"],
+  ["persist", "PRAGMA journal_mode=PERSIST"],
+]);
+const mode = modes.get(process.argv[3]);
+if (!mode) throw new Error("Unknown synthetic journal mode");
+database.exec(mode);
 database.exec(
   "PRAGMA user_version=1; CREATE TABLE items(id INTEGER PRIMARY KEY, value INTEGER); INSERT INTO items VALUES(1,7)",
 );
@@ -11,6 +19,9 @@ for await (const command of createInterface({ input: process.stdin })) {
   if (command === "update") {
     database.exec("UPDATE items SET value=8");
     console.log("updated");
+  } else if (command === "begin-write") {
+    database.exec("BEGIN IMMEDIATE; UPDATE items SET value=8");
+    console.log("writing");
   } else if (command === "lock") {
     database.exec("BEGIN EXCLUSIVE");
     console.log("locked");
