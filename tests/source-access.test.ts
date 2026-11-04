@@ -1023,6 +1023,121 @@ test("cleanup failures block publication and further reads until retained owners
   );
 });
 
+test("replacement reads await prior disposal and cannot publish across a cleanup failure", async (t) => {
+  for (const failCleanup of [false, true]) {
+    const data = await fixture(t);
+    const access = await SourceAccess.create([data.root]);
+    const originalDatabase = access.database.bind(access);
+    let opens = 0;
+    t.mock.method(
+      access,
+      "database",
+      (...args: Parameters<SourceAccess["database"]>) => {
+        opens++;
+        return originalDatabase(...args);
+      },
+    );
+    let releaseReader: (() => void) | undefined;
+    const readerGate = new Promise<void>((resolve) => {
+      releaseReader = resolve;
+    });
+    let announceReader: (() => void) | undefined;
+    const readerEntered = new Promise<void>((resolve) => {
+      announceReader = resolve;
+    });
+    let readerCalls = 0;
+    const adapter: MultiSourceReader = {
+      ...reader(),
+      async read(input) {
+        const captured = await view(input, this);
+        if (++readerCalls === 1) {
+          announceReader?.();
+          await readerGate;
+        }
+        return captured;
+      },
+    };
+    const service = new RuntimeService(
+      access,
+      config(data.root),
+      [],
+      30000,
+      null,
+      [adapter],
+    );
+    data.cleanup.push(() => service.close());
+    const selection = {
+      readerId: adapter.id,
+      sources: [
+        { key: "database", sourceId: "source-1", relativePath: "source.db" },
+      ],
+    };
+    let releaseCleanup: (() => void) | undefined;
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    });
+    let announceCleanup: (() => void) | undefined;
+    const cleanupEntered = new Promise<void>((resolve) => {
+      announceCleanup = resolve;
+    });
+    const originalDispose = SourceReadSet.prototype.dispose;
+    let disposals = 0;
+    const mocked = t.mock.method(
+      SourceReadSet.prototype,
+      "dispose",
+      async function (this: SourceReadSet) {
+        if (++disposals === 1) {
+          announceCleanup?.();
+          await cleanupGate;
+          if (failCleanup)
+            throw new RuntimeError(
+              "SQLITE_CLEANUP_FAILED",
+              "Synthetic delayed cleanup failure",
+              500,
+            );
+        }
+        await originalDispose.call(this);
+      },
+    );
+    const first = service.readSet(selection, new AbortController().signal);
+    await readerEntered;
+    const second = service.readSet(selection, new AbortController().signal);
+    const settled = Promise.allSettled([first, second]);
+    let opensBeforeRelease: number;
+    try {
+      await cleanupEntered;
+      await delay(0);
+      opensBeforeRelease = opens;
+    } finally {
+      releaseCleanup?.();
+      releaseReader?.();
+    }
+    const outcomes = await settled;
+    mocked.mock.restore();
+    assert.equal(
+      opensBeforeRelease,
+      1,
+      "Replacement must not acquire sources before previous disposal finishes",
+    );
+    const prior = outcomes[0];
+    assert.ok(prior?.status === "rejected");
+    code(failCleanup ? "SOURCE_CLEANUP_FAILED" : "READ_CANCELLED")(
+      prior.reason,
+    );
+    const replacement = outcomes[1];
+    if (failCleanup) {
+      assert.ok(replacement?.status === "rejected");
+      code("SOURCE_CLEANUP_FAILED")(replacement.reason);
+      assert.equal(service.view, null);
+      await service.close();
+      assert.ok(await service.readSet(selection, new AbortController().signal));
+    } else {
+      assert.ok(replacement?.status === "fulfilled");
+      assert.equal(service.view, replacement.value);
+    }
+  }
+});
+
 test("composite cancellation rejects stale normalization and concurrent cleanup is idempotent", async (t) => {
   const data = await fixture(t);
   let release: (() => void) | undefined;

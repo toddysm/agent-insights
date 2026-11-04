@@ -123,7 +123,9 @@ in memory. This is **not** a Copilot/model process and inherits no provider
 credentials or Node.js debugger/preload configuration. Cancellation/deadlines
 terminate the owned process and await exit; cleanup failures remain explicit and
 block further reads until cleanup is retried. Refresh/cancel and shutdown also
-await source cleanup. The process-exit confirmation limit is five seconds.
+await source cleanup. Replacement reads wait for prior-generation disposal before
+acquiring sources; a delayed cleanup failure cannot leave a newer view published.
+The process-exit confirmation limit is five seconds.
 
 | Bound | Limit |
 | --- | --- |

@@ -163,6 +163,7 @@ export class RuntimeService {
   private readonly multiReaders = new Map<string, MultiSourceReader>();
   private readonly readSets = new Set<SourceReadSet>();
   private cleanupFailed = false;
+  private cleanupBarrier: Promise<void> = Promise.resolve();
   private current: ReadView | null = null;
   private currentSelection: Readonly<ReadRequest | ReadSetRequest> | null =
     null;
@@ -435,6 +436,20 @@ export class RuntimeService {
   }
 
   /**
+   * Serialize source ownership through prior operation cleanup, including failed disposal.
+   * Callers receive the original result/error; the barrier tracks settlement only so
+   * an ordinary cancelled read does not poison later work. Cleanup failures stay latched.
+   */
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.cleanupBarrier.then(operation);
+    this.cleanupBarrier = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+
+  /**
    * Own common read invalidation, deadlines and publication for both input families.
    * @param request - Frozen selection retained only after successful publication.
    * @param externalSignal - Caller/disconnect cancellation, with untrusted reasons discarded.
@@ -476,6 +491,12 @@ export class RuntimeService {
     );
     /** A blocked event loop cannot deliver the timer; check elapsed time before publishing too. */
     const ensureCurrent = () => {
+      if (this.cleanupFailed)
+        throw new RuntimeError(
+          "SOURCE_CLEANUP_FAILED",
+          "Retry source cleanup before reading again.",
+          503,
+        );
       if (controller.signal.aborted || this.active?.id !== id)
         throw cancelledRead(controller.signal);
       if (performance.now() >= deadline) {
@@ -484,69 +505,76 @@ export class RuntimeService {
       }
     };
     timeout.unref();
-    try {
-      const result = await execute(id, controller.signal, ensureCurrent);
-      ensureCurrent();
-      const normalized = observedView(result);
-      ensureCurrent();
-      const finishedAtMs = Date.now();
-      if (
-        !Number.isSafeInteger(finishedAtMs) ||
-        finishedAtMs < normalized.finishedAtMs
-      ) {
-        throw new RuntimeError(
-          "CLOCK_CHANGED",
-          "The clock changed while completing the read. Retry the operation.",
-          409,
-        );
+    return this.enqueue(async () => {
+      try {
+        ensureCurrent();
+        const result = await execute(id, controller.signal, ensureCurrent);
+        ensureCurrent();
+        const normalized = observedView(result);
+        ensureCurrent();
+        const finishedAtMs = Date.now();
+        if (
+          !Number.isSafeInteger(finishedAtMs) ||
+          finishedAtMs < normalized.finishedAtMs
+        ) {
+          throw new RuntimeError(
+            "CLOCK_CHANGED",
+            "The clock changed while completing the read. Retry the operation.",
+            409,
+          );
+        }
+        this.current = Object.freeze({ ...normalized, finishedAtMs });
+        this.currentSelection = request;
+        this.currentTiming = Object.freeze({
+          readId: id,
+          inputStartedAtMs: normalized.startedAtMs,
+          inputFinishedAtMs: normalized.finishedAtMs,
+          finishedAtMs,
+          ...(result.composite ? { sources: result.observations } : {}),
+        });
+        return this.current;
+      } catch (error) {
+        if (this.cleanupFailed)
+          throw new RuntimeError(
+            "SOURCE_CLEANUP_FAILED",
+            "Source cleanup failed; retry shutdown.",
+            500,
+          );
+        if (controller.signal.aborted) throw cancelledRead(controller.signal);
+        if (error instanceof z.ZodError)
+          throw new RuntimeError(
+            "INVALID_READER_RESULT",
+            "The reader returned invalid evidence.",
+            502,
+          );
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+        externalSignal.removeEventListener("abort", abort);
+        if (this.active?.id === id) this.active = null;
       }
-      this.current = Object.freeze({ ...normalized, finishedAtMs });
-      this.currentSelection = request;
-      this.currentTiming = Object.freeze({
-        readId: id,
-        inputStartedAtMs: normalized.startedAtMs,
-        inputFinishedAtMs: normalized.finishedAtMs,
-        finishedAtMs,
-        ...(result.composite ? { sources: result.observations } : {}),
-      });
-      return this.current;
-    } catch (error) {
-      if (this.cleanupFailed)
-        throw new RuntimeError(
-          "SOURCE_CLEANUP_FAILED",
-          "Source cleanup failed; retry shutdown.",
-          500,
-        );
-      if (controller.signal.aborted) throw cancelledRead(controller.signal);
-      if (error instanceof z.ZodError)
-        throw new RuntimeError(
-          "INVALID_READER_RESULT",
-          "The reader returned invalid evidence.",
-          502,
-        );
-      throw error;
-    } finally {
-      clearTimeout(timeout);
-      externalSignal.removeEventListener("abort", abort);
-      if (this.active?.id === id) this.active = null;
-    }
+    });
   }
 
   /** Cancel reads and retry retained source cleanup; caller owns analysis-provider shutdown separately. */
   async close(): Promise<void> {
     this.invalidate();
-    const results = await Promise.allSettled(
-      [...this.readSets].map(async (set) => {
-        await set.dispose();
-        this.readSets.delete(set);
-      }),
-    );
-    this.cleanupFailed = results.some((result) => result.status === "rejected");
-    if (this.cleanupFailed)
-      throw new RuntimeError(
-        "SOURCE_CLEANUP_FAILED",
-        "Source cleanup did not complete; retry shutdown.",
-        500,
+    return this.enqueue(async () => {
+      const results = await Promise.allSettled(
+        [...this.readSets].map(async (set) => {
+          await set.dispose();
+          this.readSets.delete(set);
+        }),
       );
+      this.cleanupFailed = results.some(
+        (result) => result.status === "rejected",
+      );
+      if (this.cleanupFailed)
+        throw new RuntimeError(
+          "SOURCE_CLEANUP_FAILED",
+          "Source cleanup did not complete; retry shutdown.",
+          500,
+        );
+    });
   }
 }
