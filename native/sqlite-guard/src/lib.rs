@@ -1,8 +1,8 @@
 //! Native SQLite guard core. The engine is pinned independently of Node and the
 //! operating system; this crate is not yet wired into the application runtime.
-//! Source-opening policy is developed here before the
+//! Source-opening policy lives here, independently of the
 //! [protocol helper](https://github.com/toddysm/agent-insights/issues/37).
-//! This initial component exposes engine/VFS inspection only, not source access.
+//! Sources are explicit existing-file grants; no producer runtime or copied database is used.
 #![deny(unsafe_op_in_unsafe_fn)]
 #![deny(missing_docs)]
 
@@ -12,6 +12,14 @@ use std::fmt;
 
 mod vfs;
 pub use vfs::{HookCapability, NativeAbi, inspect_native_abi};
+
+mod platform;
+mod policy;
+mod source;
+pub use policy::GuardedDatabase;
+#[cfg(feature = "qualification-hooks")]
+pub use policy::QualificationOperation;
+pub use source::{ApprovedSource, MAX_SOURCE_BYTES};
 
 /// Exact engine identity reviewed for the VFS/operating-system interception seam.
 pub const SQLITE_SOURCE_ID: &str =
@@ -24,6 +32,30 @@ pub enum GuardError {
     EngineMismatch,
     /// The native platform/VFS does not expose the required guard seam.
     GuardUnavailable,
+    /// Another guarded connection already owns this process's SQLite engine.
+    InUse,
+    /// A selected source or required companion could not be opened.
+    SourceUnavailable,
+    /// An operating-system I/O operation failed independently of source format.
+    Io,
+    /// Operating-system permissions denied source access.
+    AccessDenied,
+    /// A selected file changed identity, became a link or ceased to be regular.
+    SourceChanged,
+    /// The source or a requested mapping exceeds its fixed bound.
+    Limit,
+    /// The owning harness must finish recovery or initialize its shared memory.
+    RecoveryRequired,
+    /// A forbidden source operation was attempted; this read is permanently failed.
+    PolicyViolation,
+    /// Native lock waiting exhausted its bounded busy timeout.
+    Busy,
+    /// Source bytes or a returned value are not compatible with this operation.
+    Data,
+    /// The caller supplied an invalid path or non-scalar/non-read-only query.
+    InvalidInput,
+    /// The native connection or file cleanup did not complete successfully.
+    Cleanup,
 }
 
 impl fmt::Display for GuardError {
@@ -32,6 +64,20 @@ impl fmt::Display for GuardError {
         output.write_str(match self {
             Self::EngineMismatch => "The SQLite engine does not match the qualified guard build.",
             Self::GuardUnavailable => "The required native SQLite guard is unavailable.",
+            Self::InUse => "A guarded database already owns this SQLite engine.",
+            Self::SourceUnavailable => "A selected database or required sidecar is unavailable.",
+            Self::Io => "Source input/output is unavailable.",
+            Self::AccessDenied => "Source access was denied by operating-system permissions.",
+            Self::SourceChanged => "A source file changed identity or is not a regular file.",
+            Self::Limit => "A source operation exceeded its fixed limit.",
+            Self::RecoveryRequired => {
+                "The owning harness must finish source recovery or initialization."
+            }
+            Self::PolicyViolation => "A forbidden source operation was prevented.",
+            Self::Busy => "The source remained locked beyond the bounded wait.",
+            Self::Data => "The source contains unsupported or malformed data.",
+            Self::InvalidInput => "The guarded read request is invalid.",
+            Self::Cleanup => "Native source cleanup did not complete.",
         })
     }
 }
