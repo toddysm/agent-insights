@@ -31,20 +31,25 @@ pub struct NativeAbi {
 /// Minimum audited slots and their compile-time availability requirements.
 #[derive(Clone, Copy)]
 struct Requirement {
+    /// Exact slot name owned by the pinned VFS implementation.
     name: &'static CStr,
-    active: bool,
+    /// Whether this build must provide a live implementation, rather than a compiled-out slot.
+    must_be_active: bool,
 }
 
 /// Require a live native implementation for this audited slot.
 const fn required(name: &'static CStr) -> Requirement {
-    Requirement { name, active: true }
+    Requirement {
+        name,
+        must_be_active: true,
+    }
 }
 
 /// Require the slot to exist, permitting it to be compiled out in this target.
 const fn conditional(name: &'static CStr) -> Requirement {
     Requirement {
         name,
-        active: false,
+        must_be_active: false,
     }
 }
 
@@ -152,10 +157,11 @@ unsafe fn probe(
         return Err(GuardError::GuardUnavailable);
     }
     let mut hooks = Vec::with_capacity(requirements.len());
+    let sentinel_ptr: ffi::sqlite3_syscall_ptr = Some(sentinel);
     for requirement in requirements {
         // Names are static C strings and the caller excludes all concurrent consumers.
         let original = unsafe { get(vfs, requirement.name.as_ptr()) };
-        if requirement.active && original.is_none() {
+        if requirement.must_be_active && original.is_none() {
             return Err(GuardError::GuardUnavailable);
         }
         if original.is_none() {
@@ -175,13 +181,13 @@ unsafe fn probe(
             continue;
         }
         // Always attempt restoration, even if replacement reports an error.
-        let assigned = unsafe { set(vfs, requirement.name.as_ptr(), Some(sentinel)) };
+        let assigned = unsafe { set(vfs, requirement.name.as_ptr(), sentinel_ptr) };
         let observed = unsafe { get(vfs, requirement.name.as_ptr()) };
         let restored = unsafe { set(vfs, requirement.name.as_ptr(), original) };
         let after = unsafe { get(vfs, requirement.name.as_ptr()) };
         if assigned != ffi::SQLITE_OK
             || restored != ffi::SQLITE_OK
-            || !same(observed, Some(sentinel))
+            || !same(observed, sentinel_ptr)
             || !same(after, original)
         {
             return Err(GuardError::GuardUnavailable);
@@ -191,7 +197,7 @@ unsafe fn probe(
                 .name
                 .to_str()
                 .map_err(|_| GuardError::GuardUnavailable)?,
-            active: original.is_some(),
+            active: true,
         });
     }
     Ok(NativeAbi {
@@ -265,6 +271,8 @@ mod tests {
         default: ffi::sqlite3_syscall_ptr,
         sets: u32,
         fail_on: Option<u32>,
+        /// A selected call reports success but leaves the slot unchanged.
+        ignore_on: Option<u32>,
         activated: bool,
     }
 
@@ -284,7 +292,7 @@ mod tests {
         unsafe { (*((*vfs).pAppData.cast::<Mock>())).current }
     }
 
-    /// Model lazy default registration and selected callback failures.
+    /// Model lazy defaults, reported failures and success without an actual update.
     ///
     /// # Safety
     /// The VFS must contain a live, exclusively borrowed Mock in pAppData.
@@ -299,6 +307,9 @@ mod tests {
             return ffi::SQLITE_ERROR;
         }
         state.activated |= callback.is_some();
+        if state.ignore_on == Some(state.sets) {
+            return ffi::SQLITE_OK;
+        }
         if state.default.is_none() {
             state.default = state.current;
         }
@@ -337,6 +348,7 @@ mod tests {
             default: None,
             sets: 0,
             fail_on: None,
+            ignore_on: None,
             activated: false,
         };
         // The local state remains in place throughout this synchronous probe.
@@ -356,6 +368,7 @@ mod tests {
                 default: None,
                 sets: 0,
                 fail_on: Some(fail_on),
+                ignore_on: None,
                 activated: false,
             };
             // This table and its state are isolated from the real engine and remain live.
@@ -368,6 +381,56 @@ mod tests {
                 state.sets, 2,
                 "Restoration must be attempted even after failed replacement"
             );
+        }
+    }
+
+    #[test]
+    fn successful_mock_round_trip_reports_active_and_restores_callback() {
+        let original: ffi::sqlite3_syscall_ptr = Some(original_callback);
+        let mut state = Mock {
+            current: original,
+            default: None,
+            sets: 0,
+            fail_on: None,
+            ignore_on: None,
+            activated: false,
+        };
+        // The unregistered fixture remains in place for this synchronous probe.
+        let mut table = unsafe { mock_table(&mut state) };
+        let result = unsafe { probe(&mut table, c"fixture", &[required(c"active")]) }.unwrap();
+        assert_eq!(
+            result.hooks,
+            vec![HookCapability {
+                name: "active",
+                active: true
+            }]
+        );
+        assert_eq!(state.sets, 2);
+        assert!(state.activated);
+        assert!(same(state.current, original));
+    }
+
+    #[test]
+    fn successful_set_without_matching_read_back_is_unavailable() {
+        for ignore_on in [1, 2] {
+            let original: ffi::sqlite3_syscall_ptr = Some(original_callback);
+            let mut state = Mock {
+                current: original,
+                default: None,
+                sets: 0,
+                fail_on: None,
+                ignore_on: Some(ignore_on),
+                activated: false,
+            };
+            // Both replacement and restoration are exercised without mutating the real VFS.
+            let mut table = unsafe { mock_table(&mut state) };
+            assert_eq!(
+                unsafe { probe(&mut table, c"fixture", &[required(c"active")]) },
+                Err(GuardError::GuardUnavailable),
+                "Successful call {ignore_on} without an update must fail its read-back check"
+            );
+            assert_eq!(state.sets, 2, "Restoration must still be attempted");
+            assert_eq!(same(state.current, original), ignore_on == 1);
         }
     }
 }

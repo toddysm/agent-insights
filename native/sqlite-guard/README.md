@@ -14,6 +14,10 @@ restored in an exclusively owned, quiescent engine. Compiled-out callbacks are
 never activated: SQLite lazily records defaults, so activating an empty slot
 could prevent restoration with a null callback.
 
+The probe checks actual callback read-backs, not just success return codes.
+Tests cover a successful round trip and false-success results during both
+replacement and restoration; either mismatch keeps the interface unavailable.
+
 **This does not implement or certify the source mutation guard yet.** No
 source-opening API is exposed. The policy VFS, actual operating-system guards,
 source lifecycle/race tests and their full platform qualification remain in
