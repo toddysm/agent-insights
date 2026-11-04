@@ -127,6 +127,7 @@ fn guarded_source_contract() {
     assert!(!fixture.path().with_file_name("source.db-shm").exists());
     admission_and_query_failures();
     bounded_lock_wait();
+    readonly_shm_without_producer_requires_recovery();
     #[cfg(unix)]
     unix_source_boundaries();
     #[cfg(windows)]
@@ -397,4 +398,43 @@ fn replacement_at_native_open_is_rejected() {
     let result = unsafe { GuardedDatabase::open(source) };
     assert!(matches!(result, Err(GuardError::SourceChanged)));
     assert!(ran.load(Ordering::SeqCst));
+}
+
+/// Retained read-only SHM with no live DMS owner must not become a heap-index recovery fallback.
+fn readonly_shm_without_producer_requires_recovery() {
+    for undersized in [false, true] {
+        let mut fixture = Fixture::new(true);
+        fixture.writer.kill().unwrap();
+        fixture.writer.wait().unwrap();
+        let shm = fixture.path().with_file_name("source.db-shm");
+        if undersized {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&shm)
+                .unwrap()
+                .set_len(1)
+                .unwrap();
+        }
+        let source = ApprovedSource::capture(&fixture.path()).unwrap();
+        let writable = std::fs::metadata(&shm).unwrap().permissions();
+        #[cfg(unix)]
+        let readonly = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::Permissions::from_mode(0o400)
+        };
+        #[cfg(windows)]
+        let readonly = {
+            let mut permissions = writable.clone();
+            permissions.set_readonly(true);
+            permissions
+        };
+        std::fs::set_permissions(&shm, readonly).unwrap();
+        // The producer is dead and the reader engine is exclusively owned.
+        let result = unsafe { GuardedDatabase::open(source) };
+        std::fs::set_permissions(&shm, writable).unwrap();
+        assert!(
+            matches!(result, Err(GuardError::RecoveryRequired)),
+            "Read-only SHM without a live producer must require recovery (undersized={undersized})"
+        );
+    }
 }

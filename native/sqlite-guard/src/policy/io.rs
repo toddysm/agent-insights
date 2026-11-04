@@ -326,10 +326,17 @@ unsafe extern "C" fn shm_map(
         unavailable();
         return ffi::SQLITE_IOERR_SHMMAP;
     };
+    unsafe {
+        *output = ptr::null_mut();
+    }
     let rc = unsafe { call(real, region, bytes, 0, output) };
-    if rc == ffi::SQLITE_OK && unsafe { (*output).is_null() } {
+    if rc == ffi::SQLITE_READONLY_CANTINIT {
         deny(GuardError::RecoveryRequired);
-        return ffi::SQLITE_READONLY_CANTINIT;
+        return ffi::SQLITE_IOERR_SHMMAP;
+    }
+    if matches!(rc, ffi::SQLITE_OK | ffi::SQLITE_READONLY) && unsafe { (*output).is_null() } {
+        deny(GuardError::RecoveryRequired);
+        return ffi::SQLITE_IOERR_SHMMAP;
     }
     rc
 }

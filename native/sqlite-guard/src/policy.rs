@@ -49,10 +49,30 @@ struct State {
 
 /// Prevent transaction-time preflight opens from releasing process-owned POSIX locks.
 pub(crate) fn exclusive() -> Result<MutexGuard<'static, ()>, GuardError> {
-    if POISONED.load(Ordering::Acquire) {
+    admit_engine(&POISONED, || ENGINE.try_lock())
+}
+
+/// Check poison only after acquiring ownership, including failure during a competing owner's release.
+fn admit_engine<'a>(
+    poisoned: &AtomicBool,
+    acquire: impl FnOnce() -> std::sync::TryLockResult<MutexGuard<'a, ()>>,
+) -> Result<MutexGuard<'a, ()>, GuardError> {
+    let owner = acquire().map_err(|error| match error {
+        std::sync::TryLockError::WouldBlock => GuardError::InUse,
+        std::sync::TryLockError::Poisoned(_) => GuardError::Cleanup,
+    })?;
+    if poisoned.load(Ordering::Acquire) {
         return Err(GuardError::Cleanup);
     }
-    ENGINE.try_lock().map_err(|_| GuardError::InUse)
+    Ok(owner)
+}
+
+/// A failed callback probe may have left native sentinels installed; this engine cannot be reused.
+fn poison_failed_probe<T>(
+    result: Result<T, GuardError>,
+    poisoned: &AtomicBool,
+) -> Result<T, GuardError> {
+    result.inspect_err(|_| poisoned.store(true, Ordering::Release))
 }
 
 /// Record a failed guard invariant; callers cannot recover by ignoring SQLite's result.
@@ -321,12 +341,13 @@ impl GuardedDatabase {
     /// connections or concurrent VFS consumers for the entire returned lifetime.
     ///
     /// # Errors
-    /// Source, guard, engine, lock and recovery failures are explicit. Failed setup
-    /// is cleaned before returning; no fallback engine or copied database is used.
+    /// Source, guard, engine, lock and recovery failures are explicit. Setup
+    /// attempts owned cleanup; failed interface probes or cleanup poison admission
+    /// and require discarding the process. No fallback engine or copied database is used.
     pub unsafe fn open(source: ApprovedSource) -> Result<Self, GuardError> {
         let exclusive = exclusive()?;
         // The caller guarantees quiescent, exclusive engine ownership.
-        let abi = unsafe { inspect_native_abi()? };
+        let abi = poison_failed_probe(unsafe { inspect_native_abi() }, &POISONED)?;
         let vfs_name = CString::new(abi.vfs_name).map_err(|_| GuardError::GuardUnavailable)?;
         let base = unsafe { ffi::sqlite3_vfs_find(vfs_name.as_ptr()) };
         if base.is_null() {
@@ -620,6 +641,33 @@ pub(crate) unsafe fn erased(pointer: *const ()) -> ffi::sqlite3_syscall_ptr {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn admission_observes_poison_set_before_mutex_acquisition_finishes() {
+        let engine = Mutex::new(());
+        let poisoned = AtomicBool::new(false);
+        let result = admit_engine(&poisoned, || {
+            poisoned.store(true, Ordering::Release);
+            engine.try_lock()
+        });
+        assert!(matches!(result, Err(GuardError::Cleanup)));
+    }
+
+    #[test]
+    fn failed_native_probe_prevents_later_admission() {
+        let engine = Mutex::new(());
+        let poisoned = AtomicBool::new(false);
+        assert_eq!(poison_failed_probe(Ok(7), &poisoned), Ok(7));
+        assert!(!poisoned.load(Ordering::Acquire));
+        assert_eq!(
+            poison_failed_probe::<()>(Err(GuardError::GuardUnavailable), &poisoned),
+            Err(GuardError::GuardUnavailable)
+        );
+        assert!(matches!(
+            admit_engine(&poisoned, || engine.try_lock()),
+            Err(GuardError::Cleanup)
+        ));
+    }
 
     #[test]
     fn resetting_io_diagnostics_does_not_clear_a_policy_failure() {

@@ -59,7 +59,10 @@ The existing Node runtime and production-reader availability are unchanged.
   is checked at runtime rather than trusting a display version.
 - [Cargo configuration](../../.cargo/config.toml) forces memory-only temporary
   storage, removes loadable extensions, disables background query workers and
-  disables data-file memory mapping. WAL shared memory is a separate mechanism.
+  disables data-file memory mapping. Unix locking is pinned to POSIX-only
+  (`SQLITE_ENABLE_LOCKING_STYLE=0`), with no automatic dot-file/flock/proxy
+  fallback. The build policy is checked before admission. WAL shared memory is
+  a separate mechanism.
 - System-library fallback is disabled for this build. A wrong source identity
   or missing required build policy returns a controlled error.
 - [Cargo.lock](Cargo.lock) pins the resolved dependency versions and checksums.
@@ -108,6 +111,9 @@ The guarded connection has the same exclusive-engine obligation throughout its
 lifetime. Only one guarded connection may own the engine in a process. Use
 `close()` to observe teardown errors. Failed cleanup poisons further admission;
 the helper supervisor must discard/terminate that process rather than reuse it.
+Failed native interface probes also poison admission. Read-only SHM that needs
+initialization is a recovery error, not permission for SQLite's private heap
+WAL-index fallback; the owning producer must initialize it first.
 Process cancellation and parent-loss supervision are implemented in #37, not
 by pretending that synchronous library calls can be interrupted by a promise.
 

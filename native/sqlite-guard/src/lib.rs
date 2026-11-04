@@ -97,6 +97,8 @@ pub struct EngineIdentity {
     pub workers_disabled: bool,
     /// Whether data-file memory mapping is disabled; WAL shared memory is separate.
     pub data_file_mapping_disabled: bool,
+    /// Whether automatic Unix fallback to dot-file/flock/proxy locking is disabled.
+    pub posix_locking_only: bool,
 }
 
 /// Inspect the linked engine without opening a database or reading session sources.
@@ -123,6 +125,7 @@ pub fn inspect_engine() -> Result<EngineIdentity, GuardError> {
         memory_temporary_storage: compile_option(c"TEMP_STORE=3"),
         workers_disabled: compile_option(c"MAX_WORKER_THREADS=0"),
         data_file_mapping_disabled: compile_option(c"MAX_MMAP_SIZE=0"),
+        posix_locking_only: compile_option(c"ENABLE_LOCKING_STYLE=0"),
     };
     identity.validate()?;
     Ok(identity)
@@ -139,6 +142,7 @@ impl EngineIdentity {
             || !self.memory_temporary_storage
             || !self.workers_disabled
             || !self.data_file_mapping_disabled
+            || !self.posix_locking_only
         {
             return Err(GuardError::EngineMismatch);
         }
@@ -164,19 +168,21 @@ mod tests {
         assert!(engine.memory_temporary_storage);
         assert!(engine.workers_disabled);
         assert!(engine.data_file_mapping_disabled);
+        assert!(engine.posix_locking_only);
     }
 
     #[test]
     fn incompatible_engine_or_build_policy_is_not_accepted() {
         let valid = inspect_engine().unwrap();
-        for index in 0..5 {
+        for index in 0..6 {
             let mut changed = valid.clone();
             match index {
                 0 => changed.source_id.push_str("-different"),
                 1 => changed.extensions_omitted = false,
                 2 => changed.memory_temporary_storage = false,
                 3 => changed.workers_disabled = false,
-                _ => changed.data_file_mapping_disabled = false,
+                4 => changed.data_file_mapping_disabled = false,
+                _ => changed.posix_locking_only = false,
             }
             assert_eq!(changed.validate(), Err(GuardError::EngineMismatch));
         }
