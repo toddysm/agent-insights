@@ -57,7 +57,9 @@ The commands above are relative to the repository root. From the crate
 directory, omit `--manifest-path native/sqlite-guard/Cargo.toml`.
 
 The [native workflow](../../.github/workflows/native-guard.yml) executes on
-macOS arm64/x64, Linux x64 and Windows x64 and verifies the actual host target.
+macOS arm64/x64, GNU/Linux x64 and MSVC Windows x64 and verifies the actual
+host target. The crate embeds Cargo's exact target triple; musl, Windows
+GNU/gnullvm, x32 and other unqualified ABIs are explicitly rejected.
 At this stage it qualifies engine/ABI behavior only, not source protection or
 all operating-system versions.
 

@@ -77,11 +77,13 @@ const WINDOWS_SLOTS: &[Requirement] = &[
     required(c"UnmapViewOfFile"),
 ];
 
-/// Select only the four proposed desktop targets; other targets remain unavailable.
-fn profile() -> Result<(&'static CStr, &'static [Requirement]), GuardError> {
-    match (std::env::consts::OS, std::env::consts::ARCH) {
-        ("macos", "aarch64" | "x86_64") | ("linux", "x86_64") => Ok((c"unix", UNIX_SLOTS)),
-        ("windows", "x86_64") => Ok((c"win32", WINDOWS_SLOTS)),
+/// Select exact qualified target triples; matching only OS/CPU would admit unsupported ABIs.
+fn profile_for(target: &str) -> Result<(&'static CStr, &'static [Requirement]), GuardError> {
+    match target {
+        "aarch64-apple-darwin" | "x86_64-apple-darwin" | "x86_64-unknown-linux-gnu" => {
+            Ok((c"unix", UNIX_SLOTS))
+        }
+        "x86_64-pc-windows-msvc" => Ok((c"win32", WINDOWS_SLOTS)),
         _ => Err(GuardError::GuardUnavailable),
     }
 }
@@ -105,8 +107,8 @@ pub unsafe fn inspect_native_abi() -> Result<NativeAbi, GuardError> {
     let _exclusive = PROBE_LOCK
         .lock()
         .map_err(|_| GuardError::GuardUnavailable)?;
+    let (name, requirements) = profile_for(env!("AGENT_INSIGHTS_NATIVE_TARGET"))?;
     inspect_engine()?;
-    let (name, requirements) = profile()?;
     // The engine is pinned and the caller guarantees it has no concurrent consumers.
     let vfs = unsafe { ffi::sqlite3_vfs_find(name.as_ptr()) };
     // The pointer belongs to the initialized engine and the selected profile is static.
@@ -203,6 +205,32 @@ unsafe fn probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_exact_native_target_abis_are_admitted() {
+        for target in [
+            "aarch64-apple-darwin",
+            "x86_64-apple-darwin",
+            "x86_64-unknown-linux-gnu",
+            "x86_64-pc-windows-msvc",
+        ] {
+            assert!(profile_for(target).is_ok(), "{target}");
+        }
+        for target in [
+            "x86_64-unknown-linux-musl",
+            "x86_64-pc-windows-gnu",
+            "x86_64-pc-windows-gnullvm",
+            "x86_64-unknown-linux-gnux32",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-uwp-windows-msvc",
+            "",
+        ] {
+            assert!(
+                matches!(profile_for(target), Err(GuardError::GuardUnavailable)),
+                "{target}"
+            );
+        }
+    }
 
     #[test]
     fn null_unknown_or_missing_interfaces_are_unavailable() {
