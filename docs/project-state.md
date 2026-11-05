@@ -1,9 +1,9 @@
 # Project state
 
-Capability inventory as of 2026-11-04. This records project delivery status,
+Capability inventory as of 2026-11-05. This records project delivery status,
 not session data or analysis results.
 
-The merged baseline is main at `1d1a8a748a6b10b81057be5bbd8a12e34175cb81`.
+The merged baseline is main at `4c8a96bcaae90e63822993f9e882ad472bf64b6d`.
 The approved architecture and explicit execution breakdown are recorded as
 lightweight revision 13 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
@@ -28,10 +28,14 @@ revision 13 records the requested explicit work-item decomposition without
 changing that architecture. The engine/interface foundation merged through
 [#40](https://github.com/toddysm/agent-insights/pull/40) under specific user
 authorization. Actual source enforcement for
-[#36](https://github.com/toddysm/agent-insights/issues/36) is implemented in
-open [#41](https://github.com/toddysm/agent-insights/pull/41), with synthetic
-source qualification and safety-review corrections.
-No automatic merge of #41 or native-binary release is authorized. The superseded
+[#36](https://github.com/toddysm/agent-insights/issues/36) and ESLint tooling
+[#42](https://github.com/toddysm/agent-insights/issues/42) merged through
+[#41](https://github.com/toddysm/agent-insights/pull/41), with explicit user
+acceptance of the disclosed security risks. That is not completed security
+remediation or a waiver for later work.
+The user then authorized implementation of the bounded helper protocol in #37.
+It is implemented in open [#43](https://github.com/toddysm/agent-insights/pull/43).
+No #43 merge or native-binary release is authorized. The superseded
 Local-only plan is not restored by this approval.
 
 Tracking currently uses GitHub issues and native sub-issues/dependencies.
@@ -46,6 +50,15 @@ No complete production session-analysis workflow has shipped.
 
 Here and below, the template column `PRD doc` means product requirements document
 or, for lightweight planning, the linked issue-backed design.
+
+### Delivered foundations
+
+These are supporting components, not a complete production analysis workflow.
+
+| Component | Tracking | Landed evidence | Documentation |
+| --- | --- | --- | --- |
+| Rust SQLite source guard core | [#36](https://github.com/toddysm/agent-insights/issues/36) | [#41](https://github.com/toddysm/agent-insights/pull/41), merged 2026-11-04; native source-operation qualification | [Guard development](../native/sqlite-guard/README.md) |
+| Type-aware JavaScript/TypeScript linting | [#42](https://github.com/toddysm/agent-insights/issues/42) | [#41](https://github.com/toddysm/agent-insights/pull/41), merged 2026-11-04; zero-warning validation and configuration tests | [Development checks](../README.md) |
 
 ### Existing design artifact
 
@@ -83,7 +96,7 @@ longer block the required Agent Host delivery.
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Local, read-only analysis of Visual Studio Code Copilot Chat sessions: timing, tools, tokens, tasks/outcomes, steering, artifacts and prompt coaching with source evidence | vscode-session-analysis | [#2](https://github.com/toddysm/agent-insights/issues/2) | [Issue-backed design](https://github.com/toddysm/agent-insights/issues/2) | Capture prerequisites [#1](https://github.com/toddysm/agent-insights/issues/1) and final usage guide [#21](https://github.com/toddysm/agent-insights/issues/21) remain incomplete |
 | Shared authorized read-only SQLite/multi-source access and original references | vscode-session-analysis | [#33](https://github.com/toddysm/agent-insights/issues/33) | [Approved native architecture](https://github.com/toddysm/agent-insights/issues/33#issuecomment-6621343238), execution revision 13 | Partial implementation in draft [#35](https://github.com/toddysm/agent-insights/pull/35), waiting for native prerequisites; not shipped. Final user docs remain #1/#21 |
-| Rust native SQLite source guard | vscode-session-analysis | [#36](https://github.com/toddysm/agent-insights/issues/36) | Approved native architecture, execution revision 13 | Engine/interface foundation merged in [#40](https://github.com/toddysm/agent-insights/pull/40). Actual Unix/Win32 interception, bounded existing shared memory, no-create races, recovery and cleanup tests are implemented in open [#41](https://github.com/toddysm/agent-insights/pull/41); review/merge gates remain. No helper protocol, artifacts or runtime integration shipped |
+| Bounded native helper protocol | vscode-session-analysis | [#37](https://github.com/toddysm/agent-insights/issues/37) | Approved native architecture, execution revision 13; follows completed #36 | Implemented in open [#43](https://github.com/toddysm/agent-insights/pull/43): framed messages, restricted projections, exact cells/witnesses, limits and independent process supervision. Qualification/review/merge gates remain; artifact preparation and application wiring are separate |
 
 At #35 head `7ef06a70cd1884e3a050f3aba2eef834a93955de`, 91 local
 unit/integration/startup tests, six Chromium cases and all four hosted checks
@@ -92,15 +105,17 @@ review found a producer-shutdown race that can recreate write-ahead-log (WAL)
 and shared-memory (SHM) files, plus unreadable-WAL error misclassification.
 Synthetic probes confirmed that Node read-only/query-only settings and Node
 filesystem permission mode do not enforce the no-create guarantee.
-Those passing checks do not qualify the missing native guard.
+Those historical passing checks did not qualify the then-missing native guard.
+The guard core has since landed in #41; #35 still needs the helper/artifact
+prerequisites and runtime integration before it can replace its unsafe path.
 The historical #35 review lacked Codex quota; that is not a permanent global
-review status. Both configured reviewers completed for the #40 merge, and #41
-uses fresh hosted reviews. No prior quota exception carries over.
+review status. Both configured reviewers completed for #40/#41, and #43 uses
+fresh hosted reviews. No prior quota or security-risk exception carries over.
 
 The user subsequently reviewed #41 and explicitly requested including tooling
 item [#42](https://github.com/toddysm/agent-insights/issues/42) in that same pull
 request. Its type-aware ESLint configuration, configuration tests and zero-warning
-application validation are implemented but unmerged. Actionable findings were
+application validation are merged through #41. Actionable findings were
 corrected; narrow documented exceptions preserve intentional async and cleanup
 contracts rather than introducing a debt baseline. The native review fixes
 release idle rollback-mode read locks and distinguish journal presence from
@@ -111,14 +126,13 @@ required recovery, while preserving WAL snapshots.
 | Capability | Feature slug | Tracking issue | PRD doc | Documentation status |
 | ---------- | ------------ | -------------- | ------- | -------------------- |
 | Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Revision 13 and source draft 3 in #30; #31/#32 remain blocked on #33/#30 and are not implemented | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
-| Bounded native helper protocol | vscode-session-analysis | [#37](https://github.com/toddysm/agent-insights/issues/37) | Follows #36 | Named operations, bounds, original values and process lifetime; not implemented |
 | Verified native artifacts and explicit preparation | vscode-session-analysis | [#38](https://github.com/toddysm/agent-insights/issues/38) | Follows #37; precedes #33 integration | Target binaries, checksums, preparation and platform tests; not implemented |
 | Publish qualified native artifacts | vscode-session-analysis | [#39](https://github.com/toddysm/agent-insights/issues/39) | Follows #38 and #33; separately gated on release approval | Real end-user installation verification; required before complete delivery #20 |
 
 These are required adjustments to the existing feature, not optional future
-harness support. The native guard core is implemented but unmerged; the bounded
-helper protocol, verified artifacts, runtime integration and Agent Host readers
-remain unfinished.
+harness support. The native guard core is merged and the bounded helper protocol
+is implemented/in review. Verified artifacts, runtime integration and Agent Host
+readers remain unfinished.
 
 Revision 13 established 24 native children and 38 immediate dependency links,
 verified without cycles. The user's later #42 tooling addition brings the
@@ -200,7 +214,7 @@ remains the selected testing mode.
 
 | Gap                                                                      | Evidence and next work                                                                                                                                                                           |
 | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Native guard core is implemented but unmerged/unshipped; Agent Host readers remain unimplemented | [#41](https://github.com/toddysm/agent-insights/pull/41) implements #36 source interception and synthetic safety tests, beyond the merged #40 engine/interface foundation. Current-head validation/review and explicit merge authorization remain gates. #33/#35 still await #36/#37/#38 delivery; release #39 needs separate permission. #31/#32 remain prerequisite-blocked. Optional telemetry remains #34 |
+| Guard core is merged; helper/artifact/runtime delivery and Agent Host readers remain incomplete | [#41](https://github.com/toddysm/agent-insights/pull/41) completed #36/#42. [#43](https://github.com/toddysm/agent-insights/pull/43) implements #37 but remains unmerged; #38/#33/#35 and the readers retain their prerequisites. Release #39 needs separate permission. Optional telemetry remains #34 |
 | Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
 | Real-session readers, reports and interpretation definitions are not implemented yet | The transport is available, but the local shell reports missing consumers explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
 | End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |
