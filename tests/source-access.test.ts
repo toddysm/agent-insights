@@ -1209,6 +1209,107 @@ test("composite cancellation rejects stale normalization and concurrent cleanup 
   assert.equal(service.selection, null);
 });
 
+test("stalled source admission or verification fails bounded cleanup and retains leases until retry", async (t) => {
+  for (const phase of [
+    "admission",
+    "query-verification",
+    "final-verification",
+  ]) {
+    const data = await fixture(t);
+    const access = await SourceAccess.create([data.root]);
+    const original = access.database.bind(access);
+    let announce: (() => void) | undefined, release: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let closes = 0,
+      admissions = 0;
+    t.mock.method(
+      access,
+      "database",
+      async (...args: Parameters<SourceAccess["database"]>) => {
+        const lease = await original(...args);
+        if (++admissions !== 1) return lease;
+        const close = lease.close.bind(lease);
+        lease.close = () => {
+          closes++;
+          return close();
+        };
+        if (phase === "admission") {
+          assert.ok(announce);
+          announce();
+          await gate;
+        } else {
+          const verify = lease.verify.bind(lease);
+          let verifications = 0;
+          lease.verify = async () => {
+            if (++verifications === (phase === "query-verification" ? 3 : 5)) {
+              assert.ok(announce);
+              announce();
+              await gate;
+            }
+            return verify();
+          };
+        }
+        return lease;
+      },
+    );
+    const service = new RuntimeService(
+      access,
+      config(data.root),
+      [],
+      30000,
+      null,
+      [reader()],
+      testNativeHelper,
+    );
+    data.cleanup.push(() => service.close());
+    const request = {
+      readerId: "fictional",
+      sources: [
+        { key: "database", sourceId: "source-1", relativePath: "source.db" },
+      ],
+    };
+    const controller = new AbortController();
+    const read = service.readSet(request, controller.signal);
+    const rejected = assert.rejects(read, code("SOURCE_CLEANUP_FAILED"));
+    try {
+      await entered;
+      const started = performance.now();
+      controller.abort();
+      await rejected;
+      const elapsed = performance.now() - started;
+      assert.ok(
+        elapsed >= 4900 && elapsed < 8000,
+        `Cleanup confirmation took ${elapsed}ms`,
+      );
+      assert.equal(closes, 0, "A still-active lease cannot be released");
+      await assert.rejects(
+        service.readSet(request, new AbortController().signal),
+        code("SOURCE_CLEANUP_FAILED"),
+      );
+    } finally {
+      assert.ok(release);
+      release();
+      await service.close();
+    }
+    assert.equal(
+      closes,
+      1,
+      "Late admitted/verified source is closed exactly once",
+    );
+    assert.equal((await service.status()).hasReadView, false);
+    assert.equal(
+      (await service.readSet(request, new AbortController().signal)).events
+        .length,
+      1,
+    );
+  }
+});
+
 test("stalled artifact admission cannot block cancellation, deadline, shutdown or replacement reads", async (t) => {
   for (const action of ["cancel", "deadline", "close", "replace"]) {
     const data = await fixture(t);

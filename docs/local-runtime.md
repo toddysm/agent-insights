@@ -132,6 +132,12 @@ block further reads until cleanup is retried. Refresh/cancel and shutdown also
 await source cleanup. Replacement reads wait for prior-generation disposal before
 acquiring sources; a delayed cleanup failure cannot leave a newer view published.
 The process-exit confirmation limit is five seconds.
+The composite owner also bounds cleanup confirmation to five seconds. If source
+admission, lease verification or descriptor close is still pending, the read
+fails with `SOURCE_CLEANUP_FAILED` and retains ownership; refresh, shutdown and
+replacement do not wait indefinitely or claim cleanup succeeded. New reads stay
+blocked until a cleanup retry confirms those operations settled and descriptors
+closed. Cancellation does not forcibly interrupt operating-system filesystem I/O.
 Source-free artifact lookup is also bounded to five seconds. Cancellation,
 deadlines and disposal stop waiting for a stalled lookup without waiting for its
 filesystem Promise; any eventual result is discarded and cannot launch a helper.

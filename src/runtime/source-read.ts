@@ -15,7 +15,7 @@ import {
   type SqliteBindings,
   type SqliteRow,
 } from "../evidence/source-access.js";
-import { RuntimeError, cancelledRead } from "./errors.js";
+import { RuntimeError, cancelledRead, abortable } from "./errors.js";
 import {
   SourceAccess,
   MAX_SOURCE_BYTES,
@@ -106,6 +106,8 @@ function witnessKey(
 /** One composite capture; no view/history survives disposal or generation invalidation. */
 export class SourceReadSet implements MultiSourceInput {
   readonly requirements: readonly SourceRequirement[];
+  readonly signal: AbortSignal;
+  private readonly stopped = new AbortController();
   private readonly inputs = new Map<string, SourceInput>();
   private readonly observations = new Map<string, SourceObservation>();
   private readonly databases = new Map<string, DatabaseOwner>();
@@ -117,6 +119,8 @@ export class SourceReadSet implements MultiSourceInput {
   private queryFailure: Error | undefined;
   private finishing = false;
   private disposal: Promise<void> | undefined;
+  private admission: Promise<void> | undefined;
+  private finalization: Promise<readonly SourceObservation[]> | undefined;
 
   /**
    * Establish ownership before opening any source/process, so failed setup is still disposable.
@@ -128,11 +132,12 @@ export class SourceReadSet implements MultiSourceInput {
    */
   constructor(
     readonly readId: string,
-    readonly signal: AbortSignal,
+    signal: AbortSignal,
     private readonly access: SourceAccess,
     reader: MultiSourceReader,
     private readonly nativeHelper: NativeHelperResolver = defaultNativeHelper,
   ) {
+    this.signal = AbortSignal.any([signal, this.stopped.signal]);
     this.requirements = Object.freeze(
       reader.inputs.map((input) => sourceRequirementSchema.parse(input)),
     );
@@ -172,7 +177,23 @@ export class SourceReadSet implements MultiSourceInput {
    * @param bindings - Explicit grants/relative paths, copied by the runtime before this call.
    * @returns After admission; missing optional inputs are typed unavailable results, not empty data.
    */
-  async prepare(bindings: readonly SourceBinding[]): Promise<void> {
+  prepare(bindings: readonly SourceBinding[]): Promise<void> {
+    if (this.admission || this.finishing)
+      return Promise.reject(
+        new RuntimeError(
+          "READ_CLOSED",
+          "The source admission has already started or finished.",
+          409,
+        ),
+      );
+    this.admission = this.prepareSources(bindings);
+    return abortable(this.admission, this.signal);
+  }
+
+  /** Retain actual admission until it settles, including a descriptor acquired after cancellation. */
+  private async prepareSources(
+    bindings: readonly SourceBinding[],
+  ): Promise<void> {
     if (
       bindings.length !== this.requirements.length ||
       new Set(bindings.map((binding) => binding.key)).size !==
@@ -208,6 +229,7 @@ export class SourceReadSet implements MultiSourceInput {
             this.signal,
             this.remainingBytes,
           );
+          if (this.signal.aborted) throw cancelledRead(this.signal);
           this.consume(capture.bytes.byteLength, 0);
           this.inputs.set(
             requirement.key,
@@ -373,6 +395,7 @@ export class SourceReadSet implements MultiSourceInput {
         this.remainingRows,
         this.remainingBytes,
       );
+      if (this.signal.aborted) throw cancelledRead(this.signal);
       this.consume(result.bytes, result.rows.length);
       const witnesses =
         this.witnesses.get(owner.sourceId) ?? new Map<string, RowWitness>();
@@ -405,8 +428,16 @@ export class SourceReadSet implements MultiSourceInput {
    * @returns Source-specific capture bounds, never a global atomic snapshot.
    * @throws Any query/cleanup/identity failure, including unawaited failed reader operations.
    */
-  async finish(): Promise<readonly SourceObservation[]> {
+  finish(): Promise<readonly SourceObservation[]> {
+    if (this.disposal || this.signal.aborted)
+      return Promise.reject(cancelledRead(this.signal));
     this.finishing = true;
+    this.finalization ??= this.finishSources();
+    return abortable(this.finalization, this.signal);
+  }
+
+  /** Track actual final verification separately from the caller's cancellable wait. */
+  private async finishSources(): Promise<readonly SourceObservation[]> {
     await this.queue;
     if (this.queryFailure) throw this.queryFailure;
     for (const owner of this.databases.values()) {
@@ -497,13 +528,24 @@ export class SourceReadSet implements MultiSourceInput {
   }
 
   /**
-   * Stop all owned processes, then release descriptors. Failed owners remain for retry.
+   * Stop owned processes, wait for real admission/query/verification completion, then release descriptors.
+   * A five-second confirmation failure retains ownership and blocks replacement until cleanup is retried.
    * This is called on success, error, cancellation and server shutdown.
    */
-  dispose(): Promise<void> {
+  async dispose(): Promise<void> {
     this.finishing = true;
-    return (this.disposal ??= (async () => {
+    this.stopped.abort(cancelledRead());
+    const cleanup = (this.disposal ??= (async () => {
       try {
+        await Promise.all(
+          [...this.databases.values()].map((owner) => owner.process.stop()),
+        );
+        // Read failures are delivered by their callers; cleanup needs actual settlement, not read success.
+        await Promise.allSettled([
+          this.admission,
+          this.queue,
+          this.finalization,
+        ]);
         const outcomes = await Promise.allSettled(
           [...this.databases].map(async ([key, owner]) => {
             await owner.process.stop();
@@ -522,5 +564,26 @@ export class SourceReadSet implements MultiSourceInput {
         throw error;
       }
     })());
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        cleanup,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new RuntimeError(
+                  "SOURCE_CLEANUP_FAILED",
+                  "Source cleanup could not be confirmed; retry cleanup before another read.",
+                  500,
+                ),
+              ),
+            5000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 }
