@@ -639,6 +639,64 @@ test("optional missing database sources remain explicit unavailable inputs", asy
   assert.ok(result.issues.some((issue) => issue.code === "unreadable-source"));
 });
 
+test("optional verifier I/O is normalized while unexpected verifier failures remain fatal", async (t) => {
+  for (const fault of ["EIO", "UNEXPECTED"]) {
+    const data = await fixture(t);
+    const access = await SourceAccess.create([data.root]);
+    const target = await fileSystem.realpath(data.database);
+    const originalStat = fileSystem.stat;
+    const failure = Object.assign(new Error("Fixture verifier failure"), {
+      code: fault,
+    });
+    let checks = 0;
+    const mocked = t.mock.method(
+      fileSystem,
+      "stat",
+      async (...args: Parameters<typeof originalStat>) => {
+        if (args[0] === target && ++checks === 3) throw failure;
+        return originalStat(...args);
+      },
+    );
+    syncBuiltinESMExports();
+    const adapter = reader();
+    const optional = {
+      ...adapter,
+      inputs: adapter.inputs.map((input) => ({ ...input, optional: true })),
+    };
+    const set = new SourceReadSet(
+      "read-verifier",
+      new AbortController().signal,
+      access,
+      optional,
+      testNativeHelper,
+    );
+    try {
+      const admission = set.prepare([
+        { key: "database", sourceId: "source-1", relativePath: "source.db" },
+      ]);
+      if (fault === "UNEXPECTED")
+        await assert.rejects(admission, (error) => error === failure);
+      else {
+        await admission;
+        const input = set.get("database");
+        assert.equal(input.available, false);
+        if (input.available) assert.fail();
+        assert.equal(input.code, "SOURCE_IO");
+        assert.equal((await set.finish())[0]?.available, false);
+      }
+      assert.equal(
+        checks,
+        3,
+        "Inject after lease admission, during the helper's parent-side verifier",
+      );
+    } finally {
+      await set.dispose();
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
+});
+
 test("multi-source reads preserve distinct source identities, timings and SQL witnesses", async (t) => {
   const data = await fixture(t);
   const adapter = reader([

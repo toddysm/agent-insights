@@ -574,56 +574,61 @@ export class SourceAccess {
       /**
        * Check grant/descriptor identity after SQLite access. Shared-memory coordination
        * is not a content-change signal, but sidecar replacement is an explicit failure.
+       * Normalize known filesystem errors on every invocation, not only initial admission.
        */
       const verify = async (): Promise<boolean> => {
-        await this.inspect(grant);
-        if (!(await pointsToOpenedFile(candidate, canonical, before)))
-          throw new RuntimeError(
-            "SOURCE_CHANGED",
-            "Database identity changed during the read.",
-            409,
-          );
-        const now = await handle.stat({ bigint: true });
-        let changed = !sameFileState(before, now);
-        let totalSize = now.size;
-        for (const suffix of ["-wal", "-shm", "-journal"]) {
-          const previous = sidecars[suffix];
-          const current = await inspectSidecar(canonical + suffix);
-          if (suffix === "-journal" && current)
-            throw new RuntimeError(
-              "SQLITE_JOURNAL_PRESENT",
-              "A rollback journal appeared during the read.",
-              409,
-            );
-          totalSize += BigInt(current?.size ?? 0);
-          if (
-            (previous === null) !== (current === null) ||
-            (previous &&
-              current &&
-              (previous.dev !== current.dev || previous.ino !== current.ino))
-          )
+        try {
+          await this.inspect(grant);
+          if (!(await pointsToOpenedFile(candidate, canonical, before)))
             throw new RuntimeError(
               "SOURCE_CHANGED",
-              "Database sidecar identity changed during the read.",
+              "Database identity changed during the read.",
               409,
             );
-          if (
-            suffix !== "-shm" &&
-            previous &&
-            current &&
-            (previous.size !== current.size ||
-              previous.mtime !== current.mtime ||
-              previous.ctime !== current.ctime)
-          )
-            changed = true;
+          const now = await handle.stat({ bigint: true });
+          let changed = !sameFileState(before, now);
+          let totalSize = now.size;
+          for (const suffix of ["-wal", "-shm", "-journal"]) {
+            const previous = sidecars[suffix];
+            const current = await inspectSidecar(canonical + suffix);
+            if (suffix === "-journal" && current)
+              throw new RuntimeError(
+                "SQLITE_JOURNAL_PRESENT",
+                "A rollback journal appeared during the read.",
+                409,
+              );
+            totalSize += BigInt(current?.size ?? 0);
+            if (
+              (previous === null) !== (current === null) ||
+              (previous &&
+                current &&
+                (previous.dev !== current.dev || previous.ino !== current.ino))
+            )
+              throw new RuntimeError(
+                "SOURCE_CHANGED",
+                "Database sidecar identity changed during the read.",
+                409,
+              );
+            if (
+              suffix !== "-shm" &&
+              previous &&
+              current &&
+              (previous.size !== current.size ||
+                previous.mtime !== current.mtime ||
+                previous.ctime !== current.ctime)
+            )
+              changed = true;
+          }
+          if (totalSize > BigInt(MAX_SOURCE_BYTES))
+            throw new RuntimeError(
+              "SOURCE_TOO_LARGE",
+              "Database and sidecars exceed the source limit.",
+              413,
+            );
+          return changed;
+        } catch (error) {
+          filesystemError(error);
         }
-        if (totalSize > BigInt(MAX_SOURCE_BYTES))
-          throw new RuntimeError(
-            "SOURCE_TOO_LARGE",
-            "Database and sidecars exceed the source limit.",
-            413,
-          );
-        return changed;
       };
       await verify();
       return {
