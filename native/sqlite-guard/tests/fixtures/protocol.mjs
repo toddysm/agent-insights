@@ -60,8 +60,8 @@ const definition = {
   ],
 };
 
-/** Bound test waits and clear their timers on either success or failure. */
-async function bounded(promise, ms = 5000) {
+/** Allow delivery/decoding overhead beyond the helper's 5-second budget; deadline scenarios use explicit shorter waits. */
+async function bounded(promise, ms = 10000) {
   let timer;
   try {
     return await Promise.race([
@@ -133,7 +133,12 @@ class Helper {
       stdio: ["pipe", "pipe", "pipe"],
     });
     this.id = 0;
-    this.buffer = Buffer.alloc(0);
+    this.prefix = Buffer.alloc(4);
+    this.prefixUsed = 0;
+    this.payload = null;
+    this.payloadUsed = 0;
+    this.receivedBytes = 0;
+    this.copiedBytes = 0;
     this.queue = [];
     this.waiters = [];
     this.stderr = "";
@@ -154,42 +159,67 @@ class Helper {
       this.stderr += chunk;
       assert.ok(this.stderr.length <= 4096);
     });
-    this.child.stdout.on("data", (chunk) => {
-      this.buffer = Buffer.concat([this.buffer, chunk]);
-      assert.ok(this.buffer.length <= MAX_REPLY + 65540);
-      while (this.buffer.length >= 4) {
-        const length = this.buffer.readUInt32BE();
-        assert.ok(length > 0 && length <= MAX_REPLY);
-        if (this.buffer.length < length + 4) {
-          if (length > 65536 && this.pauseLargeReply) {
-            const paused = this.pauseLargeReply;
-            this.pauseLargeReply = null;
-            this.child.stdout.pause();
-            paused();
-          }
-          break;
-        }
-        const message = JSON.parse(
-          this.buffer.subarray(4, length + 4).toString("utf8"),
-        );
-        assert.ok(
-          ["hello", "started", "opened", "rows", "closed", "error"].includes(
-            message.kind,
-          ),
-        );
-        this.buffer = this.buffer.subarray(length + 4);
-        const waiter = this.waiters.shift();
-        if (waiter) waiter.resolve(message);
-        else {
-          this.queue.push(message);
-          assert.ok(this.queue.length <= 3);
-        }
-      }
-    });
+    this.child.stdout.on("data", (chunk) => this.consume(chunk));
     t.after(async () => {
       if (!this.ended) this.child.kill("SIGKILL");
       await bounded(this.exited);
     });
+  }
+
+  /** Validate the prefix before allocation and copy each incoming byte once, rather than recopying growing frames. */
+  consume(chunk) {
+    this.receivedBytes += chunk.length;
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (this.payload === null) {
+        const count = Math.min(4 - this.prefixUsed, chunk.length - offset);
+        chunk.copy(this.prefix, this.prefixUsed, offset, offset + count);
+        this.prefixUsed += count;
+        this.copiedBytes += count;
+        offset += count;
+        if (this.prefixUsed < 4) return;
+        const length = this.prefix.readUInt32BE();
+        assert.ok(length > 0 && length <= MAX_REPLY);
+        this.payload = Buffer.alloc(length);
+        this.payloadUsed = 0;
+      }
+      const count = Math.min(
+        this.payload.length - this.payloadUsed,
+        chunk.length - offset,
+      );
+      chunk.copy(this.payload, this.payloadUsed, offset, offset + count);
+      this.payloadUsed += count;
+      this.copiedBytes += count;
+      offset += count;
+      if (this.payloadUsed < this.payload.length) {
+        if (
+          this.payloadUsed > 0 &&
+          this.payload.length > 65536 &&
+          this.pauseLargeReply
+        ) {
+          const paused = this.pauseLargeReply;
+          this.pauseLargeReply = null;
+          this.child.stdout.pause();
+          paused();
+        }
+        return;
+      }
+      const message = JSON.parse(this.payload.toString("utf8"));
+      assert.ok(
+        ["hello", "started", "opened", "rows", "closed", "error"].includes(
+          message.kind,
+        ),
+      );
+      this.payload = null;
+      this.prefixUsed = 0;
+      this.payloadUsed = 0;
+      const waiter = this.waiters.shift();
+      if (waiter) waiter.resolve(message);
+      else {
+        this.queue.push(message);
+        assert.ok(this.queue.length <= 3);
+      }
+    }
   }
 
   /** Receive a whole bounded frame; truncated output is never converted into empty success. */
@@ -263,6 +293,9 @@ class Helper {
     assert.equal(reply.kind, "closed");
     assert.deepEqual(await bounded(this.exited), { code: 0, signal: null });
     assert.equal(this.stderr, "");
+    assert.equal(this.payload, null);
+    assert.equal(this.prefixUsed, 0);
+    assert.equal(this.copiedBytes, this.receivedBytes);
     return reply;
   }
 }
@@ -287,6 +320,44 @@ function witness(columns, values) {
     }),
   );
 }
+
+test("the test client decodes fragmented/coalesced frames with linear bounded copies", () => {
+  const messages = [
+    { kind: "started", id: 1 },
+    { kind: "opened", id: 1, userVersion: 1, snapshotScope: "request" },
+  ];
+  const frames = messages.map((message) => {
+    const body = Buffer.from(JSON.stringify(message));
+    const prefix = Buffer.alloc(4);
+    prefix.writeUInt32BE(body.length);
+    return Buffer.concat([prefix, body]);
+  });
+  const bytes = Buffer.concat(frames);
+  for (const step of [1, 2, 7, bytes.length]) {
+    const receiver = {
+      prefix: Buffer.alloc(4),
+      prefixUsed: 0,
+      payload: null,
+      payloadUsed: 0,
+      copiedBytes: 0,
+      receivedBytes: 0,
+      queue: [],
+      waiters: [],
+    };
+    for (let offset = 0; offset < bytes.length; offset += step)
+      Helper.prototype.consume.call(
+        receiver,
+        bytes.subarray(offset, offset + step),
+      );
+    assert.deepEqual(receiver.queue, messages);
+    assert.equal(receiver.copiedBytes, bytes.length);
+    assert.equal(receiver.receivedBytes, bytes.length);
+    const oversized = Buffer.alloc(4);
+    oversized.writeUInt32BE(MAX_REPLY + 1);
+    assert.throws(() => Helper.prototype.consume.call(receiver, oversized));
+    assert.equal(receiver.payload, null);
+  }
+});
 
 test("native projections preserve typed cells, original keys, hashes and per-mode snapshots", async (t) => {
   for (const wal of [false, true]) {
@@ -706,7 +777,9 @@ test("cancellation still exits while a large success frame is blocked on stdout"
   helper.child.stdout.resume();
   await bounded(helper.exited);
   assert.ok(
-    helper.buffer.length > 4,
+    helper.payload !== null &&
+      helper.payloadUsed > 0 &&
+      helper.payloadUsed < helper.payload.length,
     "Expected a truncated frame, not a fully written success",
   );
   assert.equal(
