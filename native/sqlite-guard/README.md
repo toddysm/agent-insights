@@ -45,8 +45,11 @@ Ordinary VFS operations and internal Unix/Win32 file calls are guarded:
 The public scalar-read seam accepts only code-owned, single read-only integer
 queries. A preparation-time authorizer rejects configuration changes; only
 read-only `query_only`, `trusted_schema`, `busy_timeout`, `user_version` and
-`data_version` PRAGMAs are admitted. It is not a browser/model query console. Source matching, domain schema
-admission and named projections remain the protocol/runtime readers' responsibility.
+`data_version` PRAGMAs are admitted, plus read-only `table_list`/`table_xinfo`
+schema inspection. Internal transaction statements support bounded request
+snapshots; the public scalar seam rejects non-row statements before execution.
+It is not a browser/model query console. Source matching and interpretation
+remain the runtime/domain readers' responsibility.
 The application must authorize the main path before preflight. Preflight uses
 read-only, no-follow descriptors and binds canonicalization to the opened main
 object. All retained rollback journals, including empty ones, return
@@ -67,8 +70,10 @@ can change existing bytes; no global atomic multi-source snapshot is claimed.
 No database copy, immutable/live-file shortcut, repair or producer constructor
 is used. Ordinary source errors and policy/cleanup failures are distinct.
 
-The bounded helper process/protocol is
-[#37](https://github.com/toddysm/agent-insights/issues/37), artifact preparation
+The [bounded helper protocol](PROTOCOL.md) implements
+[#37](https://github.com/toddysm/agent-insights/issues/37): restricted named
+projections, lossless cells and fingerprints, independent deadline/channel/parent
+supervision, and source-free self-check. Artifact preparation
 is [#38](https://github.com/toddysm/agent-insights/issues/38), runtime integration
 remains [#33](https://github.com/toddysm/agent-insights/issues/33), and binary
 publication is separately gated in
@@ -123,7 +128,8 @@ probes for testing only. It must not be enabled in released helpers. The
 unmap/close faults report failure after releasing test-owned resources so temporary
 fixture cleanup remains possible; engine reuse must still fail. The
 production build has no barrier callbacks or qualification operations. The
-protocol/packaging items must verify that distinction in their handshake/artifacts.
+handshake reports this flag, and qualification builds refuse normal serving.
+Packaging must still verify the flag and the exact binary's integrity.
 
 ## Unsafe contract
 
@@ -148,7 +154,9 @@ by pretending that synchronous library calls can be interrupted by a promise.
 The pinned SQLite engine is [public domain](https://sqlite.org/copyright.html).
 The [libsqlite3-sys bindings](https://github.com/rusqlite/rusqlite) are MIT
 licensed. The `libc` and `windows-sys` platform bindings and the `tempfile` test
-dependency are available under MIT or Apache-2.0. Dependencies retain their
+dependency are available under MIT or Apache-2.0. The protocol's `serde`, `serde_json`, `base64` and
+`sha2` dependencies are MIT or Apache-2.0; `ryu-js` is Apache-2.0 or BSL-1.0.
+Dependencies retain their
 upstream license notices in their
 source packages. No upstream source implementation is copied into this
 repository; Cargo builds the checksum-pinned dependency. Binary packaging must
