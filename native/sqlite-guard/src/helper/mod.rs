@@ -165,7 +165,7 @@ unsafe fn hello() -> Result<Reply, Failure> {
 }
 
 /// Drain bounded frames independently of SQLite; cancel, EOF and malformed messages terminate actual work.
-fn input_thread(sender: mpsc::SyncSender<(Request, Instant)>) {
+fn input_thread(sender: mpsc::SyncSender<Request>, watchdog: Watchdog) {
     let mut input = std::io::stdin().lock();
     let mut last_id = 0u32;
     loop {
@@ -183,7 +183,11 @@ fn input_thread(sender: mpsc::SyncSender<(Request, Instant)>) {
         if matches!(request, Request::Cancel { .. }) {
             terminate(Failure::Cancelled);
         }
-        if let Err(error) = sender.try_send((request, received)) {
+        let timeout = request.timeout().unwrap_or_else(|error| terminate(error));
+        watchdog
+            .arm(request.id(), received, timeout)
+            .unwrap_or_else(|error| terminate(error));
+        if let Err(error) = sender.try_send(request) {
             match error {
                 TrySendError::Full(_) => terminate(Failure::Protocol),
                 TrySendError::Disconnected(_) => terminate(Failure::Channel),
@@ -203,15 +207,16 @@ unsafe fn serve(options: Options, output: &mut impl Write) -> Result<(), Failure
     }
     write_frame(output, &unsafe { hello() }?)?;
     let (sender, receiver) = mpsc::sync_channel(1);
+    let input_watchdog = watchdog.clone();
     std::thread::Builder::new()
         .name("sqlite-input".into())
-        .spawn(move || input_thread(sender))
+        .spawn(move || input_thread(sender, input_watchdog))
         .map_err(|_| Failure::Guard)?;
     let mut session: Option<Session> = None;
     loop {
-        let (request, received) = receiver.recv().map_err(|_| Failure::Channel)?;
+        let request = receiver.recv().map_err(|_| Failure::Channel)?;
         let id = request.id();
-        watchdog.operation(received, request.timeout()?)?;
+        watchdog.check()?;
         write_frame(output, &Reply::Started { id })?;
         let closing = matches!(request, Request::Close { .. });
         let result = match request {
@@ -281,7 +286,7 @@ unsafe fn serve(options: Options, output: &mut impl Write) -> Result<(), Failure
         if closing {
             return Ok(());
         }
-        watchdog.idle();
+        watchdog.complete(id)?;
     }
 }
 

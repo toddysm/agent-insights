@@ -1,10 +1,8 @@
 //! Parent supervision and monotonic deadlines remain runnable while SQLite or standard I/O blocks.
 
 use super::{Failure, wire::MAX_LIFETIME_MS};
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// One verified direct parent, captured before source admission.
@@ -151,11 +149,52 @@ fn filetime_value(value: windows_sys::Win32::Foundation::FILETIME) -> u64 {
     (u64::from(value.dwHighDateTime) << 32) | u64::from(value.dwLowDateTime)
 }
 
-/// A process-wide watchdog caps idle time, partial frames, native work and blocked output.
+/// At most one active and one queued request share the fixed lifetime ceiling.
+struct Deadlines {
+    lifetime_ms: u64,
+    requests: BTreeMap<u32, u64>,
+}
+
+impl Deadlines {
+    /// Begin idle without losing the absolute process-lifetime deadline.
+    fn new(lifetime_ms: u64) -> Self {
+        Self {
+            lifetime_ms,
+            requests: BTreeMap::new(),
+        }
+    }
+
+    /// Arm before queueing; duplicate IDs and excessive pipelining cannot grow supervision state.
+    fn arm(&mut self, id: u32, deadline: u64) -> Result<(), Failure> {
+        if self.requests.len() >= 2 || self.requests.contains_key(&id) {
+            return Err(Failure::Protocol);
+        }
+        self.requests.insert(id, deadline.min(self.lifetime_ms));
+        Ok(())
+    }
+
+    /// The earliest outstanding request can expire even while an earlier operation is still blocked.
+    fn earliest(&self) -> u64 {
+        self.requests
+            .values()
+            .copied()
+            .min()
+            .unwrap_or(self.lifetime_ms)
+            .min(self.lifetime_ms)
+    }
+
+    /// Completing one response must not erase the next queued request's timer.
+    fn complete(&mut self, id: u32) -> Result<(), Failure> {
+        self.requests.remove(&id).ok_or(Failure::Protocol)?;
+        Ok(())
+    }
+}
+
+/// Shared supervision caps idle time, queued work, native calls and blocked output.
+#[derive(Clone)]
 pub(super) struct Watchdog {
     origin: Instant,
-    deadline: Arc<AtomicU64>,
-    lifetime_ms: u64,
+    deadlines: Arc<Mutex<Deadlines>>,
 }
 
 impl Watchdog {
@@ -166,8 +205,8 @@ impl Watchdog {
         }
         let parent = Parent::capture(parent_pid)?;
         let origin = Instant::now();
-        let deadline = Arc::new(AtomicU64::new(lifetime_ms));
-        let observed = deadline.clone();
+        let deadlines = Arc::new(Mutex::new(Deadlines::new(lifetime_ms)));
+        let observed = deadlines.clone();
         std::thread::Builder::new()
             .name("sqlite-lifetime".into())
             .spawn(move || {
@@ -177,43 +216,48 @@ impl Watchdog {
                         Ok(false) => terminate(Failure::Parent),
                         Err(error) => terminate(error),
                     }
-                    if origin.elapsed().as_millis() >= u128::from(observed.load(Ordering::Acquire))
-                    {
+                    let deadline = match observed.lock() {
+                        Ok(deadlines) => deadlines.earliest(),
+                        Err(_) => terminate(Failure::Guard),
+                    };
+                    if origin.elapsed().as_millis() >= u128::from(deadline) {
                         terminate(Failure::Deadline);
                     }
                     std::thread::sleep(Duration::from_millis(10));
                 }
             })
             .map_err(|_| Failure::Guard)?;
-        Ok(Self {
-            origin,
-            deadline,
-            lifetime_ms,
-        })
+        Ok(Self { origin, deadlines })
     }
 
     /// Bound a request from its reception time, including any time spent in the single queued slot.
-    pub(super) fn operation(&self, received: Instant, timeout_ms: u64) -> Result<(), Failure> {
+    pub(super) fn arm(&self, id: u32, received: Instant, timeout_ms: u64) -> Result<(), Failure> {
         let elapsed = received.duration_since(self.origin).as_millis() as u64;
-        let deadline = elapsed
-            .checked_add(timeout_ms)
-            .ok_or(Failure::Limit)?
-            .min(self.lifetime_ms);
-        self.deadline.store(deadline, Ordering::Release);
-        if self.origin.elapsed().as_millis() >= u128::from(deadline) {
-            return Err(Failure::Deadline);
-        }
-        Ok(())
+        let deadline = elapsed.checked_add(timeout_ms).ok_or(Failure::Limit)?;
+        self.deadlines
+            .lock()
+            .map_err(|_| Failure::Guard)?
+            .arm(id, deadline)?;
+        self.check()
     }
 
-    /// Finishing a request does not extend the fixed process lifetime.
-    pub(super) fn idle(&self) {
-        self.deadline.store(self.lifetime_ms, Ordering::Release);
+    /// Remove only the completed request after checking all currently armed deadlines.
+    pub(super) fn complete(&self, id: u32) -> Result<(), Failure> {
+        let mut deadlines = self.deadlines.lock().map_err(|_| Failure::Guard)?;
+        if self.origin.elapsed().as_millis() >= u128::from(deadlines.earliest()) {
+            return Err(Failure::Deadline);
+        }
+        deadlines.complete(id)
     }
 
     /// Do not publish or reset a deadline already exceeded between watchdog polling ticks.
     pub(super) fn check(&self) -> Result<(), Failure> {
-        if self.origin.elapsed().as_millis() >= u128::from(self.deadline.load(Ordering::Acquire)) {
+        let deadline = self
+            .deadlines
+            .lock()
+            .map_err(|_| Failure::Guard)?
+            .earliest();
+        if self.origin.elapsed().as_millis() >= u128::from(deadline) {
             Err(Failure::Deadline)
         } else {
             Ok(())
@@ -225,4 +269,33 @@ impl Watchdog {
 /// The OS releases this process's handles and locks without invoking producer recovery.
 pub(super) fn terminate(failure: Failure) -> ! {
     std::process::exit(failure.exit_code())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn queued_deadline_survives_completion_of_active_work() {
+        let mut deadlines = Deadlines::new(30_000);
+        deadlines.arm(1, 5000).unwrap();
+        deadlines.arm(2, 80).unwrap();
+        assert_eq!(deadlines.earliest(), 80);
+        deadlines.complete(1).unwrap();
+        assert_eq!(deadlines.earliest(), 80);
+        deadlines.complete(2).unwrap();
+        assert_eq!(deadlines.earliest(), 30_000);
+    }
+
+    #[test]
+    fn deadlines_remain_bounded_unique_and_within_process_lifetime() {
+        let mut deadlines = Deadlines::new(100);
+        deadlines.arm(1, 5000).unwrap();
+        assert_eq!(deadlines.earliest(), 100);
+        assert_eq!(deadlines.arm(1, 50), Err(Failure::Protocol));
+        deadlines.arm(2, 80).unwrap();
+        assert_eq!(deadlines.arm(3, 70), Err(Failure::Protocol));
+        assert_eq!(deadlines.complete(3), Err(Failure::Protocol));
+        assert_eq!(deadlines.earliest(), 80);
+    }
 }

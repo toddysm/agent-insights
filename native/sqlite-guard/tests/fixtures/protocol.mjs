@@ -515,6 +515,35 @@ test("cancellation, EOF and deadlines terminate an actual blocked native query a
   }
 });
 
+test("a queued request deadline expires while an earlier native query is blocked", async (t) => {
+  const source = fixture(t, { wal: false });
+  const helper = new Helper(t);
+  await helper.hello();
+  await helper.open(source.file);
+  source.database.exec("BEGIN EXCLUSIVE");
+  const first = helper.send({
+    kind: "query",
+    queryId: "all",
+    bindings: {},
+    maxRows: 10,
+    maxBytes: 10000,
+    timeoutMs: 5000,
+  });
+  assert.deepEqual(await helper.next(), { kind: "started", id: first });
+  const started = performance.now();
+  helper.send({
+    kind: "query",
+    queryId: "ids",
+    bindings: {},
+    maxRows: 10,
+    maxBytes: 10000,
+    timeoutMs: 80,
+  });
+  assert.equal((await bounded(helper.exited, 1500)).code, 67);
+  assert.ok(performance.now() - started < 900);
+  source.database.exec("ROLLBACK; UPDATE items SET value='still-usable'");
+});
+
 test("partial frames and idle helpers cannot outlive their fixed lifetime", async (t) => {
   const helper = new Helper(t, 150);
   await helper.hello();

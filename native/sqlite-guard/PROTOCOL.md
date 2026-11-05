@@ -62,6 +62,9 @@ request at a time; the implementation has only one queued slot, and excess
 pipelining is a protocol failure. For open, query and close, `started` precedes
 the terminal reply with the same identifier. `cancel` terminates immediately
 without promising an acknowledgement.
+Validated requests arm their deadlines in the input thread before queueing.
+The watchdog enforces the earliest active or queued deadline; finishing an
+earlier response cannot erase a queued request's timer.
 
 The state sequence is `hello -> open -> query* -> close -> exit(0)`. Reopening,
 queries before open, and close before open fail. An error is terminal: no
