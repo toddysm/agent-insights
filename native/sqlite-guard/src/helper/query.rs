@@ -389,7 +389,7 @@ impl Session {
         let (version, scope, initial_data_version) = match initialized {
             Ok(values) => values,
             Err(error) => {
-                database.close()?;
+                database.discard()?;
                 return Err(error);
             }
         };
@@ -522,6 +522,11 @@ impl Session {
                 || self.database.scalar_i64(c"PRAGMA data_version")? != self.initial_data_version,
             snapshot_scope: self.scope,
         })
+    }
+
+    /// Cleanup for a failed request must not compute observations that could obscure its original error.
+    pub(super) fn abort(self) -> Result<(), Failure> {
+        self.database.discard().map_err(Failure::from)
     }
 
     /// Release the actual connection before sending its successful close observation.

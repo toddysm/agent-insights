@@ -265,7 +265,7 @@ unsafe fn serve(options: Options, output: &mut impl Write) -> Result<(), Failure
             Ok(reply) => write_frame(output, &reply)?,
             Err(error) => {
                 let error = if let Some(session) = session.take() {
-                    match session.close(id) {
+                    match session.abort() {
                         Ok(_) => error,
                         Err(cleanup) => cleanup,
                     }
@@ -319,7 +319,12 @@ pub unsafe fn run(args: impl IntoIterator<Item = OsString>) -> i32 {
     match result {
         Ok(()) => 0,
         Err(error) => {
-            eprintln!("Native database helper: {}.", error.code());
+            // Exit status remains authoritative if the diagnostic reader has already closed.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Native database helper: {}.",
+                error.code()
+            );
             error.exit_code()
         }
     }

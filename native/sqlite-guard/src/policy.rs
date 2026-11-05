@@ -7,6 +7,7 @@ use base64::{Engine, engine::general_purpose::STANDARD};
 use libsqlite3_sys as ffi;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::io::Write;
 use std::path::Path;
 use std::ptr;
 use std::sync::{
@@ -774,6 +775,11 @@ impl GuardedDatabase {
         result
     }
 
+    /// Dispose of an already-failed read without new observations; only guard/cleanup failures are returned.
+    pub(crate) fn discard(mut self) -> Result<(), GuardError> {
+        self.finish()
+    }
+
     /// Close SQLite before releasing hook state, including partial initialization.
     fn finish(&mut self) -> Result<(), GuardError> {
         let mut cleanup = false;
@@ -943,7 +949,11 @@ impl Drop for GuardedDatabase {
                 Box::leak(std::mem::replace(&mut self.wrapper, placeholder));
             }
             POISONED.store(true, Ordering::Release);
-            eprintln!("Native source cleanup failed; discard this engine/process.");
+            // A closed diagnostic channel must not replace the retained cleanup failure with a panic.
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Native source cleanup failed; discard this engine/process."
+            );
         }
     }
 }

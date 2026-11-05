@@ -715,6 +715,47 @@ test("cancellation still exits while a large success frame is blocked on stdout"
   );
 });
 
+test("failure cleanup preserves the original error without requesting a final observation", async (t) => {
+  const source = fixture(t, { wal: false });
+  const helper = new Helper(t);
+  await helper.hello();
+  await helper.open(source.file);
+  source.database.exec("BEGIN EXCLUSIVE");
+  const started = performance.now();
+  const result = await helper.open(source.file);
+  assert.equal(result.kind, "error");
+  assert.equal(result.code, "PROTOCOL");
+  assert.equal((await bounded(helper.exited)).code, 64);
+  assert.ok(performance.now() - started < 900);
+  source.database.exec("ROLLBACK");
+});
+
+test("closed stderr cannot replace the selected failure exit code", async (t) => {
+  const source = fixture(t);
+  const missing = new Helper(t);
+  await missing.hello();
+  missing.child.stderr.destroy();
+  assert.equal(
+    (await missing.open(path.join(source.root, "absent.db"))).code,
+    "SOURCE_UNAVAILABLE",
+  );
+  assert.equal((await bounded(missing.exited)).code, 70);
+  const broken = new Helper(t);
+  await broken.hello();
+  await broken.open(source.file);
+  broken.child.stderr.destroy();
+  broken.child.stdout.destroy();
+  broken.send({
+    kind: "query",
+    queryId: "all",
+    bindings: {},
+    maxRows: 10,
+    maxBytes: MAX_RESULT,
+    timeoutMs: 5000,
+  });
+  assert.equal((await bounded(broken.exited)).code, 69);
+});
+
 test("broken output and channel loss terminate the owned helper without payload logs", async (t) => {
   const source = fixture(t);
   const helper = new Helper(t);

@@ -292,6 +292,9 @@ Journal presence does not diagnose required recovery: idle TRUNCATE/PERSIST
 sources retaining journals remain unadmitted, while an active DELETE writer can
 be retried after it removes its own journal. No helper recovery or migration
 is performed. Failed cleanup takes precedence over an otherwise usable result.
+Aborting a failed request performs cleanup without requesting final observations,
+so a secondary observation error cannot replace the original request failure.
+Diagnostic writes are best-effort and cannot replace its selected exit code.
 
 ## Integration boundary and validation
 
