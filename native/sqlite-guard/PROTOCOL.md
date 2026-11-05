@@ -71,7 +71,9 @@ queries before open, and close before open fail. An error is terminal: no
 continuation, empty-row substitution or alternate engine is used.
 
 **Keep standard input open through the successful close acknowledgement and
-process exit.** End-of-file is cancellation, including at a frame boundary.
+process exit.** End-of-file terminates the read with `CHANNEL_LOST` (exit 69),
+including at a frame boundary. It is distinct from an explicit `cancel` request,
+which terminates with `CANCELLED` (exit 66).
 Unexpected exit, a truncated reply, broken output or missing close acknowledgement
 invalidates the entire read generation, even if earlier row replies arrived.
 The parent must await actual exit before releasing its source lease or admitting
