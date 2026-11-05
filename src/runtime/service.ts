@@ -20,7 +20,7 @@ import {
   type SourceFormat,
 } from "../evidence/contracts.js";
 import type { RuntimeConfig } from "./config.js";
-import { RuntimeError, cancelledRead } from "./errors.js";
+import { RuntimeError, cancelledRead, abortable } from "./errors.js";
 import type {
   ReadRequest,
   ReadSetRequest,
@@ -131,30 +131,6 @@ function observedView(result: ReadResult): ReadView {
       ...result.observations.map((value) => value.finishedAtMs),
     ),
   });
-}
-
-/**
- * Stop waiting for an adapter when the owned signal aborts.
- * @param operation - Already-started adapter work whose eventual rejection remains observed.
- * @param signal - Read-owned cancellation/deadline signal; public cancellation errors are normalized.
- * @returns The adapter result, or a rejection if it fails or cancellation wins.
- * This does not preempt synchronous JavaScript or terminate the adapter itself.
- */
-async function abortable<T>(
-  operation: Promise<T>,
-  signal: AbortSignal,
-): Promise<T> {
-  let onAbort: (() => void) | undefined;
-  const cancellation = new Promise<never>((_, reject) => {
-    onAbort = () => reject(cancelledRead(signal));
-    if (signal.aborted) onAbort();
-    else signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    return await Promise.race([operation, cancellation]);
-  } finally {
-    if (onAbort) signal.removeEventListener("abort", onAbort);
-  }
 }
 
 /**

@@ -36,6 +36,7 @@ const INPUTS = [
   "src/runtime/source-read.ts",
   "src/runtime/sources.ts",
   "src/runtime/service.ts",
+  "src/runtime/errors.ts",
   "src/evidence/source-access.ts",
   "tests/source-access.test.ts",
   "tests/sqlite-transport.test.ts",

@@ -9,7 +9,7 @@ import type {
   SqliteDefinition,
   SqliteRow,
 } from "../evidence/source-access.js";
-import { RuntimeError, cancelledRead } from "./errors.js";
+import { RuntimeError, cancelledRead, abortable } from "./errors.js";
 import type { DatabaseLease } from "./sources.js";
 import {
   preparedNativeHelper,
@@ -36,10 +36,31 @@ import {
 export type NativeHelperResolver = () => Promise<string>;
 export const defaultNativeHelper: NativeHelperResolver = preparedNativeHelper;
 
+/** Bound source-free artifact lookup even if its filesystem Promise stalls; late completion never launches a process. */
+async function resolveNativeHelper(
+  resolve: NativeHelperResolver,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) throw cancelledRead(signal);
+  const deadline = new AbortController();
+  const timeout = setTimeout(
+    () => deadline.abort(nativeSqliteError("DEADLINE")),
+    SQLITE_OPERATION_MS,
+  );
+  try {
+    return await abortable(
+      Promise.resolve().then(resolve),
+      signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal,
+    );
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 /** Source-free artifact status, separate from registered source readers and the model executor. */
 export async function nativeSqliteAvailability(resolve: NativeHelperResolver) {
   try {
-    await resolve();
+    await resolveNativeHelper(resolve);
     return {
       available: true,
       version: NATIVE_POLICY.guardVersion,
@@ -224,6 +245,7 @@ export class SqliteSource {
   private remainingRows = MAX_SQLITE_ROWS;
   private remainingBytes = MAX_SQLITE_RESULT_BYTES;
   private queryCount = 0;
+  private readonly stopped = new AbortController();
   private readonly onAbort = () => this.fail(cancelledRead(this.signal));
   snapshotScope: "connection" | "request" | undefined;
 
@@ -247,6 +269,7 @@ export class SqliteSource {
       (error instanceof RuntimeError && error.code === "SQLITE_CLEANUP_FAILED")
     )
       this.failure = error;
+    this.stopped.abort(this.failure);
     this.ready?.reject(this.failure);
     this.ready = undefined;
     if (this.pending) {
@@ -306,7 +329,10 @@ export class SqliteSource {
     this.ensureActive();
     if (this.initializing) throw sqliteProtocolError();
     this.initializing = true;
-    const executable = await this.resolveHelper();
+    const executable = await resolveNativeHelper(
+      this.resolveHelper,
+      AbortSignal.any([this.signal, this.stopped.signal]),
+    );
     this.ensureActive();
     await this.lease.verify();
     this.ensureActive();

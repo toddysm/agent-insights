@@ -132,6 +132,10 @@ block further reads until cleanup is retried. Refresh/cancel and shutdown also
 await source cleanup. Replacement reads wait for prior-generation disposal before
 acquiring sources; a delayed cleanup failure cannot leave a newer view published.
 The process-exit confirmation limit is five seconds.
+Source-free artifact lookup is also bounded to five seconds. Cancellation,
+deadlines and disposal stop waiting for a stalled lookup without waiting for its
+filesystem Promise; any eventual result is discarded and cannot launch a helper.
+This does not cancel the underlying operating-system artifact read itself.
 
 Status and the source panel expose `nativeSqlite` availability separately from
 source-reader registration and the model executor. No public release pins exist

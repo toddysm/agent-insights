@@ -1209,6 +1209,61 @@ test("composite cancellation rejects stale normalization and concurrent cleanup 
   assert.equal(service.selection, null);
 });
 
+test("stalled artifact admission cannot block cancellation, deadline, shutdown or replacement reads", async (t) => {
+  for (const action of ["cancel", "deadline", "close", "replace"]) {
+    const data = await fixture(t);
+    let announce: (() => void) | undefined;
+    const entered = new Promise<void>((resolve) => {
+      announce = resolve;
+    });
+    let rejectLate: ((error: Error) => void) | undefined;
+    const lookup = new Promise<string>((_, reject) => {
+      rejectLate = reject;
+    });
+    let first = true;
+    const service = new RuntimeService(
+      await SourceAccess.create([data.root]),
+      config(data.root),
+      [],
+      action === "deadline" ? 2000 : 30000,
+      null,
+      [reader()],
+      () => {
+        if (!first) return testNativeHelper();
+        first = false;
+        assert.ok(announce);
+        announce();
+        return lookup;
+      },
+    );
+    data.cleanup.push(() => service.close());
+    const request = {
+      readerId: "fictional",
+      sources: [
+        { key: "database", sourceId: "source-1", relativePath: "source.db" },
+      ],
+    };
+    const controller = new AbortController();
+    const read = service.readSet(request, controller.signal);
+    const rejected = assert.rejects(
+      read,
+      code(action === "deadline" ? "READ_TIMEOUT" : "READ_CANCELLED"),
+    );
+    await entered;
+    let next: Promise<ReadView> | undefined;
+    if (action === "cancel") controller.abort();
+    else if (action === "close") await service.close();
+    else if (action === "replace")
+      next = service.readSet(request, new AbortController().signal);
+    await rejected;
+    next ??= service.readSet(request, new AbortController().signal);
+    assert.equal((await next).events.length, 1);
+    assert.ok(rejectLate);
+    rejectLate(new Error("Late fixture-only artifact lookup failure"));
+    await service.close();
+  }
+});
+
 test("multi-megabyte blobs within the result budget retain exact bytes and provenance", async (t) => {
   const data = await fixture(t);
   const payload = Buffer.alloc(4 * 1024 * 1024, 0xa5);

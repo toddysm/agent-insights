@@ -14,6 +14,7 @@ import {
   sqliteReplySchema,
   MAX_SQLITE_REPLY_BYTES,
   MAX_SQLITE_REQUEST_BYTES,
+  SQLITE_OPERATION_MS,
 } from "../src/runtime/sqlite-protocol.js";
 import {
   SqliteSource,
@@ -235,7 +236,7 @@ test("missing helper prevents source admission or subprocess launch", async (t) 
   await owner.stop();
 });
 
-test("stopping during artifact resolution prevents a late subprocess launch", async (t) => {
+test("stopping settles stalled artifact resolution before it returns and prevents late launch", async (t) => {
   const mocked = t.mock.method(childProcess, "spawn", () => {
     throw new Error("Must not spawn");
   });
@@ -254,10 +255,56 @@ test("stopping during artifact resolution prevents a late subprocess launch", as
     () => resolution,
   );
   const initialize = owner.initialize(definition);
+  const rejected = assert.rejects(initialize, code("SQLITE_CLOSED"));
   await owner.stop();
+  const settled = await Promise.race([
+    rejected.then(() => true),
+    new Promise<boolean>((resolve) => setImmediate(() => resolve(false))),
+  ]);
   assert.ok(resolveHelper);
   resolveHelper("/late-test-helper");
-  await assert.rejects(initialize, code("SQLITE_CLOSED"));
+  await rejected;
+  assert.equal(settled, true);
+});
+
+test("artifact availability rejects at the exact lookup deadline without waiting for resolution", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let settled = false;
+  const rejected = assert
+    .rejects(
+      nativeSqliteAvailability(() => new Promise<string>(() => {})),
+      code("READ_TIMEOUT"),
+    )
+    .then(() => {
+      settled = true;
+    });
+  t.mock.timers.tick(SQLITE_OPERATION_MS - 1);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  t.mock.timers.tick(1);
+  await rejected;
+  assert.equal(settled, true);
+});
+
+test("read cancellation and deadline signals settle stalled artifact admission", async () => {
+  for (const reason of [
+    undefined,
+    new RuntimeError("READ_TIMEOUT", "Owned read deadline", 408),
+  ]) {
+    const controller = new AbortController();
+    const owner = new SqliteSource(
+      lease(),
+      controller.signal,
+      () => new Promise<string>(() => {}),
+    );
+    const rejected = assert.rejects(
+      owner.initialize(definition),
+      code(reason?.code ?? "READ_CANCELLED"),
+    );
+    controller.abort(reason);
+    await rejected;
+    await owner.stop();
+  }
 });
 
 /** Match a test-only source-free handshake to the actual host, or explicitly skip native-host-specific transport simulation. */
