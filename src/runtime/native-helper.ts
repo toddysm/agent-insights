@@ -4,7 +4,7 @@
  */
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
+import { access, lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
@@ -317,7 +317,16 @@ export async function inspectPreparedHelper(
     throw nativeUnavailable("Native helper architecture mismatch.");
   const parts = installedParts(pin);
   const manifest = await verifyArtifact(root, parts, pin);
-  return containedPath(root, [...parts, manifest.binary.name]);
+  const executable = await containedPath(root, [
+    ...parts,
+    manifest.binary.name,
+  ]);
+  try {
+    await access(executable, constants.X_OK);
+  } catch (error) {
+    return artifactError(error);
+  }
+  return executable;
 }
 
 /** Fixed production lookup; only future reviewed release pins can enable it, never candidate receipts or browser paths. */

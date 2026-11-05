@@ -243,6 +243,7 @@ test("read-only installed verification has no network or executable side effects
       path.join(destination, name),
       await readFile(path.join(f.directory, name)),
     );
+  await chmod(path.join(destination, f.manifest.binary.name), 0o700);
   t.mock.method(globalThis, "fetch", () => {
     throw new Error("Network is forbidden");
   });
@@ -254,6 +255,27 @@ test("read-only installed verification has no network or executable side effects
   );
   assert.deepEqual(await readdir(destination), before);
 });
+
+test(
+  "a prepared helper that loses execute permission is explicitly unavailable",
+  { skip: process.platform === "win32" },
+  async (t) => {
+    const f = await fixture(t);
+    const destination = path.join(f.root, ...installedParts(f.pin));
+    await mkdir(destination, { recursive: true });
+    for (const name of [
+      "manifest.json",
+      f.manifest.binary.name,
+      "THIRD-PARTY-NOTICES.txt",
+    ])
+      await writeFile(
+        path.join(destination, name),
+        await readFile(path.join(f.directory, name)),
+      );
+    await chmod(path.join(destination, f.manifest.binary.name), 0o600);
+    await assert.rejects(inspectPreparedHelper(f.root, f.pin), unavailable);
+  },
+);
 
 test("default runtime lookup stays explicitly unavailable with no published pin and has no preparation side effects", async () => {
   await assert.rejects(preparedNativeHelper(), unavailable);
