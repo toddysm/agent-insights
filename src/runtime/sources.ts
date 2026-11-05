@@ -1,6 +1,13 @@
 /** Read-only access to startup-authorized locations; no scanning, writes or retained byte cache. */
 import { constants } from "node:fs";
-import { access, open, realpath, stat } from "node:fs/promises";
+import {
+  access,
+  open,
+  realpath,
+  stat,
+  lstat,
+  type FileHandle,
+} from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import path from "node:path";
 import { RuntimeError, cancelledRead, filesystemError } from "./errors.js";
@@ -23,6 +30,81 @@ export interface CapturedSource {
   readonly changed: boolean;
   readonly startedAtMs: number;
   readonly finishedAtMs: number;
+}
+
+/**
+ * Borrow a bounded capture in at most 64 KiB views, rejecting cancellation before each yield.
+ * Readers must not mutate/persist these views; they are not live filesystem handles.
+ */
+// eslint-disable-next-line @typescript-eslint/require-await -- Borrowed in-memory bytes retain the reader's asynchronous iteration contract.
+export async function* byteChunks(
+  bytes: Uint8Array,
+  signal: AbortSignal,
+): AsyncIterable<Uint8Array> {
+  for (let offset = 0; offset < bytes.length; offset += CHUNK_BYTES) {
+    if (signal.aborted) throw cancelledRead(signal);
+    yield bytes.subarray(offset, offset + CHUNK_BYTES);
+  }
+}
+
+/** Serializable identity/content observations for a database or one of its exact sidecars. */
+export interface FileState {
+  readonly dev: string;
+  readonly ino: string;
+  readonly size: string;
+  readonly mtime: string;
+  readonly ctime: string;
+}
+
+/** Internal runtime lease, never exposed to readers or browser controls. */
+export interface DatabaseLease {
+  readonly path: string;
+  readonly main: FileState;
+  readonly sidecars: Readonly<Record<string, FileState | null>>;
+  readonly startedAtMs: number;
+  /** Revalidate grant/identity and return whether main/WAL content metadata changed. */
+  verify(): Promise<boolean>;
+  /** Release the pinned read-only descriptor after the database process has exited. */
+  close(): Promise<void>;
+}
+
+/** Preserve nanosecond identity observations across the database-process boundary. */
+export function fileState(info: BigIntStats): FileState {
+  return {
+    dev: String(info.dev),
+    ino: String(info.ino),
+    size: String(info.size),
+    mtime: String(info.mtimeNs),
+    ctime: String(info.ctimeNs),
+  };
+}
+
+/**
+ * Inspect only an exact SQLite sidecar; absence is distinct from access failure.
+ * @param file - Runtime-selected main path plus a fixed SQLite suffix.
+ * @returns Metadata or null when absent; rejects links/non-files and permission errors.
+ */
+export async function inspectSidecar(file: string): Promise<FileState | null> {
+  try {
+    const info = await lstat(file, { bigint: true });
+    if (!info.isFile() || info.isSymbolicLink())
+      throw new RuntimeError(
+        "SOURCE_LINK",
+        "A database sidecar is not a regular file.",
+        403,
+      );
+    if (info.size > BigInt(MAX_SOURCE_BYTES))
+      throw new RuntimeError(
+        "SOURCE_TOO_LARGE",
+        "A database sidecar exceeds the source limit.",
+        413,
+      );
+    return fileState(info);
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT")
+      return null;
+    filesystemError(error);
+  }
 }
 
 /** Check containment using platform-native path rules, including cross-drive rejection. */
@@ -73,7 +155,68 @@ export async function pointsToOpenedFile(
 
 /** Owns source grants only. No raw bytes or normalized evidence are persisted by this class. */
 export class SourceAccess {
+  private readonly failedClosures = new Set<() => Promise<void>>();
   private constructor(private readonly grants: readonly SourceGrant[]) {}
+
+  /** Own rejected descriptor closes even when admission never returns a lease; never expose raw close errors. */
+  private ownClose(handle: FileHandle): () => Promise<void> {
+    let completion: Promise<void> | undefined;
+    /** Share in-flight/successful closure; only a rejected close can be retried. */
+    const close = (): Promise<void> =>
+      (completion ??= Promise.resolve()
+        .then(() => handle.close())
+        .then(
+          () => {
+            this.failedClosures.delete(close);
+          },
+          () => {
+            this.failedClosures.add(close);
+            completion = undefined;
+            throw new RuntimeError(
+              "SOURCE_CLEANUP_FAILED",
+              "A source descriptor could not be closed; retry cleanup before reading again.",
+              500,
+            );
+          },
+        ));
+    return close;
+  }
+
+  /** Retry only failed closes, not live leases owned by other reads; retain failures and bound confirmation to five seconds. */
+  async retryCleanup(): Promise<void> {
+    if (!this.failedClosures.size) return;
+    const cleanup = Promise.allSettled(
+      [...this.failedClosures].map((close) => close()),
+    ).then((results) => {
+      if (results.some((result) => result.status === "rejected"))
+        throw new RuntimeError(
+          "SOURCE_CLEANUP_FAILED",
+          "Source descriptors remain unclosed; retry cleanup before reading again.",
+          500,
+        );
+    });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        cleanup,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new RuntimeError(
+                  "SOURCE_CLEANUP_FAILED",
+                  "Source descriptor cleanup could not be confirmed; retry cleanup.",
+                  500,
+                ),
+              ),
+            5000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   /** Resolve explicitly supplied roots once. Missing startup locations remain unavailable until restart. */
   static async create(locations: readonly string[]): Promise<SourceAccess> {
@@ -183,13 +326,22 @@ export class SourceAccess {
     );
   }
 
-  /** Read an authorized regular file prefix through a read-only descriptor; reject escapes before reading bytes. */
-  async read(
+  /** Resolve one authorized regular source; shared by byte capture and database leases. */
+  private async resolve(
     sourceId: string,
     relativePath: string,
     signal: AbortSignal,
-  ): Promise<CapturedSource> {
-    const startedAtMs = Date.now();
+  ): Promise<{
+    grant: SourceGrant;
+    canonical: string;
+    candidate: string;
+  }> {
+    if (this.failedClosures.size)
+      throw new RuntimeError(
+        "SOURCE_CLEANUP_FAILED",
+        "Retry failed source cleanup before reading again.",
+        503,
+      );
     const grant = this.grants.find((candidate) => candidate.id === sourceId);
     if (
       grant === undefined ||
@@ -239,12 +391,46 @@ export class SourceAccess {
         );
       }
       if (signal.aborted) throw cancelledRead(signal);
+      return { grant, canonical, candidate };
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * Capture an authorized regular file prefix through a read-only descriptor.
+   * Reject escapes and sizes over the remaining byte budget (default 64 MiB) before allocation.
+   */
+  async read(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+    budget = MAX_SOURCE_BYTES,
+  ): Promise<CapturedSource> {
+    if (
+      !Number.isSafeInteger(budget) ||
+      budget < 0 ||
+      budget > MAX_SOURCE_BYTES
+    )
+      throw new RuntimeError(
+        "INVALID_READ_BUDGET",
+        "The file capture budget is invalid.",
+        500,
+      );
+    const startedAtMs = Date.now();
+    const { grant, canonical, candidate } = await this.resolve(
+      sourceId,
+      relativePath,
+      signal,
+    );
+    try {
       const flags =
         constants.O_RDONLY |
         (process.platform === "win32"
           ? 0
           : constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const handle = await open(canonical, flags);
+      const close = this.ownClose(handle);
       try {
         const before = await handle.stat({ bigint: true });
         if (!before.isFile())
@@ -260,6 +446,12 @@ export class SourceAccess {
             413,
           );
         }
+        if (before.size > BigInt(budget))
+          throw new RuntimeError(
+            "READ_LIMIT",
+            "The combined read exceeded its capture-byte limit.",
+            413,
+          );
         if (!(await pointsToOpenedFile(candidate, canonical, before))) {
           throw new RuntimeError(
             "SOURCE_CHANGED",
@@ -293,9 +485,162 @@ export class SourceAccess {
           finishedAtMs: Date.now(),
         };
       } finally {
-        await handle.close();
+        await close();
       }
     } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * Pin a database and validate its exact sidecars without invoking SQLite.
+   * @param sourceId - Explicit startup grant identity.
+   * @param relativePath - Empty for a file grant, or a confined relative path.
+   * @param signal - Read-generation cancellation.
+   * @returns Runtime-only lease; caller must close it after database process cleanup.
+   * @throws Controlled source errors, including WAL databases missing pre-existing sidecars.
+   */
+  async database(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+  ): Promise<DatabaseLease> {
+    const startedAtMs = Date.now();
+    const { grant, canonical, candidate } = await this.resolve(
+      sourceId,
+      relativePath,
+      signal,
+    );
+    const handle = await open(
+      canonical,
+      constants.O_RDONLY |
+        (process.platform === "win32"
+          ? 0
+          : constants.O_NOFOLLOW | constants.O_NONBLOCK),
+    ).catch(filesystemError);
+    const close = this.ownClose(handle);
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || before.size > BigInt(MAX_SOURCE_BYTES))
+        throw new RuntimeError(
+          "SOURCE_TOO_LARGE",
+          "Database exceeds the bounded regular-source limit.",
+          413,
+        );
+      const header = Buffer.alloc(100);
+      const { bytesRead } = await handle.read(header, 0, header.length, 0);
+      if (
+        bytesRead !== 100 ||
+        header.subarray(0, 16).toString("binary") !== "SQLite format 3\0"
+      )
+        throw new RuntimeError(
+          "SQLITE_FORMAT",
+          "The selected source is not a supported SQLite database.",
+          422,
+        );
+      const sidecars: Record<string, FileState | null> = {};
+      for (const suffix of ["-wal", "-shm", "-journal"])
+        sidecars[suffix] = await inspectSidecar(canonical + suffix);
+      if (
+        before.size +
+          Object.values(sidecars).reduce(
+            (size, value) => size + BigInt(value?.size ?? 0),
+            0n,
+          ) >
+        BigInt(MAX_SOURCE_BYTES)
+      )
+        throw new RuntimeError(
+          "SOURCE_TOO_LARGE",
+          "Database and sidecars exceed the source limit.",
+          413,
+        );
+      if (
+        (header[18] === 2 || header[19] === 2) &&
+        (!sidecars["-wal"] || !sidecars["-shm"])
+      )
+        throw new RuntimeError(
+          "SQLITE_SIDECARS",
+          "A live WAL database requires existing WAL and shared-memory sidecars; none will be created.",
+          409,
+        );
+      if (sidecars["-journal"])
+        throw new RuntimeError(
+          "SQLITE_JOURNAL_PRESENT",
+          "A rollback journal is present. Retry after the producer removes it; retained-journal modes are unsupported.",
+          409,
+        );
+      if (signal.aborted) throw cancelledRead(signal);
+      const main = fileState(before);
+      /**
+       * Check grant/descriptor identity after SQLite access. Shared-memory coordination
+       * is not a content-change signal, but sidecar replacement is an explicit failure.
+       * Normalize known filesystem errors on every invocation, not only initial admission.
+       */
+      const verify = async (): Promise<boolean> => {
+        try {
+          await this.inspect(grant);
+          if (!(await pointsToOpenedFile(candidate, canonical, before)))
+            throw new RuntimeError(
+              "SOURCE_CHANGED",
+              "Database identity changed during the read.",
+              409,
+            );
+          const now = await handle.stat({ bigint: true });
+          let changed = !sameFileState(before, now);
+          let totalSize = now.size;
+          for (const suffix of ["-wal", "-shm", "-journal"]) {
+            const previous = sidecars[suffix];
+            const current = await inspectSidecar(canonical + suffix);
+            if (suffix === "-journal" && current)
+              throw new RuntimeError(
+                "SQLITE_JOURNAL_PRESENT",
+                "A rollback journal appeared during the read.",
+                409,
+              );
+            totalSize += BigInt(current?.size ?? 0);
+            if (
+              (previous === null) !== (current === null) ||
+              (previous &&
+                current &&
+                (previous.dev !== current.dev || previous.ino !== current.ino))
+            )
+              throw new RuntimeError(
+                "SOURCE_CHANGED",
+                "Database sidecar identity changed during the read.",
+                409,
+              );
+            if (
+              suffix !== "-shm" &&
+              previous &&
+              current &&
+              (previous.size !== current.size ||
+                previous.mtime !== current.mtime ||
+                previous.ctime !== current.ctime)
+            )
+              changed = true;
+          }
+          if (totalSize > BigInt(MAX_SOURCE_BYTES))
+            throw new RuntimeError(
+              "SOURCE_TOO_LARGE",
+              "Database and sidecars exceed the source limit.",
+              413,
+            );
+          return changed;
+        } catch (error) {
+          filesystemError(error);
+        }
+      };
+      await verify();
+      return {
+        path: canonical,
+        main,
+        sidecars: Object.freeze(sidecars),
+        startedAtMs,
+        verify,
+        close,
+      };
+    } catch (error) {
+      await close();
       filesystemError(error);
     }
   }

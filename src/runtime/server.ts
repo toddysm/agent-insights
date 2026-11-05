@@ -17,11 +17,13 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { EvidenceReader } from "../evidence/contracts.js";
+import type { MultiSourceReader } from "../evidence/source-access.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
-import { readRequestSchema } from "./protocol.js";
+import { readRequestSchema, readSetRequestSchema } from "./protocol.js";
 import { RuntimeService } from "./service.js";
 import { SourceAccess } from "./sources.js";
+import type { NativeHelperResolver } from "./sqlite.js";
 import { z } from "zod";
 import {
   analysisRequestSchema,
@@ -180,6 +182,8 @@ async function controlBody(request: IncomingMessage): Promise<unknown> {
  * @param config - Validated launch settings: approved source locations, requested port and provider preferences.
  * @param options - Trusted embedding/test overrides. readers registers source parsers;
  * analysisOperations registers instruction/validation definitions; both default empty.
+ * multiSourceReaders registers code-owned role/schema/query definitions for the
+ * composite read endpoint; it does not expose a generic SQL or filesystem API.
  * analysisProvider defaults to installed Copilot. readTimeoutMs configures the read
  * budget; onDiagnostic observes payload-free request failures and must not throw.
  * @returns Owned runtime handle and private launch URL after the server is listening.
@@ -190,6 +194,8 @@ export async function startRuntime(
   config: RuntimeConfig,
   options: {
     readers?: readonly EvidenceReader[];
+    multiSourceReaders?: readonly MultiSourceReader[];
+    nativeHelper?: NativeHelperResolver;
     onDiagnostic?: (event: Diagnostic) => void;
     readTimeoutMs?: number;
     analysisProvider?: AnalysisProvider;
@@ -222,6 +228,8 @@ export async function startRuntime(
       options.analysisProvider ?? new CopilotAnalysisProvider(config),
       options.analysisOperations,
     ),
+    options.multiSourceReaders,
+    options.nativeHelper,
   );
   const token = randomBytes(32).toString("base64url");
   let origin = "";
@@ -319,6 +327,7 @@ export async function startRuntime(
         "/api/refresh",
         "/api/cancel",
         "/api/read",
+        "/api/read-set",
         "/api/analysis/start",
         "/api/analysis/cancel",
       ].includes(url.pathname)
@@ -372,7 +381,7 @@ export async function startRuntime(
         }
         return;
       }
-      if (url.pathname !== "/api/read") {
+      if (url.pathname !== "/api/read" && url.pathname !== "/api/read-set") {
         if (
           typeof body !== "object" ||
           body === null ||
@@ -385,12 +394,17 @@ export async function startRuntime(
             400,
           );
         }
-        service.invalidate();
+        await service.close();
         json(response, 200, await service.status());
         return;
       }
-      const input = readRequestSchema.safeParse(body);
-      if (!input.success)
+      const input =
+        url.pathname === "/api/read" ? readRequestSchema.safeParse(body) : null;
+      const composite =
+        url.pathname === "/api/read-set"
+          ? readSetRequestSchema.safeParse(body)
+          : null;
+      if ((input && !input.success) || (composite && !composite.success))
         throw new RuntimeError(
           "INVALID_SELECTION",
           "Select a configured source, relative path and installed format.",
@@ -407,7 +421,24 @@ export async function startRuntime(
       response.once("close", disconnect);
       if (response.destroyed) controller.abort();
       try {
-        json(response, 200, await service.read(input.data, controller.signal));
+        if (input?.success)
+          json(
+            response,
+            200,
+            await service.read(input.data, controller.signal),
+          );
+        else if (composite?.success)
+          json(
+            response,
+            200,
+            await service.readSet(composite.data, controller.signal),
+          );
+        else
+          throw new RuntimeError(
+            "INVALID_SELECTION",
+            "The source selection is invalid.",
+            400,
+          );
       } finally {
         response.removeListener("close", disconnect);
       }
@@ -475,7 +506,11 @@ export async function startRuntime(
         server.close((error) => (error ? reject(error) : resolve()));
         server.closeAllConnections();
       });
-      closing = Promise.all([stopped, service.analysis?.close()])
+      closing = Promise.all([
+        stopped,
+        service.close(),
+        service.analysis?.close(),
+      ])
         .then(() => undefined)
         .catch((error: unknown) => {
           closing = null;

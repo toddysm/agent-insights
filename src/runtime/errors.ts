@@ -56,3 +56,24 @@ export function cancelledRead(signal?: AbortSignal): RuntimeError {
     409,
   );
 }
+
+/**
+ * Stop waiting for asynchronous work when its owned signal aborts; keep late rejections observed.
+ * The caller still owns resource cleanup. This does not preempt synchronous JavaScript or stop the operation itself.
+ */
+export async function abortable<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  let onAbort: (() => void) | undefined;
+  const cancellation = new Promise<never>((_, reject) => {
+    onAbort = () => reject(cancelledRead(signal));
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([operation, cancellation]);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  }
+}

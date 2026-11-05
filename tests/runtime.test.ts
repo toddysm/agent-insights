@@ -24,6 +24,7 @@ import { once } from "node:events";
 import fsPromises from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { performance } from "node:perf_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import test, { type TestContext } from "node:test";
 import {
   parseReadView,
@@ -539,8 +540,10 @@ test("an in-flight selection cannot be relabeled by mutating the caller's reques
   selection.relativePath = "different.jsonl";
   const view = await pending;
   assert.equal(view.sources[0]?.id, "source-1");
-  assert.equal(service.selection?.sourceId, "source-1");
-  assert.equal(service.selection?.relativePath, "");
+  const actualSelection = service.selection;
+  assert.ok(actualSelection && "sourceId" in actualSelection);
+  assert.equal(actualSelection.sourceId, "source-1");
+  assert.equal(actualSelection.relativePath, "");
   assert.ok(Object.isFrozen(service.selection));
   service.invalidate();
   assert.equal(service.selection, null);
@@ -581,6 +584,253 @@ test("readers cannot return another generation, source or format", async (t) => 
       { code: "INVALID_READER_RESULT" },
     );
     assert.equal(service.view, null);
+  }
+});
+
+/** Stall the real capture's post-read grant inspection while its descriptor remains open; restore only test-owned mocks. */
+async function stalledFileCapture(
+  t: TestContext,
+  data: Awaited<ReturnType<typeof fixture>>,
+) {
+  const sources = await SourceAccess.create([data.allowed]);
+  const [root, file] = await Promise.all([
+    realpath(data.allowed),
+    realpath(data.file),
+  ]);
+  const state = { opened: 0, closed: 0, settled: false, denyClose: false };
+  let enter: (() => void) | undefined, release: (() => void) | undefined;
+  let cancelled: (() => void) | undefined, finished: (() => void) | undefined;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const aborted = new Promise<void>((resolve) => {
+    cancelled = resolve;
+  });
+  const settled = new Promise<void>((resolve) => {
+    finished = resolve;
+  });
+  const read = sources.read.bind(sources);
+  let captures = 0;
+  t.mock.method(
+    sources,
+    "read",
+    (...args: Parameters<SourceAccess["read"]>) => {
+      if (++captures !== 1) return read(...args);
+      args[2].addEventListener(
+        "abort",
+        () => {
+          assert.ok(cancelled);
+          cancelled();
+        },
+        { once: true },
+      );
+      return read(...args).finally(() => {
+        state.settled = true;
+        assert.ok(finished);
+        finished();
+      });
+    },
+  );
+  const originalAccess = fsPromises.access,
+    originalOpen = fsPromises.open;
+  let inspections = 0;
+  const accessMock = t.mock.method(
+    fsPromises,
+    "access",
+    async (...args: Parameters<typeof originalAccess>) => {
+      if (args[0] === root && ++inspections === 2) {
+        assert.ok(enter);
+        enter();
+        await gate;
+      }
+      return originalAccess(...args);
+    },
+  );
+  const openMock = t.mock.method(
+    fsPromises,
+    "open",
+    async (...args: Parameters<typeof originalOpen>) => {
+      const handle = await originalOpen(...args);
+      if (args[0] === file) {
+        const first = ++state.opened === 1;
+        const close = handle.close.bind(handle);
+        t.mock.method(handle, "close", async () => {
+          if (first && state.denyClose)
+            throw Object.assign(new Error("Fixture close failure"), {
+              code: "EIO",
+            });
+          await close();
+          state.closed++;
+        });
+      }
+      return handle;
+    },
+  );
+  syncBuiltinESMExports();
+  return {
+    sources,
+    state,
+    entered,
+    aborted,
+    settled,
+    /** Resume only the stalled fixture's real filesystem inspection. */
+    release() {
+      assert.ok(release);
+      release();
+    },
+    /** Remove global filesystem hooks after all captures and service cleanup have settled. */
+    restore() {
+      accessMock.mock.restore();
+      openMock.mock.restore();
+      syncBuiltinESMExports();
+    },
+  };
+}
+
+test("file-only cancellation, shutdown and replacement await real capture cleanup", async (t) => {
+  for (const action of ["cancel", "close", "replace", "deadline"]) {
+    const data = await fixture(t);
+    const stall = await stalledFileCapture(t, data);
+    const service = new RuntimeService(
+      stall.sources,
+      config([data.allowed]),
+      [syntheticReader],
+      action === "deadline" ? 2000 : 30000,
+    );
+    const request = {
+      sourceId: "source-1",
+      relativePath: "capture.jsonl",
+      format: syntheticReader.format,
+    };
+    const controller = new AbortController();
+    let firstFinished = false;
+    const first = service
+      .read(request, controller.signal)
+      .then(
+        (view) => ({ view }),
+        (error: unknown) => ({ error }),
+      )
+      .then((outcome) => {
+        firstFinished = true;
+        return outcome;
+      });
+    try {
+      await stall.entered;
+      let actionWork: Promise<unknown> | undefined;
+      if (action === "close") actionWork = service.close();
+      else if (action === "replace")
+        actionWork = service.read(request, new AbortController().signal);
+      else if (action === "cancel") controller.abort();
+      const actionOutcome = actionWork?.then(
+        (value) => ({ value }),
+        (error: unknown) => ({ error }),
+      );
+      await stall.aborted;
+      await delay(100);
+      assert.equal(
+        firstFinished,
+        false,
+        "Cancellation must not release the capture cleanup barrier",
+      );
+      assert.equal(
+        stall.state.opened,
+        1,
+        "A replacement cannot acquire a descriptor early",
+      );
+      assert.equal(stall.state.closed, 0);
+      assert.equal(service.view, null);
+      stall.release();
+      const outcome = await first;
+      assert.ok("error" in outcome && outcome.error instanceof RuntimeError);
+      assert.equal(
+        outcome.error.code,
+        action === "deadline" ? "READ_TIMEOUT" : "READ_CANCELLED",
+      );
+      if (actionOutcome) assert.ok("value" in (await actionOutcome));
+      assert.equal(stall.state.settled, true);
+      assert.equal(stall.state.closed, action === "replace" ? 2 : 1);
+      assert.equal(service.view !== null, action === "replace");
+    } finally {
+      stall.state.denyClose = false;
+      stall.release();
+      await stall.settled;
+      await service.close();
+      stall.restore();
+    }
+  }
+});
+
+test("file-only cleanup timeout retains capture ownership and late close failures block reads", async (t) => {
+  const data = await fixture(t);
+  const stall = await stalledFileCapture(t, data);
+  const service = new RuntimeService(stall.sources, config([data.allowed]), [
+    syntheticReader,
+  ]);
+  const request = {
+    sourceId: "source-1",
+    relativePath: "capture.jsonl",
+    format: syntheticReader.format,
+  };
+  const controller = new AbortController();
+  const first = service.read(request, controller.signal);
+  const rejected = assert.rejects(first, { code: "SOURCE_CLEANUP_FAILED" });
+  try {
+    await stall.entered;
+    const started = performance.now();
+    controller.abort();
+    await rejected;
+    const elapsed = performance.now() - started;
+    assert.ok(
+      elapsed >= 4900 && elapsed < 8000,
+      `Cleanup confirmation took ${elapsed}ms`,
+    );
+    assert.equal(stall.state.opened, 1);
+    assert.equal(stall.state.closed, 0);
+    await assert.rejects(service.read(request, new AbortController().signal), {
+      code: "SOURCE_CLEANUP_FAILED",
+    });
+    let closeFinished = false;
+    const closing = service
+      .close()
+      .then(
+        () => ({ ok: true }),
+        (error: unknown) => ({ error }),
+      )
+      .then((outcome) => {
+        closeFinished = true;
+        return outcome;
+      });
+    await delay(100);
+    assert.equal(
+      closeFinished,
+      false,
+      "Shutdown must retain the unfinished capture",
+    );
+    stall.state.denyClose = true;
+    stall.release();
+    const outcome = await closing;
+    assert.ok("error" in outcome && outcome.error instanceof RuntimeError);
+    assert.equal(outcome.error.code, "SOURCE_CLEANUP_FAILED");
+    assert.equal(service.view, null);
+    await assert.rejects(service.read(request, new AbortController().signal), {
+      code: "SOURCE_CLEANUP_FAILED",
+    });
+    stall.state.denyClose = false;
+    await service.close();
+    assert.equal(stall.state.closed, 1);
+    assert.equal(
+      (await service.read(request, new AbortController().signal)).events.length,
+      1,
+    );
+  } finally {
+    stall.state.denyClose = false;
+    stall.release();
+    await stall.settled;
+    await service.close();
+    stall.restore();
   }
 });
 

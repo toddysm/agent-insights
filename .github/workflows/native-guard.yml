@@ -8,6 +8,15 @@ name: Native guard and helper checks
       - "scripts/*native*"
       - "src/native/**"
       - "src/runtime/native-helper.ts"
+      - "src/runtime/sqlite*.ts"
+      - "src/runtime/source*.ts"
+      - "src/runtime/service.ts"
+      - "src/runtime/errors.ts"
+      - "src/evidence/source-access.ts"
+      - "scripts/qualify-source-access.mjs"
+      - "tests/source-access.test.ts"
+      - "tests/sqlite-transport.test.ts"
+      - "tests/fixtures/native-*"
       - "tests/native-artifacts.test.ts"
       - "tests/native-build-context.test.mjs"
       - "package*.json"
@@ -21,6 +30,15 @@ name: Native guard and helper checks
       - "scripts/*native*"
       - "src/native/**"
       - "src/runtime/native-helper.ts"
+      - "src/runtime/sqlite*.ts"
+      - "src/runtime/source*.ts"
+      - "src/runtime/service.ts"
+      - "src/runtime/errors.ts"
+      - "src/evidence/source-access.ts"
+      - "scripts/qualify-source-access.mjs"
+      - "tests/source-access.test.ts"
+      - "tests/sqlite-transport.test.ts"
+      - "tests/fixtures/native-*"
       - "tests/native-artifacts.test.ts"
       - "tests/native-build-context.test.mjs"
       - "package*.json"
@@ -103,6 +121,8 @@ jobs:
         run: npm run prepare:native -- --candidate
       - name: Qualify the exact installed bytes and preparation lifecycle
         run: npm run qualify:native
+      - name: Qualify shared runtime access using verified installed bytes
+        run: npm run qualify:source-access
       # actions/upload-artifact v7.0.2
       # Retained CI candidates are not a public release.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9

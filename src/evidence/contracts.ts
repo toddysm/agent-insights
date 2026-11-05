@@ -9,6 +9,8 @@
  * access, persistence or model inference.
  */
 import { z } from "zod";
+import { sqliteKeySchema, sourceFormatSchema } from "./source-access.js";
+export { sourceFormatSchema } from "./source-access.js";
 
 /** Preserve nonempty evidence identifiers verbatim; transport limits must not truncate their contents. */
 export const evidenceIdSchema = z.string().min(1);
@@ -42,16 +44,25 @@ export const referenceSchema = z
           pointer,
         })
         .readonly(),
+      z
+        .strictObject({
+          kind: z.literal("sqlite"),
+          table: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
+          key: sqliteKeySchema,
+          column: z
+            .string()
+            .regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/)
+            .nullable(),
+          pointer,
+          fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+        })
+        .refine(
+          (location) => location.column !== null || location.pointer === "",
+        )
+        .readonly(),
     ]),
   })
   .readonly();
-
-/** Initial adapter targets, not a claim that readers or live captures have been validated. */
-export const sourceFormatSchema = z.enum([
-  "vscode-otel-jsonl",
-  "vscode-chat-v3-json",
-  "vscode-chat-mutations-jsonl",
-]);
 
 /** Source metadata contains reported identity, never an identity inferred from a filesystem path. */
 export const sourceSchema = z
@@ -348,14 +359,18 @@ export function parseReadView(input: unknown): ReadView {
   return readViewSchema.parse(input);
 }
 
-/** Compare original record identities and locations without delimiter collisions. */
+/** Compare original locators, including SQLite fields and captured revisions, without delimiter collisions. */
 function referenceKey(reference: EvidenceReference): string {
+  const location = reference.location;
   return JSON.stringify([
     reference.sourceId,
     reference.recordId,
-    reference.location.kind,
-    reference.location.pointer,
-    reference.location.kind === "jsonl" ? reference.location.line : null,
+    location.kind,
+    location.pointer,
+    location.kind === "jsonl" ? location.line : null,
+    ...(location.kind === "sqlite"
+      ? [location.table, location.key, location.column, location.fingerprint]
+      : []),
   ]);
 }
 

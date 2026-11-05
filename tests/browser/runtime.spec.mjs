@@ -128,6 +128,10 @@ test("an empty configuration stays explicit instead of rendering example session
     await expect(
       page.getByText(/Source readers are not installed yet/),
     ).toBeVisible();
+    await expect(page.getByText(/Native SQLite: unavailable/)).toBeVisible();
+    await expect(
+      page.getByText(/File-only sources and analysis are independent/),
+    ).toBeVisible();
     await expect(page.getByRole("button", { name: "Analyze" })).toHaveCount(0);
   } finally {
     await runtime.close();
