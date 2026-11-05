@@ -1,5 +1,5 @@
 ---
-name: Native engine and ABI checks
+name: Native guard and helper checks
 
 "on":
   pull_request:
@@ -64,13 +64,17 @@ jobs:
       - run: cargo fmt --manifest-path native/sqlite-guard/Cargo.toml --check
       - run: >
           cargo clippy --locked --manifest-path native/sqlite-guard/Cargo.toml
-          --all-targets -- -D warnings
+          --all-targets --all-features -- -D warnings
       - name: Test production guard build
         run: cargo test --locked --manifest-path native/sqlite-guard/Cargo.toml
-      - name: Test deterministic source-race qualification
+      - name: Test qualification hooks and non-serving qualification builds
         run: >
           cargo test --locked --manifest-path native/sqlite-guard/Cargo.toml
           --features qualification-hooks
+      - name: Qualify optimized helper processes
+        run: >
+          cargo test --locked --manifest-path native/sqlite-guard/Cargo.toml
+          --release
       - name: Check private native documentation
         env:
           RUSTDOCFLAGS: "-D warnings"

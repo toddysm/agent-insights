@@ -1,7 +1,9 @@
 //! Own one guarded connection and its process-global VFS hooks.
 //! Mutations denied by callbacks stay fatal even when SQLite ignores their return code.
 
+use crate::helper::wire::Cell;
 use crate::{ApprovedSource, GuardError, inspect_native_abi, platform, source::Role};
+use base64::{Engine, engine::general_purpose::STANDARD};
 use libsqlite3_sys as ffi;
 use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -246,11 +248,19 @@ unsafe extern "C" fn authorize(
     _trigger: *const c_char,
 ) -> c_int {
     let allowed = match action {
-        ffi::SQLITE_SELECT | ffi::SQLITE_READ | ffi::SQLITE_FUNCTION | ffi::SQLITE_RECURSIVE => {
-            true
-        }
+        ffi::SQLITE_SELECT
+        | ffi::SQLITE_READ
+        | ffi::SQLITE_FUNCTION
+        | ffi::SQLITE_RECURSIVE
+        | ffi::SQLITE_TRANSACTION => true,
         ffi::SQLITE_PRAGMA if !first.is_null() => {
             let name = unsafe { CStr::from_ptr(first) }.to_bytes();
+            if [b"table_list".as_slice(), b"table_xinfo"]
+                .iter()
+                .any(|allowed| name.eq_ignore_ascii_case(allowed))
+            {
+                return ffi::SQLITE_OK;
+            }
             [
                 b"query_only".as_slice(),
                 b"trusted_schema",
@@ -594,33 +604,7 @@ impl GuardedDatabase {
     /// Rejects multi-statements, writes/configuration changes, oversized SQL, non-integer/multiple rows,
     /// source identity changes and every latched policy violation.
     pub fn scalar_i64(&mut self, sql: &CStr) -> Result<i64, GuardError> {
-        check()?;
-        self.source.verify()?;
-        if sql.to_bytes().len() > 4096 {
-            return Err(GuardError::Limit);
-        }
-        let mut statement = ptr::null_mut();
-        let mut tail = ptr::null();
-        reset_io_error()?;
-        let rc = unsafe {
-            ffi::sqlite3_prepare_v2(self.db, sql.as_ptr(), -1, &mut statement, &mut tail)
-        };
-        if rc != ffi::SQLITE_OK {
-            return Err(sqlite_error(rc));
-        }
-        if statement.is_null() {
-            return Err(GuardError::InvalidInput);
-        }
-        let result = (|| {
-            if !unsafe { CStr::from_ptr(tail) }
-                .to_bytes()
-                .iter()
-                .all(u8::is_ascii_whitespace)
-                || unsafe { ffi::sqlite3_stmt_readonly(statement) } == 0
-                || unsafe { ffi::sqlite3_column_count(statement) } != 1
-            {
-                return Err(GuardError::InvalidInput);
-            }
+        self.with_statement(sql, 1, |statement| {
             reset_io_error()?;
             let rc = unsafe { ffi::sqlite3_step(statement) };
             check()?;
@@ -643,15 +627,8 @@ impl GuardedDatabase {
             if rc != ffi::SQLITE_DONE {
                 return Err(sqlite_error(rc));
             }
-            self.source.verify()?;
             Ok(value)
-        })();
-        let finalized = unsafe { ffi::sqlite3_finalize(statement) };
-        check()?;
-        if finalized != ffi::SQLITE_OK && result.is_ok() {
-            return Err(sqlite_error(finalized));
-        }
-        result
+        })
     }
 
     /// Observe main/WAL metadata changes without claiming a global atomic snapshot.
@@ -661,6 +638,129 @@ impl GuardedDatabase {
     pub fn source_changed(&self) -> Result<bool, GuardError> {
         check()?;
         self.source.verify()
+    }
+
+    /// Report whether the initial WAL snapshot is retained; rollback reads otherwise use request scopes.
+    pub(crate) fn retained_snapshot(&self) -> bool {
+        unsafe { ffi::sqlite3_get_autocommit(self.db) == 0 }
+    }
+
+    /// Start a bounded internal read scope only when no connection snapshot already exists.
+    pub(crate) fn begin_read_scope(&mut self) -> Result<bool, GuardError> {
+        check()?;
+        self.source.verify()?;
+        let started = !self.retained_snapshot();
+        if started {
+            self.exec(c"BEGIN")?;
+        }
+        Ok(started)
+    }
+
+    /// End only the scope created by the caller; fixed internal SQL cannot be supplied over the wire.
+    pub(crate) fn end_read_scope(&mut self, started: bool) -> Result<(), GuardError> {
+        if started {
+            self.exec(c"ROLLBACK")?;
+        }
+        Ok(())
+    }
+
+    /// Finish a retained snapshot so data_version can observe commits before final connection cleanup.
+    pub(crate) fn release_snapshot(&mut self) -> Result<(), GuardError> {
+        self.end_read_scope(self.retained_snapshot())
+    }
+
+    /// Visit bounded original cells from one generated read-only statement, finalizing on every result.
+    ///
+    /// Only the private helper's validated declaration compiler supplies SQL.
+    /// Cell bytes are checked before copying; the visitor applies encoded row/key budgets.
+    pub(crate) fn read_rows(
+        &mut self,
+        sql: &CStr,
+        bindings: &[Cell],
+        max_rows: usize,
+        max_raw_bytes: usize,
+        mut visit: impl FnMut(Vec<Cell>) -> Result<(), GuardError>,
+    ) -> Result<(), GuardError> {
+        self.with_statement(sql, 64, |statement| {
+            let columns = unsafe { ffi::sqlite3_column_count(statement) };
+            if unsafe { ffi::sqlite3_bind_parameter_count(statement) } as usize != bindings.len() {
+                return Err(GuardError::InvalidInput);
+            }
+            for (index, value) in bindings.iter().enumerate() {
+                bind_cell(statement, (index + 1) as c_int, value)?;
+            }
+            let mut count = 0;
+            let mut remaining = max_raw_bytes;
+            loop {
+                reset_io_error()?;
+                let rc = unsafe { ffi::sqlite3_step(statement) };
+                check()?;
+                if rc == ffi::SQLITE_DONE {
+                    break;
+                }
+                if rc != ffi::SQLITE_ROW {
+                    return Err(sqlite_error(rc));
+                }
+                if count >= max_rows {
+                    return Err(GuardError::Limit);
+                }
+                let mut row = Vec::with_capacity(columns as usize);
+                for column in 0..columns {
+                    row.push(read_cell(statement, column, &mut remaining)?);
+                }
+                visit(row)?;
+                count += 1;
+            }
+            Ok(())
+        })
+    }
+
+    /// Share preparation/finalization checks; callbacks must not retain or finalize the borrowed statement.
+    fn with_statement<T>(
+        &mut self,
+        sql: &CStr,
+        max_columns: c_int,
+        operation: impl FnOnce(*mut ffi::sqlite3_stmt) -> Result<T, GuardError>,
+    ) -> Result<T, GuardError> {
+        check()?;
+        self.source.verify()?;
+        if sql.to_bytes().len() > 4096 {
+            return Err(GuardError::Limit);
+        }
+        let mut statement = ptr::null_mut();
+        let mut tail = ptr::null();
+        reset_io_error()?;
+        let rc = unsafe {
+            ffi::sqlite3_prepare_v2(self.db, sql.as_ptr(), -1, &mut statement, &mut tail)
+        };
+        if rc != ffi::SQLITE_OK {
+            return Err(sqlite_error(rc));
+        }
+        if statement.is_null() {
+            return Err(GuardError::InvalidInput);
+        }
+        let result = (|| {
+            let columns = unsafe { ffi::sqlite3_column_count(statement) };
+            if columns <= 0
+                || columns > max_columns
+                || unsafe { ffi::sqlite3_stmt_readonly(statement) } == 0
+                || !unsafe { CStr::from_ptr(tail) }
+                    .to_bytes()
+                    .iter()
+                    .all(u8::is_ascii_whitespace)
+            {
+                return Err(GuardError::InvalidInput);
+            }
+            let value = operation(statement)?;
+            self.source.verify()?;
+            Ok(value)
+        })();
+        let finalized = unsafe { ffi::sqlite3_finalize(statement) };
+        check()?;
+        if finalized != ffi::SQLITE_OK && result.is_ok() {
+            return Err(sqlite_error(finalized));
+        }
+        result
     }
 
     /// Close the connection and release any WAL snapshot before restoring callbacks; no source checkpoint occurs.
@@ -721,6 +821,115 @@ impl GuardedDatabase {
             return Err(error);
         }
         Ok(())
+    }
+}
+
+/// Bind exact values to placeholders, copying borrowed payloads into SQLite before returning.
+fn bind_cell(
+    statement: *mut ffi::sqlite3_stmt,
+    index: c_int,
+    value: &Cell,
+) -> Result<(), GuardError> {
+    let rc = match value {
+        Cell::Null => unsafe { ffi::sqlite3_bind_null(statement, index) },
+        Cell::Integer(value) => unsafe {
+            ffi::sqlite3_bind_int64(
+                statement,
+                index,
+                value.parse::<i64>().map_err(|_| GuardError::InvalidInput)?,
+            )
+        },
+        Cell::Real(value) if value.is_finite() => unsafe {
+            ffi::sqlite3_bind_double(statement, index, *value)
+        },
+        Cell::Text(value) if value.len() <= 8192 => unsafe {
+            ffi::sqlite3_bind_text(
+                statement,
+                index,
+                value.as_ptr().cast(),
+                value.len() as c_int,
+                ffi::SQLITE_TRANSIENT(),
+            )
+        },
+        Cell::Blob(value) if value.len() <= 8192 => {
+            let bytes = STANDARD
+                .decode(value)
+                .map_err(|_| GuardError::InvalidInput)?;
+            unsafe {
+                ffi::sqlite3_bind_blob(
+                    statement,
+                    index,
+                    bytes.as_ptr().cast(),
+                    bytes.len() as c_int,
+                    ffi::SQLITE_TRANSIENT(),
+                )
+            }
+        }
+        _ => return Err(GuardError::InvalidInput),
+    };
+    if rc == ffi::SQLITE_OK {
+        Ok(())
+    } else {
+        Err(sqlite_error(rc))
+    }
+}
+
+/// Copy a cell only after inspecting its size; never coerce integer/blob identity or replace invalid UTF-8.
+fn read_cell(
+    statement: *mut ffi::sqlite3_stmt,
+    column: c_int,
+    remaining: &mut usize,
+) -> Result<Cell, GuardError> {
+    let kind = unsafe { ffi::sqlite3_column_type(statement, column) };
+    match kind {
+        ffi::SQLITE_NULL => Ok(Cell::Null),
+        ffi::SQLITE_INTEGER => {
+            *remaining = remaining.checked_sub(8).ok_or(GuardError::Limit)?;
+            Ok(Cell::Integer(
+                unsafe { ffi::sqlite3_column_int64(statement, column) }.to_string(),
+            ))
+        }
+        ffi::SQLITE_FLOAT => {
+            *remaining = remaining.checked_sub(8).ok_or(GuardError::Limit)?;
+            let value = unsafe { ffi::sqlite3_column_double(statement, column) };
+            if value.is_finite() {
+                Ok(Cell::Real(value))
+            } else {
+                Err(GuardError::Data)
+            }
+        }
+        ffi::SQLITE_TEXT | ffi::SQLITE_BLOB => {
+            let pointer = if kind == ffi::SQLITE_TEXT {
+                unsafe { ffi::sqlite3_column_text(statement, column) }
+            } else {
+                unsafe { ffi::sqlite3_column_blob(statement, column) }.cast::<u8>()
+            };
+            let length = unsafe { ffi::sqlite3_column_bytes(statement, column) };
+            if length < 0 {
+                return Err(GuardError::Data);
+            }
+            *remaining = remaining
+                .checked_sub(length as usize)
+                .ok_or(GuardError::Limit)?;
+            if pointer.is_null() && (length != 0 || kind == ffi::SQLITE_TEXT) {
+                return Err(GuardError::Data);
+            }
+            let bytes = if length == 0 {
+                &[][..]
+            } else {
+                unsafe { std::slice::from_raw_parts(pointer, length as usize) }
+            };
+            if kind == ffi::SQLITE_TEXT {
+                Ok(Cell::Text(
+                    std::str::from_utf8(bytes)
+                        .map_err(|_| GuardError::Data)?
+                        .to_owned(),
+                ))
+            } else {
+                Ok(Cell::Blob(STANDARD.encode(bytes)))
+            }
+        }
+        _ => Err(GuardError::Data),
     }
 }
 

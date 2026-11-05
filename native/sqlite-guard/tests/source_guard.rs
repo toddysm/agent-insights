@@ -303,6 +303,9 @@ fn admission_and_query_failures() {
         c"PRAGMA busy_timeout=2147483647",
         c"PRAGMA trusted_schema=ON",
         c"PRAGMA user_version=2",
+        c"BEGIN",
+        c"COMMIT",
+        c"ROLLBACK",
     ] {
         assert_eq!(database.scalar_i64(sql), Err(GuardError::InvalidInput));
     }
