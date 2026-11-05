@@ -138,6 +138,9 @@ fails with `SOURCE_CLEANUP_FAILED` and retains ownership; refresh, shutdown and
 replacement do not wait indefinitely or claim cleanup succeeded. New reads stay
 blocked until a cleanup retry confirms those operations settled and descriptors
 closed. Cancellation does not forcibly interrupt operating-system filesystem I/O.
+Failed descriptor closes are retained by the source-access owner even when
+admission failed before a database lease was returned. This also applies to
+file captures; such failures cannot become optional-source unavailability.
 Source-free artifact lookup is also bounded to five seconds. Cancellation,
 deadlines and disposal stop waiting for a stalled lookup without waiting for its
 filesystem Promise; any eventual result is discarded and cannot launch a helper.

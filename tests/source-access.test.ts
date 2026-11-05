@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import nodeTest, { type TestContext } from "node:test";
 import { DatabaseSync } from "node:sqlite";
-import {
+import fileSystem, {
   mkdtemp,
   writeFile,
   readFile,
@@ -1207,6 +1207,87 @@ test("composite cancellation rejects stale normalization and concurrent cleanup 
   await delay(0);
   assert.equal(service.view, null);
   assert.equal(service.selection, null);
+});
+
+test("failed admission plus failed descriptor close retains a cleanup owner and blocks later reads", async (t) => {
+  for (const kind of ["database", "file"]) {
+    const data = await fixture(t);
+    const access = await SourceAccess.create([data.root]);
+    const open = fileSystem.open.bind(fileSystem);
+    const target = await fileSystem.realpath(
+      kind === "database" ? data.database : data.file,
+    );
+    let denyClose = true,
+      opened = 0,
+      closed = 0;
+    const emergency: (() => Promise<void>)[] = [];
+    const mocked = t.mock.method(
+      fileSystem,
+      "open",
+      async (...args: Parameters<typeof fileSystem.open>) => {
+        const handle = await open(...args);
+        if (args[0] !== target || ++opened !== 1) return handle;
+        const close = handle.close.bind(handle);
+        emergency.push(close);
+        t.mock.method(handle, "stat", () =>
+          Promise.reject(
+            Object.assign(new Error("Fixture admission failed"), {
+              code: "EIO",
+            }),
+          ),
+        );
+        t.mock.method(handle, "close", () => {
+          if (denyClose)
+            return Promise.reject(
+              Object.assign(new Error("Fixture close failed"), { code: "EIO" }),
+            );
+          closed++;
+          return close();
+        });
+        return handle;
+      },
+    );
+    syncBuiltinESMExports();
+    const service = new RuntimeService(
+      access,
+      config(data.root),
+      [],
+      30000,
+      null,
+      [reader()],
+      testNativeHelper,
+    );
+    const request = {
+      readerId: "fictional",
+      sources: [
+        { key: "database", sourceId: "source-1", relativePath: "source.db" },
+      ],
+    };
+    /** Exercise both database admission and the existing file-capture cleanup path. */
+    const begin = () =>
+      kind === "database"
+        ? service.readSet(request, new AbortController().signal)
+        : access.read("source-1", "events.json", new AbortController().signal);
+    try {
+      await assert.rejects(begin(), code("SOURCE_CLEANUP_FAILED"));
+      await assert.rejects(begin(), code("SOURCE_CLEANUP_FAILED"));
+      await assert.rejects(service.close(), code("SOURCE_CLEANUP_FAILED"));
+      assert.equal(opened, 1);
+      assert.equal(closed, 0);
+      denyClose = false;
+      await service.close();
+      assert.equal(closed, 1);
+      const result = await begin();
+      if ("events" in result) assert.equal(result.events.length, 1);
+      else assert.ok(result.bytes.byteLength > 0);
+    } finally {
+      denyClose = false;
+      await service.close();
+      for (const close of emergency) await close();
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
 });
 
 test("stalled source admission or verification fails bounded cleanup and retains leases until retry", async (t) => {

@@ -546,6 +546,7 @@ export class SourceReadSet implements MultiSourceInput {
           this.queue,
           this.finalization,
         ]);
+        await this.access.retryCleanup();
         const outcomes = await Promise.allSettled(
           [...this.databases].map(async ([key, owner]) => {
             await owner.process.stop();

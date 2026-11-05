@@ -1,6 +1,13 @@
 /** Read-only access to startup-authorized locations; no scanning, writes or retained byte cache. */
 import { constants } from "node:fs";
-import { access, open, realpath, stat, lstat } from "node:fs/promises";
+import {
+  access,
+  open,
+  realpath,
+  stat,
+  lstat,
+  type FileHandle,
+} from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import path from "node:path";
 import { RuntimeError, cancelledRead, filesystemError } from "./errors.js";
@@ -148,7 +155,68 @@ export async function pointsToOpenedFile(
 
 /** Owns source grants only. No raw bytes or normalized evidence are persisted by this class. */
 export class SourceAccess {
+  private readonly failedClosures = new Set<() => Promise<void>>();
   private constructor(private readonly grants: readonly SourceGrant[]) {}
+
+  /** Own rejected descriptor closes even when admission never returns a lease; never expose raw close errors. */
+  private ownClose(handle: FileHandle): () => Promise<void> {
+    let completion: Promise<void> | undefined;
+    /** Share in-flight/successful closure; only a rejected close can be retried. */
+    const close = (): Promise<void> =>
+      (completion ??= Promise.resolve()
+        .then(() => handle.close())
+        .then(
+          () => {
+            this.failedClosures.delete(close);
+          },
+          () => {
+            this.failedClosures.add(close);
+            completion = undefined;
+            throw new RuntimeError(
+              "SOURCE_CLEANUP_FAILED",
+              "A source descriptor could not be closed; retry cleanup before reading again.",
+              500,
+            );
+          },
+        ));
+    return close;
+  }
+
+  /** Retry only failed closes, not live leases owned by other reads; retain failures and bound confirmation to five seconds. */
+  async retryCleanup(): Promise<void> {
+    if (!this.failedClosures.size) return;
+    const cleanup = Promise.allSettled(
+      [...this.failedClosures].map((close) => close()),
+    ).then((results) => {
+      if (results.some((result) => result.status === "rejected"))
+        throw new RuntimeError(
+          "SOURCE_CLEANUP_FAILED",
+          "Source descriptors remain unclosed; retry cleanup before reading again.",
+          500,
+        );
+    });
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        cleanup,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new RuntimeError(
+                  "SOURCE_CLEANUP_FAILED",
+                  "Source descriptor cleanup could not be confirmed; retry cleanup.",
+                  500,
+                ),
+              ),
+            5000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 
   /** Resolve explicitly supplied roots once. Missing startup locations remain unavailable until restart. */
   static async create(locations: readonly string[]): Promise<SourceAccess> {
@@ -268,6 +336,12 @@ export class SourceAccess {
     canonical: string;
     candidate: string;
   }> {
+    if (this.failedClosures.size)
+      throw new RuntimeError(
+        "SOURCE_CLEANUP_FAILED",
+        "Retry failed source cleanup before reading again.",
+        503,
+      );
     const grant = this.grants.find((candidate) => candidate.id === sourceId);
     if (
       grant === undefined ||
@@ -356,6 +430,7 @@ export class SourceAccess {
           ? 0
           : constants.O_NOFOLLOW | constants.O_NONBLOCK);
       const handle = await open(canonical, flags);
+      const close = this.ownClose(handle);
       try {
         const before = await handle.stat({ bigint: true });
         if (!before.isFile())
@@ -410,7 +485,7 @@ export class SourceAccess {
           finishedAtMs: Date.now(),
         };
       } finally {
-        await handle.close();
+        await close();
       }
     } catch (error) {
       filesystemError(error);
@@ -443,6 +518,7 @@ export class SourceAccess {
           ? 0
           : constants.O_NOFOLLOW | constants.O_NONBLOCK),
     ).catch(filesystemError);
+    const close = this.ownClose(handle);
     try {
       const before = await handle.stat({ bigint: true });
       if (!before.isFile() || before.size > BigInt(MAX_SOURCE_BYTES))
@@ -556,10 +632,10 @@ export class SourceAccess {
         sidecars: Object.freeze(sidecars),
         startedAtMs,
         verify,
-        close: () => handle.close(),
+        close,
       };
     } catch (error) {
-      await handle.close();
+      await close();
       filesystemError(error);
     }
   }

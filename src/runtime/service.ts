@@ -550,12 +550,13 @@ export class RuntimeService {
   async close(): Promise<void> {
     this.invalidate();
     return this.enqueue(async () => {
-      const results = await Promise.allSettled(
-        [...this.readSets].map(async (set) => {
+      const results = await Promise.allSettled([
+        this.sources.retryCleanup(),
+        ...[...this.readSets].map(async (set) => {
           await set.dispose();
           this.readSets.delete(set);
         }),
-      );
+      ]);
       this.cleanupFailed = results.some(
         (result) => result.status === "rejected",
       );
