@@ -216,12 +216,10 @@ impl Watchdog {
                         Ok(false) => terminate(Failure::Parent),
                         Err(error) => terminate(error),
                     }
-                    let deadline = match observed.lock() {
-                        Ok(deadlines) => deadlines.earliest(),
-                        Err(_) => terminate(Failure::Guard),
-                    };
-                    if origin.elapsed().as_millis() >= u128::from(deadline) {
-                        terminate(Failure::Deadline);
+                    match expired(&observed, || origin.elapsed().as_millis()) {
+                        Ok(false) => {}
+                        Ok(true) => terminate(Failure::Deadline),
+                        Err(error) => terminate(error),
                     }
                     std::thread::sleep(Duration::from_millis(10));
                 }
@@ -252,17 +250,18 @@ impl Watchdog {
 
     /// Do not publish or reset a deadline already exceeded between watchdog polling ticks.
     pub(super) fn check(&self) -> Result<(), Failure> {
-        let deadline = self
-            .deadlines
-            .lock()
-            .map_err(|_| Failure::Guard)?
-            .earliest();
-        if self.origin.elapsed().as_millis() >= u128::from(deadline) {
+        if expired(&self.deadlines, || self.origin.elapsed().as_millis())? {
             Err(Failure::Deadline)
         } else {
             Ok(())
         }
     }
+}
+
+/// Sample expiry consistently with request completion; the clock callback also supports deterministic race coverage.
+fn expired(deadlines: &Mutex<Deadlines>, now: impl FnOnce() -> u128) -> Result<bool, Failure> {
+    let state = deadlines.lock().map_err(|_| Failure::Guard)?;
+    Ok(now() >= u128::from(state.earliest()))
 }
 
 /// Exit without any I/O that could itself block; the fixed exit code identifies the failure.
@@ -274,6 +273,24 @@ pub(super) fn terminate(failure: Failure) -> ! {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn expiry_sampling_keeps_the_deadline_locked_through_the_clock_read() {
+        let deadlines = Mutex::new(Deadlines::new(30_000));
+        deadlines.lock().unwrap().arm(1, 80).unwrap();
+        assert_eq!(
+            expired(&deadlines, || {
+                assert!(matches!(
+                    deadlines.try_lock(),
+                    Err(std::sync::TryLockError::WouldBlock)
+                ));
+                79
+            }),
+            Ok(false)
+        );
+        deadlines.lock().unwrap().complete(1).unwrap();
+        assert_eq!(expired(&deadlines, || 81), Ok(false));
+    }
 
     #[test]
     fn queued_deadline_survives_completion_of_active_work() {

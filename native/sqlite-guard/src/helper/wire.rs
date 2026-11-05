@@ -389,11 +389,12 @@ mod tests {
     fn bounded_serialization_accepts_exact_size_only() {
         let mut buffer = BoundedBuffer {
             bytes: Vec::new(),
-            limit: 3,
+            limit: MAX_REPLY_BYTES,
         };
-        buffer.write_all(b"abc").unwrap();
-        assert!(buffer.write_all(b"d").is_err());
-        assert_eq!(buffer.bytes, b"abc");
+        buffer.write_all(&vec![b'a'; MAX_REPLY_BYTES]).unwrap();
+        assert!(buffer.write_all(b"b").is_err());
+        assert_eq!(buffer.bytes.len(), MAX_REPLY_BYTES);
+        assert!(buffer.bytes.iter().all(|byte| *byte == b'a'));
     }
 
     #[test]
