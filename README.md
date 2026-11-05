@@ -26,8 +26,9 @@ See the [capability inventory](docs/project-state.md) for the current plan.
 
 Native source-safety work lives in the
 [Rust guard crate](native/sqlite-guard/README.md), including guarded existing-file
-reads and native qualification tests. The helper protocol, artifact delivery and
-Node integration remain separate work; this does not change installed reader availability.
+reads and native qualification tests. Its [standalone helper protocol](native/sqlite-guard/PROTOCOL.md)
+adds bounded process communication and supervision. Artifact delivery and Node
+integration remain separate work; this does not change installed reader availability.
 
 To validate the implementation with Node.js 24:
 

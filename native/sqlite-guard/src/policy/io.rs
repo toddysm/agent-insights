@@ -7,6 +7,15 @@ use libsqlite3_sys as ffi;
 use std::ffi::{CStr, c_char, c_int, c_void};
 use std::ptr;
 
+#[cfg(test)]
+static FAIL_READ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Inject one native read failure for the isolated automatic-rollback unit scenario.
+#[cfg(test)]
+pub(super) fn fail_next_read() {
+    FAIL_READ.store(true, std::sync::atomic::Ordering::Release);
+}
+
 /// SQLite allocates this wrapper; the original VFS file has a separately aligned allocation.
 #[repr(C)]
 pub(super) struct GuardFile {
@@ -242,6 +251,10 @@ unsafe extern "C" fn read(
         unavailable();
         return ffi::SQLITE_IOERR_READ;
     };
+    #[cfg(test)]
+    if FAIL_READ.swap(false, std::sync::atomic::Ordering::AcqRel) {
+        return ffi::SQLITE_IOERR_READ;
+    }
     unsafe { call(real, buffer, amount, offset) }
 }
 

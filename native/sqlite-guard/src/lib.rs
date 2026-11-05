@@ -13,6 +13,7 @@ use std::fmt;
 mod vfs;
 pub use vfs::{HookCapability, NativeAbi, inspect_native_abi};
 
+pub mod helper;
 mod platform;
 mod policy;
 mod source;
@@ -48,6 +49,8 @@ pub enum GuardError {
     RecoveryRequired,
     /// A rollback journal is present; retry after the producer removes it. Retained-journal modes are not admitted.
     JournalPresent,
+    /// The source does not match the application-owned schema declaration.
+    Schema,
     /// A forbidden source operation was attempted; this read is permanently failed.
     PolicyViolation,
     /// Native lock waiting exhausted its bounded busy timeout.
@@ -78,6 +81,7 @@ impl fmt::Display for GuardError {
             Self::JournalPresent => {
                 "A rollback journal is present; retry after the owning harness removes it. Retained-journal modes are not supported."
             }
+            Self::Schema => "The source schema is not supported by this declaration.",
             Self::PolicyViolation => "A forbidden source operation was prevented.",
             Self::Busy => "The source remained locked beyond the bounded wait.",
             Self::Data => "The source contains unsupported or malformed data.",
