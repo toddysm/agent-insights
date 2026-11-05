@@ -1,0 +1,22 @@
+[package]
+name = "agent-insights-sqlite-guard"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+description = "Guarded in-place SQLite source reads for Agent Insights"
+
+[features]
+qualification-hooks = []
+
+[dependencies]
+libsqlite3-sys = { version = "=0.39.1", features = ["bundled"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "=0.2.191"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Memory", "Win32_Security"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"

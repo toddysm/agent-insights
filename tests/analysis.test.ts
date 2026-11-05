@@ -120,7 +120,13 @@ test("analysis preserves input observation bounds separately from processing com
   await tick();
   const first = inputs[0];
   assert.ok(first);
-  const captured = JSON.parse(first.prompt);
+  const captured: unknown = JSON.parse(first.prompt);
+  assert.ok(
+    captured !== null &&
+      typeof captured === "object" &&
+      "inputCapture" in captured &&
+      "processingFinishedAtMs" in captured,
+  );
   assert.deepEqual(captured.inputCapture, {
     startedAtMs: 1000,
     finishedAtMs: 1100,
@@ -135,7 +141,13 @@ test("analysis preserves input observation bounds separately from processing com
   await tick();
   const second = inputs[1];
   assert.ok(second);
-  assert.equal(JSON.parse(second.prompt).inputCapture, null);
+  const secondPrompt: unknown = JSON.parse(second.prompt);
+  assert.ok(
+    secondPrompt !== null &&
+      typeof secondPrompt === "object" &&
+      "inputCapture" in secondPrompt,
+  );
+  assert.equal(secondPrompt.inputCapture, null);
 });
 
 test("valid long evidence identifiers remain selectable and citable without truncation", async () => {

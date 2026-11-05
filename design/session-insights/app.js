@@ -1,4 +1,5 @@
 /** Render the synthetic walkthrough using local assets, hash navigation, and in-memory edits only. */
+/* global InsightsModel */
 (() => {
   const M = InsightsModel;
   const main = document.getElementById("main");
