@@ -143,6 +143,7 @@ export class RuntimeService {
   private readonly readers = new Map<SourceFormat, EvidenceReader>();
   private readonly multiReaders = new Map<string, MultiSourceReader>();
   private readonly readSets = new Set<SourceReadSet>();
+  private readonly fileCaptures = new Set<Promise<void>>();
   private cleanupFailed = false;
   private cleanupBarrier: Promise<void> = Promise.resolve();
   private current: ReadView | null = null;
@@ -311,52 +312,99 @@ export class RuntimeService {
       request,
       externalSignal,
       async (id, signal, ensureCurrent) => {
-        const captured = await abortable(
-          this.sources.read(request.sourceId, request.relativePath, signal),
+        const capture = this.sources.read(
+          request.sourceId,
+          request.relativePath,
           signal,
         );
-        ensureCurrent();
-        const candidate = await abortable(
-          reader.read({
-            readId: id,
-            sourceId: request.sourceId,
-            signal,
-            bytes: byteChunks(captured.bytes, signal),
-          }),
-          signal,
+        // Retain settlement, not captured bytes; the cancellable wait does not own descriptor lifetime.
+        const settled = capture.then(
+          () => undefined,
+          () => undefined,
         );
-        ensureCurrent();
-        const view = parseReadView(candidate);
-        const firstSource = view.sources[0];
-        if (
-          view.id !== id ||
-          view.sources.length !== 1 ||
-          !firstSource ||
-          firstSource.id !== request.sourceId ||
-          (firstSource.format !== null && firstSource.format !== request.format)
-        )
-          throw new RuntimeError(
-            "INVALID_READER_RESULT",
-            "The reader returned evidence for an unrelated read or source.",
-            502,
-          );
-        return {
-          view,
-          observations: [
-            {
+        this.fileCaptures.add(settled);
+        try {
+          const captured = await abortable(capture, signal);
+          ensureCurrent();
+          const candidate = await abortable(
+            reader.read({
+              readId: id,
               sourceId: request.sourceId,
-              kind: "file",
-              available: true,
-              startedAtMs: captured.startedAtMs,
-              finishedAtMs: captured.finishedAtMs,
-              changed: captured.changed,
-            },
-          ],
-          unavailable: [],
-          composite: false,
-        };
+              signal,
+              bytes: byteChunks(captured.bytes, signal),
+            }),
+            signal,
+          );
+          ensureCurrent();
+          const view = parseReadView(candidate);
+          const firstSource = view.sources[0];
+          if (
+            view.id !== id ||
+            view.sources.length !== 1 ||
+            !firstSource ||
+            firstSource.id !== request.sourceId ||
+            (firstSource.format !== null &&
+              firstSource.format !== request.format)
+          )
+            throw new RuntimeError(
+              "INVALID_READER_RESULT",
+              "The reader returned evidence for an unrelated read or source.",
+              502,
+            );
+          return {
+            view,
+            observations: [
+              {
+                sourceId: request.sourceId,
+                kind: "file",
+                available: true,
+                startedAtMs: captured.startedAtMs,
+                finishedAtMs: captured.finishedAtMs,
+                changed: captured.changed,
+              },
+            ],
+            unavailable: [],
+            composite: false,
+          };
+        } finally {
+          await this.finishCapture(settled);
+        }
       },
     );
+  }
+
+  /** Confirm real capture settlement and descriptor cleanup within five seconds; retain timed-out owners for shutdown retry. */
+  private async finishCapture(capture: Promise<void>): Promise<void> {
+    const cleanup = capture.then(() => this.sources.retryCleanup());
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        cleanup,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(
+                new RuntimeError(
+                  "SOURCE_CLEANUP_FAILED",
+                  "File capture cleanup could not be confirmed; retry cleanup before reading again.",
+                  500,
+                ),
+              ),
+            5000,
+          );
+        }),
+      ]);
+      this.fileCaptures.delete(capture);
+    } catch {
+      this.cleanupFailed = true;
+      throw new RuntimeError(
+        "SOURCE_CLEANUP_FAILED",
+        "File capture cleanup failed; no further reads are admitted until cleanup succeeds.",
+        500,
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   /**
@@ -552,6 +600,7 @@ export class RuntimeService {
     return this.enqueue(async () => {
       const results = await Promise.allSettled([
         this.sources.retryCleanup(),
+        ...[...this.fileCaptures].map((capture) => this.finishCapture(capture)),
         ...[...this.readSets].map(async (set) => {
           await set.dispose();
           this.readSets.delete(set);

@@ -92,6 +92,14 @@ synchronous parsing cannot publish an overdue result merely because it delayed
 the timeout callback. Cancellation cannot preempt JavaScript that is currently
 blocking the event loop, but its eventual result is rejected.
 
+File-only reads retain the actual capture operation through descriptor cleanup,
+not just the cancellable wait. Cancellation, refresh, shutdown and replacement
+therefore cannot release the read barrier while an earlier capture is still
+running. Cleanup confirmation is bounded to five seconds; if it times out or
+fails, ownership is retained and new reads remain blocked until a cleanup retry
+succeeds. A late capture/close failure cannot publish a view or silently clear
+that block.
+
 ### Shared file and SQLite access
 
 The shared foundation for
