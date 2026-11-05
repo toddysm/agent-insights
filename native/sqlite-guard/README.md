@@ -99,8 +99,9 @@ The existing Node runtime and production-reader availability are unchanged.
 
 Run from this repository or crate directory so the repository's Cargo
 configuration is applied. Native development requires Rust/rustup and a C
-compiler. The ordinary-user artifact preparation path is not implemented yet;
-no installation hook or runtime download is introduced by this crate.
+compiler. The [artifact workflow](ARTIFACTS.md) prepares explicitly built, qualified
+candidates. Public compiler-free distribution remains #39; no native release is
+pinned yet. No installation hook or runtime download is introduced by this crate.
 
 ```sh
 cargo fmt --manifest-path native/sqlite-guard/Cargo.toml --check
