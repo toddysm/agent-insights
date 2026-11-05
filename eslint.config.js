@@ -8,6 +8,7 @@ import reactHooks from "eslint-plugin-react-hooks";
 export default defineConfig([
   globalIgnores([
     ".build/**",
+    ".native-helper/**",
     "native/sqlite-guard/target/**",
     "playwright-report/**",
     "test-results/**",

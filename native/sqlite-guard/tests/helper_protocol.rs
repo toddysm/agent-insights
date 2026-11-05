@@ -2,6 +2,13 @@
 
 use std::process::Command;
 
+/// Candidate qualification may select an explicit test-owned packaged binary; serving code has no path override.
+#[cfg(not(feature = "qualification-hooks"))]
+fn helper_executable() -> std::ffi::OsString {
+    std::env::var_os("AGENT_INSIGHTS_TEST_HELPER")
+        .unwrap_or_else(|| env!("CARGO_BIN_EXE_agent-insights-sqlite-helper").into())
+}
+
 /// Read only the small control replies used by the parent-loss test.
 #[cfg(not(feature = "qualification-hooks"))]
 fn control_reply(input: &mut impl std::io::Read) -> serde_json::Value {
@@ -70,7 +77,7 @@ fn parent_loss_exits_while_native_work_and_the_control_channel_remain_open() {
     let mut parent = Command::new("node")
         .arg("--disable-warning=ExperimentalWarning")
         .arg(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/parent.mjs"))
-        .arg(env!("CARGO_BIN_EXE_agent-insights-sqlite-helper"))
+        .arg(helper_executable())
         .arg(&file)
         .stdin(Stdio::from(reader))
         .stdout(Stdio::piped())
