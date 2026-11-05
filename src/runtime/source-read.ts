@@ -22,7 +22,12 @@ import {
   byteChunks,
   type DatabaseLease,
 } from "./sources.js";
-import { SqliteSource, copySqliteBindings } from "./sqlite.js";
+import {
+  SqliteSource,
+  copySqliteBindings,
+  defaultNativeHelper,
+  type NativeHelperResolver,
+} from "./sqlite.js";
 import { MAX_SQLITE_ROWS } from "./sqlite-protocol.js";
 
 /** Public controls select grants/roles only; schemas and SQL are never accepted here. */
@@ -109,7 +114,7 @@ export class SourceReadSet implements MultiSourceInput {
   private remainingRows = MAX_SQLITE_ROWS;
   private queryCount = 0;
   private queue: Promise<void> = Promise.resolve();
-  private queryFailure: unknown;
+  private queryFailure: Error | undefined;
   private finishing = false;
   private disposal: Promise<void> | undefined;
 
@@ -119,12 +124,14 @@ export class SourceReadSet implements MultiSourceInput {
    * @param signal - Overall cancellation/deadline signal.
    * @param access - Startup-authorized grant boundary.
    * @param reader - Trusted registered adapter declarations, validated and copied here.
+   * @param nativeHelper - Trusted pinned artifact resolver; public controls cannot supply one.
    */
   constructor(
     readonly readId: string,
     readonly signal: AbortSignal,
     private readonly access: SourceAccess,
     reader: MultiSourceReader,
+    private readonly nativeHelper: NativeHelperResolver = defaultNativeHelper,
   ) {
     this.requirements = Object.freeze(
       reader.inputs.map((input) => sourceRequirementSchema.parse(input)),
@@ -227,7 +234,7 @@ export class SourceReadSet implements MultiSourceInput {
           );
           let process: SqliteSource;
           try {
-            process = new SqliteSource(lease, this.signal);
+            process = new SqliteSource(lease, this.signal, this.nativeHelper);
           } catch (error) {
             await lease.close();
             throw error;
@@ -240,6 +247,13 @@ export class SourceReadSet implements MultiSourceInput {
           };
           this.databases.set(requirement.key, owner);
           owner.userVersion = await process.initialize(requirement.database);
+          const snapshotScope = process.snapshotScope;
+          if (!snapshotScope)
+            throw new RuntimeError(
+              "SQLITE_PROCESS_PROTOCOL",
+              "The native helper did not establish a snapshot scope.",
+              502,
+            );
           this.inputs.set(
             requirement.key,
             Object.freeze({
@@ -247,6 +261,7 @@ export class SourceReadSet implements MultiSourceInput {
               kind: "sqlite",
               sourceId,
               userVersion: owner.userVersion,
+              snapshotScope,
               query: (id: string, parameters: SqliteBindings) =>
                 this.query(owner, id, parameters),
             }),
@@ -257,10 +272,12 @@ export class SourceReadSet implements MultiSourceInput {
           "SOURCE_MISSING",
           "SOURCE_UNAVAILABLE",
           "SOURCE_DENIED",
+          "SOURCE_IO",
           "SQLITE_SCHEMA",
           "SQLITE_FORMAT",
           "SQLITE_SIDECARS",
           "SQLITE_RECOVERY_REQUIRED",
+          "SQLITE_JOURNAL_PRESENT",
           "SQLITE_LOCKED",
         ];
         if (
@@ -337,8 +354,16 @@ export class SourceReadSet implements MultiSourceInput {
     try {
       copied = copySqliteBindings(bindings);
     } catch (error) {
-      this.queryFailure ??= error;
-      return Promise.reject(error);
+      const failure =
+        error instanceof Error
+          ? error
+          : new RuntimeError(
+              "SQLITE_BINDINGS",
+              "The query bindings are invalid.",
+              422,
+            );
+      this.queryFailure ??= failure;
+      return Promise.reject(failure);
     }
     const operation = this.queue.then(async () => {
       if (this.signal.aborted) throw cancelledRead(this.signal);
@@ -361,8 +386,15 @@ export class SourceReadSet implements MultiSourceInput {
     });
     this.queue = operation.then(
       () => undefined,
-      (error) => {
-        this.queryFailure ??= error;
+      (error: unknown) => {
+        this.queryFailure ??=
+          error instanceof Error
+            ? error
+            : new RuntimeError(
+                "SQLITE_FAILED",
+                "The database query failed.",
+                502,
+              );
       },
     );
     return operation;
@@ -388,6 +420,7 @@ export class SourceReadSet implements MultiSourceInput {
         changed: changed || changedFile,
         available: true,
         userVersion: owner.userVersion,
+        snapshotScope: owner.process.snapshotScope,
       });
     }
     return Object.freeze([...this.observations.values()]);

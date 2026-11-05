@@ -594,6 +594,12 @@ function App(): ReactElement {
                       </button>
                     </form>
                   )}
+                  <p className="notice" role="status">
+                    Native SQLite:{" "}
+                    {status.nativeSqlite.available ? "prepared" : "unavailable"}
+                    . {status.nativeSqlite.reason} File-only sources and
+                    analysis are independent.
+                  </p>
                   {status.readers.length === 0 && (
                     <p className="notice" role="status">
                       Source readers are not installed yet. Location checks do

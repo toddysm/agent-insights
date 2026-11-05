@@ -4,7 +4,7 @@
  * TestContext owns all resources; cancellation assertions observe actual child exit.
  */
 import assert from "node:assert/strict";
-import test, { type TestContext } from "node:test";
+import nodeTest, { type TestContext } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import {
   mkdtemp,
@@ -16,6 +16,7 @@ import {
   rename,
   stat,
   truncate,
+  chmod,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -43,12 +44,24 @@ import {
   MAX_SQLITE_ROWS,
   MAX_SQLITE_RESULT_BYTES,
   MAX_SQLITE_BINDING_BYTES,
+  SqliteFrames,
 } from "../src/runtime/sqlite-protocol.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { RuntimeError } from "../src/runtime/errors.js";
 import { readSetRequestSchema, statusSchema } from "../src/runtime/protocol.js";
 import { startRuntime } from "../src/runtime/server.js";
 import { syntheticProvider } from "./fixtures/analysis.js";
+import { testNativeHelper } from "./fixtures/native-helper.js";
+import { nativeUnavailable } from "../src/runtime/native-helper.js";
+
+/** Real native scenarios run only with an explicitly prepared candidate; unsupported/no-artifact ordinary hosts keep file-only tests. */
+const test = (name: string, run: (t: TestContext) => Promise<void>): void => {
+  void nodeTest(
+    name,
+    { skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT },
+    run,
+  );
+};
 
 /** Owned fixture resources, with source-reader cleanup ordered before writer/directory teardown. */
 interface Fixture {
@@ -75,7 +88,7 @@ async function fixture(t: TestContext, wal = false): Promise<Fixture> {
     try {
       for (const close of cleanup.reverse()) await close();
     } finally {
-      writer.close();
+      if (writer.isOpen) writer.close();
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -128,9 +141,8 @@ async function lockWriter(data: Fixture): Promise<void> {
     );
     child.once("message", (message) => {
       clearTimeout(timer);
-      message === "locked"
-        ? resolve()
-        : reject(new Error("Invalid writer reply"));
+      if (message === "locked") resolve();
+      else reject(new Error("Invalid writer reply"));
     });
     child.once("error", (error) => {
       clearTimeout(timer);
@@ -292,6 +304,7 @@ async function openSet(
     signal,
     await SourceAccess.create([data.root]),
     adapter,
+    testNativeHelper,
   );
   data.cleanup.push(() => set.dispose());
   await set.prepare(
@@ -604,6 +617,7 @@ test("optional missing database sources remain explicit unavailable inputs", asy
     30000,
     null,
     [adapter],
+    testNativeHelper,
   );
   data.cleanup.push(() => service.close());
   const result = await service.readSet(
@@ -637,6 +651,7 @@ test("multi-source reads preserve distinct source identities, timings and SQL wi
     30000,
     null,
     [adapter],
+    testNativeHelper,
   );
   data.cleanup.push(() => service.close());
   const selection = {
@@ -694,6 +709,7 @@ test("fabricated database row/field references and role mismatches are rejected"
     30000,
     null,
     [bad],
+    testNativeHelper,
   );
   data.cleanup.push(() => service.close());
   await assert.rejects(
@@ -776,7 +792,11 @@ test("the actual query result byte limit is enforced before row transport", asyn
     const lease = await (
       await SourceAccess.create([data.root])
     ).database("source-1", "source.db", new AbortController().signal);
-    const source = new SqliteSource(lease, new AbortController().signal);
+    const source = new SqliteSource(
+      lease,
+      new AbortController().signal,
+      testNativeHelper,
+    );
     try {
       await source.initialize(definition());
       const result = await source.query(
@@ -806,7 +826,7 @@ test("the actual query result byte limit is enforced before row transport", asyn
 
 test("cancellation and deadlines terminate the actual SQLite process while a writer holds its lock", async (t) => {
   const data = await fixture(t);
-  const originalFork = childProcess.fork;
+  const originalSpawn = childProcess.spawn;
   const children: ChildProcess[] = [];
   let started: (() => void) | undefined;
   const observed = new Promise<void>((resolve) => {
@@ -814,19 +834,18 @@ test("cancellation and deadlines terminate the actual SQLite process while a wri
   });
   const mock = t.mock.method(
     childProcess,
-    "fork",
-    (...args: Parameters<typeof childProcess.fork>) => {
-      const child = originalFork(...args);
+    "spawn",
+    (...args: Parameters<typeof childProcess.spawn>) => {
+      const child = originalSpawn(...args);
+      if (!Array.isArray(args[1]) || !args[1].includes("--parent-pid"))
+        return child;
       children.push(child);
-      child.on("message", (message) => {
-        if (
-          message &&
-          typeof message === "object" &&
-          "kind" in message &&
-          message.kind === "started"
-        )
-          started?.();
-      });
+      const frames = new SqliteFrames();
+      child.stdout?.on("data", (chunk: Buffer) =>
+        frames.push(chunk, (reply) => {
+          if (reply.kind === "started") started?.();
+        }),
+      );
       return child;
     },
   );
@@ -888,6 +907,7 @@ test("cancellation and deadlines terminate the actual SQLite process while a wri
     150,
     null,
     [reader()],
+    testNativeHelper,
   );
   data.cleanup.push(() => service.close());
   const deadlineStart = performance.now();
@@ -988,6 +1008,7 @@ test("cleanup failures block publication and further reads until retained owners
     30000,
     null,
     [adapter],
+    testNativeHelper,
   );
   data.cleanup.push(() => service.close());
   const selection = {
@@ -1064,6 +1085,7 @@ test("replacement reads await prior disposal and cannot publish across a cleanup
       30000,
       null,
       [adapter],
+      testNativeHelper,
     );
     data.cleanup.push(() => service.close());
     const selection = {
@@ -1080,6 +1102,7 @@ test("replacement reads await prior disposal and cannot publish across a cleanup
     const cleanupEntered = new Promise<void>((resolve) => {
       announceCleanup = resolve;
     });
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- The fault wrapper below invokes the original with its actual owning read set.
     const originalDispose = SourceReadSet.prototype.dispose;
     let disposals = 0;
     const mocked = t.mock.method(
@@ -1164,6 +1187,7 @@ test("composite cancellation rejects stale normalization and concurrent cleanup 
     30000,
     null,
     [adapter],
+    testNativeHelper,
   );
   data.cleanup.push(() => service.close());
   const pending = service.readSet(
@@ -1185,11 +1209,122 @@ test("composite cancellation rejects stale normalization and concurrent cleanup 
   assert.equal(service.selection, null);
 });
 
+test("missing native preparation is fatal even for an optional database role", async (t) => {
+  const data = await fixture(t);
+  const adapter = reader();
+  const optional = {
+    ...adapter,
+    inputs: adapter.inputs.map((input) => ({ ...input, optional: true })),
+  };
+  const set = new SourceReadSet(
+    "read-native-missing",
+    new AbortController().signal,
+    await SourceAccess.create([data.root]),
+    optional,
+    () => Promise.reject(nativeUnavailable()),
+  );
+  data.cleanup.push(() => set.dispose());
+  await assert.rejects(
+    set.prepare([
+      { key: "database", sourceId: "source-1", relativePath: "source.db" },
+    ]),
+    (error: unknown) =>
+      error instanceof RuntimeError &&
+      error.code === "NATIVE_GUARD_UNAVAILABLE",
+  );
+});
+
+test("an unreadable retained WAL is optional access unavailability, never malformed data or empty rows", async (t) => {
+  if (process.platform === "win32" || process.getuid?.() === 0) {
+    t.skip("Requires enforced POSIX file permissions");
+    return;
+  }
+  const data = await fixture(t, true);
+  const wal = path.join(data.root, "source.db-wal");
+  await chmod(wal, 0);
+  const adapter = reader();
+  const optional = {
+    ...adapter,
+    inputs: adapter.inputs.map((input) => ({ ...input, optional: true })),
+  };
+  const set = new SourceReadSet(
+    "read-unreadable-wal",
+    new AbortController().signal,
+    await SourceAccess.create([data.root]),
+    optional,
+    testNativeHelper,
+  );
+  try {
+    await set.prepare([
+      { key: "database", sourceId: "source-1", relativePath: "source.db" },
+    ]);
+    const source = set.get("database");
+    assert.equal(source.available, false);
+    if (!source || source.available) assert.fail();
+    assert.equal(source.code, "SOURCE_DENIED");
+  } finally {
+    await set.dispose();
+    await chmod(wal, 0o600);
+  }
+});
+
+test("producer shutdown after parent verification never recreates removed WAL/SHM", async (t) => {
+  const data = await fixture(t, true);
+  data.writer.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  const before = await stat(data.database);
+  const access = await SourceAccess.create([data.root]);
+  const lease = await access.database(
+    "source-1",
+    "source.db",
+    new AbortController().signal,
+  );
+  const verify = lease.verify.bind(lease);
+  lease.verify = async () => {
+    const changed = await verify();
+    data.writer.close();
+    return changed;
+  };
+  const owner = new SqliteSource(
+    lease,
+    new AbortController().signal,
+    testNativeHelper,
+  );
+  data.cleanup.push(async () => {
+    await owner.stop();
+    await lease.close();
+  });
+  await assert.rejects(
+    owner.initialize(definition()),
+    (error: unknown) => error instanceof RuntimeError,
+  );
+  const after = await stat(data.database);
+  assert.equal(after.ino, before.ino);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  for (const suffix of ["-wal", "-shm"])
+    await assert.rejects(
+      stat(data.database + suffix),
+      (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT",
+    );
+});
+
+test("rollback mode releases idle locks and exposes per-request observations", async (t) => {
+  const data = await fixture(t);
+  const set = await openSet(data);
+  const database = databaseInput(set);
+  assert.equal(database.snapshotScope, "request");
+  assert.equal((await database.query("all_rows", {})).length, 1);
+  data.writer.exec("INSERT INTO items VALUES ('row-2', 'second', 1)");
+  assert.equal((await database.query("all_rows", {})).length, 2);
+  assert.equal((await set.finish())[0]?.snapshotScope, "request");
+});
+
 test("the authenticated composite endpoint accepts only registered roles and never invokes analysis", async (t) => {
   const data = await fixture(t);
   let analysisCalls = 0;
   const runtime = await startRuntime(config(data.root), {
     multiSourceReaders: [reader()],
+    nativeHelper: testNativeHelper,
     analysisProvider: {
       ...syntheticProvider,
       async analyze() {
@@ -1208,6 +1343,7 @@ test("the authenticated composite endpoint accepts only registered roles and nev
     await (await fetch(runtime.origin + "/api/status", { headers })).json(),
   );
   assert.equal(status.multiSourceReaders[0]?.id, "fictional");
+  assert.equal(status.nativeSqlite.available, true);
   assert.doesNotMatch(
     JSON.stringify(status.multiSourceReaders),
     /queries|userVersions|primaryKey/,

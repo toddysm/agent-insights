@@ -117,38 +117,63 @@ virtual tables and generated-column tables are rejected. Adapters cannot issue
 writes, `ATTACH`, extension-loading commands or arbitrary SQL through this
 interface. No producer store constructor, migration or session restoration is used.
 
-Each database runs in a short-lived application reader process with SQLite
-read-only/query-only settings, extension loading disabled and temporary storage
-in memory. This is **not** a Copilot/model process and inherits no provider
-credentials or Node.js debugger/preload configuration. Cancellation/deadlines
+Each database runs in the separately prepared, verified **native SQLite helper**,
+with existing-only guarded file access, native locking, read-only/query-only
+settings, extension loading disabled and temporary storage in memory. Parent
+metadata checks alone do not enforce no-create behavior: ordinary read-only
+SQLite can recreate sidecars. There is no Node SQLite fallback.
+The parent validates the source-free handshake before sending a source grant,
+and independently validates frames, request IDs, original row keys, fingerprints
+and encoded byte costs. Raw native diagnostics are bounded and never displayed.
+This is **not** a Copilot/model process and inherits no provider credentials or
+Node.js debugger/preload configuration. Cancellation/deadlines
 terminate the owned process and await exit; cleanup failures remain explicit and
 block further reads until cleanup is retried. Refresh/cancel and shutdown also
 await source cleanup. Replacement reads wait for prior-generation disposal before
 acquiring sources; a delayed cleanup failure cannot leave a newer view published.
 The process-exit confirmation limit is five seconds.
 
-| Bound | Limit |
-| --- | --- |
-| Roles per composite read | 1–8 |
-| One database, including existing WAL/SHM/journal sidecars | 64 MiB total |
-| Combined captured file bytes plus encoded database results | 64 MiB |
-| Database rows across all queries in one read | 10,000 |
-| Encoded database result per query | 8 MiB |
-| Tagged parameter values per query | 8,192 bytes |
-| Queries per composite read, including empty results | 256 |
-| Overall read deadline / SQLite lock wait | 30 seconds / at most 1 second per lock wait |
+Status and the source panel expose `nativeSqlite` availability separately from
+source-reader registration and the model executor. No public release pins exist
+yet, so normal startup reports native SQLite unavailable pending
+[#39](https://github.com/toddysm/agent-insights/issues/39), even if a developer
+candidate was built locally. File-only reads and model availability are independent.
+Missing, unsupported or tampered native preparation is fatal for a database read,
+including an optional role; it never becomes a successful empty result.
+Neither startup nor reading builds, downloads, repairs or installs the helper.
+Preparation is an explicit separate operation described in the
+[native artifact contract](../native/sqlite-guard/ARTIFACTS.md).
+
+| Bound                                                      | Limit                  |
+| ---------------------------------------------------------- | ---------------------- |
+| Roles per composite read                                   | 1–8                    |
+| One database, including existing WAL/SHM/journal sidecars  | 64 MiB total           |
+| Combined captured file bytes plus encoded database results | 64 MiB                 |
+| Database rows across all queries in one read               | 10,000                 |
+| Encoded database results per query and per helper          | 8 MiB                  |
+| Tagged parameter values per query                          | 8,192 bytes            |
+| Queries per composite read, including empty results        | 256                    |
+| Overall read/helper lifetime / native operation            | 30 seconds / 5 seconds |
 
 Database result cost includes canonical tagged values and original key/table/
 fingerprint metadata; it is not a promise about total process memory or transport
 overhead. Limits reject one-over requests/results rather than truncating them.
-Each database has a consistent read transaction; independently updated files
-and databases **do not form a global atomic snapshot**. Status retains per-source
-observation intervals, admitted database versions and detected changes.
+Write-ahead logging (WAL) databases retain a connection-wide snapshot.
+Rollback-mode databases use bounded transactions per request and release locks
+while idle; successive queries may observe different commits. SQLite inputs and
+status observations expose `snapshotScope` as `connection` or `request`.
+Independently updated files and databases **do not form a global atomic snapshot**.
+Status retains per-source observation intervals, admitted versions and detected changes.
 Source-specific readers still own identity matching and accounting.
 
-Live write-ahead logging (WAL) databases require their existing WAL and
-shared-memory (SHM) sidecars. Missing sidecars, links/replacements or a nonempty
-rollback journal fail explicitly; the harness must finish recovery. The reader
+Live WAL databases require their existing WAL and shared-memory (SHM) sidecars.
+Missing sidecars and links/replacements fail explicitly. Any retained rollback
+journal, including an empty TRUNCATE/PERSIST journal, is reported as
+`SQLITE_JOURNAL_PRESENT`, not guessed to require recovery. An actual native
+recovery requirement has its separate `SQLITE_RECOVERY_REQUIRED` diagnosis.
+Access denial, I/O failure and lock contention are also distinct from malformed
+data. Optional ordinary source failures are unavailable inputs; guard, protocol
+and cleanup failures reject the entire read. The reader
 never changes journal mode, checkpoints, repairs, copies the database or uses
 `immutable=true` to bypass live coordination. Read-only SQLite may update
 **existing shared-memory coordination bytes**; it does not promise byte-for-byte

@@ -487,10 +487,10 @@ export class SourceAccess {
           "A live WAL database requires existing WAL and shared-memory sidecars; none will be created.",
           409,
         );
-      if (sidecars["-journal"] && BigInt(sidecars["-journal"].size) > 0n)
+      if (sidecars["-journal"])
         throw new RuntimeError(
-          "SQLITE_RECOVERY_REQUIRED",
-          "The harness must finish database recovery before a read-only read.",
+          "SQLITE_JOURNAL_PRESENT",
+          "A rollback journal is present. Retry after the producer removes it; retained-journal modes are unsupported.",
           409,
         );
       if (signal.aborted) throw cancelledRead(signal);
@@ -513,6 +513,12 @@ export class SourceAccess {
         for (const suffix of ["-wal", "-shm", "-journal"]) {
           const previous = sidecars[suffix];
           const current = await inspectSidecar(canonical + suffix);
+          if (suffix === "-journal" && current)
+            throw new RuntimeError(
+              "SQLITE_JOURNAL_PRESENT",
+              "A rollback journal appeared during the read.",
+              409,
+            );
           totalSize += BigInt(current?.size ?? 0);
           if (
             (previous === null) !== (current === null) ||

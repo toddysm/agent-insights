@@ -23,6 +23,7 @@ import { RuntimeError } from "./errors.js";
 import { readRequestSchema, readSetRequestSchema } from "./protocol.js";
 import { RuntimeService } from "./service.js";
 import { SourceAccess } from "./sources.js";
+import type { NativeHelperResolver } from "./sqlite.js";
 import { z } from "zod";
 import {
   analysisRequestSchema,
@@ -194,6 +195,7 @@ export async function startRuntime(
   options: {
     readers?: readonly EvidenceReader[];
     multiSourceReaders?: readonly MultiSourceReader[];
+    nativeHelper?: NativeHelperResolver;
     onDiagnostic?: (event: Diagnostic) => void;
     readTimeoutMs?: number;
     analysisProvider?: AnalysisProvider;
@@ -227,6 +229,7 @@ export async function startRuntime(
       options.analysisOperations,
     ),
     options.multiSourceReaders,
+    options.nativeHelper,
   );
   const token = randomBytes(32).toString("base64url");
   let origin = "";

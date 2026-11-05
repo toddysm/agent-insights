@@ -1,17 +1,24 @@
-/** Private database-process messages. Browser controls cannot supply SQL or these declarations. */
+/** Strict native-helper frames, exact cells and original projection witnesses. No browser/capture SQL is accepted. */
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
-  sqliteDefinitionSchema,
   sqliteKeySchema,
   type SqliteBindings,
+  type SqliteDefinition,
+  type SqliteRow,
   type SqliteValue,
 } from "../evidence/source-access.js";
+import { nativeHandshakeSchema } from "./native-helper.js";
+import { RuntimeError } from "./errors.js";
 
 export const MAX_SQLITE_ROWS = 10_000;
 export const MAX_SQLITE_RESULT_BYTES = 8 * 1024 * 1024;
 export const MAX_SQLITE_BINDING_BYTES = 8192;
+export const MAX_SQLITE_REQUEST_BYTES = 1024 * 1024;
+export const MAX_SQLITE_REPLY_BYTES = 24 * 1024 * 1024;
+export const SQLITE_OPERATION_MS = 5000;
 
-/** IPC retains exact integers/binary cells rather than coercing them into JSON numbers/text. */
+/** Integers retain signed-64-bit identity; these values never pass through an unsafe JavaScript integer. */
 export const sqliteValueSchema = z.union([
   z.string(),
   z.number().finite(),
@@ -20,7 +27,7 @@ export const sqliteValueSchema = z.union([
   z.null(),
 ]);
 
-/** Canonical tagged cells preserve integer/binary identity for byte accounting and fingerprints. */
+/** Canonical tagged cell shape used for compatibility fingerprints and result-byte accounting. */
 export function taggedSqliteValue(
   value: SqliteValue,
 ): readonly [string, string | number | null] {
@@ -30,15 +37,10 @@ export function taggedSqliteValue(
   return [value === null ? "null" : typeof value, value];
 }
 
-/**
- * Measure tagged parameter values without encoding an unbounded string/blob.
- * Returns an over-limit value as soon as the cap is crossed; callers must reject it.
- * The bounded count is independent of parameter order.
- */
+/** Count bounded binding bytes before copying/encoding; exceeding the cap is not truncated success. */
 export function sqliteBindingBytes(bindings: SqliteBindings): number {
   let bytes = 2;
-  let separator = 0;
-  for (const value of Object.values(bindings)) {
+  for (const [index, value] of Object.values(bindings).entries()) {
     if (
       (typeof value === "string" && value.length > MAX_SQLITE_BINDING_BYTES) ||
       (value instanceof Uint8Array &&
@@ -46,90 +48,279 @@ export function sqliteBindingBytes(bindings: SqliteBindings): number {
     )
       return MAX_SQLITE_BINDING_BYTES + 1;
     bytes +=
-      separator + Buffer.byteLength(JSON.stringify(taggedSqliteValue(value)));
+      Number(index > 0) +
+      Buffer.byteLength(JSON.stringify(taggedSqliteValue(value)));
     if (bytes > MAX_SQLITE_BINDING_BYTES) return bytes;
-    separator = 1;
   }
   return bytes;
 }
-const state = z.strictObject({
-  dev: z.string(),
-  ino: z.string(),
-  size: z.string(),
-  mtime: z.string(),
-  ctime: z.string(),
-});
-const id = z.number().int().positive();
 
-/** Validated internal requests; database files were already authorized/pinned by SourceAccess. */
-export const sqliteRequestSchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("open"),
-    id,
-    path: z.string(),
-    main: state,
-    sidecars: z.strictObject({
-      "-wal": state.nullable(),
-      "-shm": state.nullable(),
-      "-journal": state.nullable(),
+const integer = z
+  .string()
+  .max(20)
+  .regex(/^(0|-?[1-9][0-9]*)$/)
+  .pipe(
+    z.string().refine((value) => {
+      const parsed = BigInt(value);
+      return parsed >= -9223372036854775808n && parsed <= 9223372036854775807n;
     }),
-    definition: sqliteDefinitionSchema,
+  );
+const cellSchema = z.discriminatedUnion("type", [
+  z.strictObject({ type: z.literal("null") }),
+  z.strictObject({ type: z.literal("integer"), value: integer }),
+  z.strictObject({ type: z.literal("real"), value: z.number().finite() }),
+  z.strictObject({
+    type: z.literal("text"),
+    value: z.string().max(MAX_SQLITE_RESULT_BYTES),
   }),
   z.strictObject({
-    kind: z.literal("query"),
-    id,
-    queryId: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
-    bindings: z.record(z.string(), sqliteValueSchema),
-    maxRows: z.number().int().nonnegative().max(MAX_SQLITE_ROWS),
-    maxBytes: z.number().int().nonnegative().max(MAX_SQLITE_RESULT_BYTES),
+    type: z.literal("blob"),
+    value: z
+      .string()
+      .max(Math.ceil(MAX_SQLITE_RESULT_BYTES / 3) * 4)
+      .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)
+      .refine(
+        (value) => Buffer.from(value, "base64").toString("base64") === value,
+      ),
   }),
-  z.strictObject({ kind: z.literal("close"), id }),
 ]);
-/** Request sent only over the owned child's IPC channel. */
-export type SqliteRequest = z.infer<typeof sqliteRequestSchema>;
+/** Lossless tagged wire cell for the private helper channel. */
+type Cell = z.infer<typeof cellSchema>;
 
-/** Original row projection and evidence witness, with no executable behavior. */
-export const sqliteRowSchema = z.strictObject({
-  values: z.record(z.string(), sqliteValueSchema),
+/** Encode only already-validated values; bigint and binary never use JSON's lossy default conversion. */
+export function encodeCell(value: SqliteValue): Cell {
+  if (value === null) return { type: "null" };
+  if (typeof value === "bigint")
+    return { type: "integer", value: value.toString() };
+  if (typeof value === "number") return { type: "real", value };
+  if (typeof value === "string") return { type: "text", value };
+  return { type: "blob", value: Buffer.from(value).toString("base64") };
+}
+
+/** Decode a validated cell; no missing-data defaults or integer rounding. */
+function decodeCell(cell: Cell): SqliteValue {
+  switch (cell.type) {
+    case "null":
+      return null;
+    case "integer":
+      return BigInt(cell.value);
+    case "blob":
+      return new Uint8Array(Buffer.from(cell.value, "base64"));
+    default:
+      return cell.value;
+  }
+}
+
+const id = z.number().int().positive().max(0xffffffff);
+export const snapshotScopeSchema = z.enum(["connection", "request"]);
+const observation = z
+  .strictObject({
+    startedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    finishedAtMs: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+    changed: z.boolean(),
+    snapshotScope: snapshotScopeSchema,
+  })
+  .refine((value) => value.finishedAtMs >= value.startedAtMs);
+const row = z.strictObject({
+  values: z.record(z.string(), cellSchema),
   table: z.string(),
   key: sqliteKeySchema,
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
 });
-
-/** Child failures contain fixed codes only, never native SQLite errors or SQL/captured values. */
-export const sqliteErrorCodeSchema = z.enum([
-  "SQLITE_SCHEMA",
-  "SQLITE_QUERY",
-  "SQLITE_BINDINGS",
-  "SQLITE_LIMIT",
-  "SQLITE_DATA",
-  "SQLITE_LOCKED",
-  "SQLITE_CHANGED",
-  "SQLITE_FAILED",
+export const nativeSqliteCodeSchema = z.enum([
+  "PROTOCOL",
+  "CHANNEL_LOST",
+  "PARENT_LOST",
+  "DEADLINE",
+  "CANCELLED",
+  "GUARD_UNAVAILABLE",
+  "ENGINE_MISMATCH",
+  "POLICY_VIOLATION",
+  "CLEANUP",
+  "ACCESS_DENIED",
+  "SOURCE_UNAVAILABLE",
+  "SOURCE_CHANGED",
+  "IO",
+  "BUSY",
+  "RECOVERY_REQUIRED",
+  "JOURNAL_PRESENT",
+  "SCHEMA",
+  "QUERY",
+  "BINDINGS",
+  "LIMIT",
+  "DATA",
+  "CLOCK",
 ]);
-/** Controlled database failure vocabulary shared by both process ends. */
-export type SqliteErrorCode = z.infer<typeof sqliteErrorCodeSchema>;
-
-/** Replies are revalidated in the parent before any data reaches a reader. */
+/** All replies are revalidated before they can reach an evidence reader. */
 export const sqliteReplySchema = z.discriminatedUnion("kind", [
-  z.strictObject({
-    kind: z.literal("started"),
-    id,
-    operation: z.enum(["open", "query"]),
-  }),
+  nativeHandshakeSchema,
+  z.strictObject({ kind: z.literal("started"), id }),
   z.strictObject({
     kind: z.literal("opened"),
     id,
-    userVersion: z.number().int(),
+    userVersion: z.number().int().nonnegative().max(2147483647),
+    snapshotScope: snapshotScopeSchema,
   }),
   z.strictObject({
     kind: z.literal("rows"),
     id,
-    rows: z.array(sqliteRowSchema).max(MAX_SQLITE_ROWS),
-    bytes: z.number().int().nonnegative(),
+    rows: z.array(row).max(MAX_SQLITE_ROWS),
+    bytes: z.number().int().nonnegative().max(MAX_SQLITE_RESULT_BYTES),
+    observation,
   }),
-  z.strictObject({ kind: z.literal("closed"), id, changed: z.boolean() }),
-  z.strictObject({ kind: z.literal("error"), id, code: sqliteErrorCodeSchema }),
+  z.strictObject({ kind: z.literal("closed"), id, observation }),
+  z.strictObject({
+    kind: z.literal("error"),
+    id,
+    code: nativeSqliteCodeSchema,
+  }),
 ]);
-/** Validated reply, with exact integer cells kept inside the trusted reader boundary. */
 export type SqliteReply = z.infer<typeof sqliteReplySchema>;
+/** Closed helper error vocabulary; mappings never expose source-bearing native messages. */
+export type NativeSqliteCode = z.infer<typeof nativeSqliteCodeSchema>;
+
+/** Payload-free error for malformed, stale, oversized or inconsistent native output. */
+export function sqliteProtocolError(): RuntimeError {
+  return new RuntimeError(
+    "SQLITE_PROCESS_PROTOCOL",
+    "The native database helper returned an invalid response.",
+    502,
+  );
+}
+
+/** One prefix-validated frame buffer. Counts each byte once and rejects partial termination. */
+export class SqliteFrames {
+  private readonly prefix = Buffer.alloc(4);
+  private prefixUsed = 0;
+  private payload: Buffer | undefined;
+  private used = 0;
+
+  /** Feed owned pipe bytes; callbacks run only for whole valid UTF-8/JSON frames within the cap. */
+  push(chunk: Buffer, receive: (reply: SqliteReply) => void): void {
+    let offset = 0;
+    while (offset < chunk.length) {
+      if (!this.payload) {
+        const n = Math.min(4 - this.prefixUsed, chunk.length - offset);
+        chunk.copy(this.prefix, this.prefixUsed, offset, offset + n);
+        this.prefixUsed += n;
+        offset += n;
+        if (this.prefixUsed !== 4) return;
+        const length = this.prefix.readUInt32BE();
+        if (!length || length > MAX_SQLITE_REPLY_BYTES)
+          throw sqliteProtocolError();
+        this.payload = Buffer.alloc(length);
+        this.used = 0;
+      }
+      const n = Math.min(
+        this.payload.length - this.used,
+        chunk.length - offset,
+      );
+      chunk.copy(this.payload, this.used, offset, offset + n);
+      this.used += n;
+      offset += n;
+      if (this.used !== this.payload.length) return;
+      let raw: unknown;
+      try {
+        raw = JSON.parse(
+          new TextDecoder("utf-8", { fatal: true }).decode(this.payload),
+        );
+      } catch {
+        throw sqliteProtocolError();
+      }
+      const parsed = sqliteReplySchema.safeParse(raw);
+      if (!parsed.success) throw sqliteProtocolError();
+      this.payload = undefined;
+      this.prefixUsed = 0;
+      this.used = 0;
+      receive(parsed.data);
+    }
+  }
+
+  /** Require a frame boundary at normal exit; partial output never counts as a completed read. */
+  finish(): void {
+    if (this.prefixUsed || this.payload) throw sqliteProtocolError();
+  }
+}
+
+/** Bound encoded requests before handing bytes to the pipe; declarations and bindings already have structural caps. */
+export function sqliteRequestFrame(value: unknown): Buffer {
+  const bytes = Buffer.from(JSON.stringify(value));
+  if (!bytes.length || bytes.length > MAX_SQLITE_REQUEST_BYTES)
+    throw new RuntimeError(
+      "SQLITE_LIMIT",
+      "The native database request exceeded its frame limit.",
+      413,
+    );
+  const prefix = Buffer.alloc(4);
+  prefix.writeUInt32BE(bytes.length);
+  return Buffer.concat([prefix, bytes]);
+}
+
+/** Recompute declared projection, original typed key, fingerprint and exact cost rather than trusting a helper's accounting. */
+export function decodeRows(
+  reply: Extract<SqliteReply, { kind: "rows" }>,
+  definition: SqliteDefinition,
+  queryId: string,
+  maxRows: number,
+  maxBytes: number,
+): readonly SqliteRow[] {
+  const query = definition.queries.find((q) => q.id === queryId);
+  const table = definition.tables.find((t) => t.name === query?.table);
+  if (!query || !table || reply.rows.length > maxRows || reply.bytes > maxBytes)
+    throw sqliteProtocolError();
+  let bytes = 0;
+  const identities = new Set<string>();
+  const rows = reply.rows.map((row) => {
+    if (
+      row.table !== table.name ||
+      Object.keys(row.values).length !== query.columns.length ||
+      query.columns.some((name) => !Object.hasOwn(row.values, name))
+    )
+      throw sqliteProtocolError();
+    const values = Object.fromEntries(
+      Object.entries(row.values).map(([name, value]) => [
+        name,
+        decodeCell(value),
+      ]),
+    );
+    const key = table.primaryKey.map((column) => {
+      const value = values[column];
+      if (value === undefined || value === null || value instanceof Uint8Array)
+        throw sqliteProtocolError();
+      return {
+        column,
+        type:
+          typeof value === "bigint"
+            ? ("integer" as const)
+            : typeof value === "number"
+              ? ("real" as const)
+              : ("text" as const),
+        value: String(value),
+      };
+    });
+    const encodedKey = JSON.stringify(key);
+    if (encodedKey !== JSON.stringify(row.key) || identities.has(encodedKey))
+      throw sqliteProtocolError();
+    identities.add(encodedKey);
+    const encoded = JSON.stringify(
+      query.columns.map((column) => [
+        column,
+        taggedSqliteValue(values[column]!),
+      ]),
+    );
+    const fingerprint = createHash("sha256").update(encoded).digest("hex");
+    if (fingerprint !== row.fingerprint) throw sqliteProtocolError();
+    bytes +=
+      Buffer.byteLength(encoded) +
+      Buffer.byteLength(JSON.stringify({ table: row.table, key, fingerprint }));
+    if (bytes > maxBytes) throw sqliteProtocolError();
+    return Object.freeze({
+      values: Object.freeze(values),
+      table: row.table,
+      key: Object.freeze(key),
+      fingerprint,
+    });
+  });
+  if (bytes !== reply.bytes) throw sqliteProtocolError();
+  return Object.freeze(rows);
+}

@@ -32,6 +32,11 @@ export const locationSchema = z.strictObject({
  */
 export const statusSchema = z.strictObject({
   checkedAtMs: z.number(),
+  nativeSqlite: z.strictObject({
+    available: z.boolean(),
+    version: z.string().nullable(),
+    reason: z.string(),
+  }),
   sources: z.array(locationSchema),
   readers: z.array(sourceFormatSchema),
   multiSourceReaders: z.array(

@@ -30,6 +30,17 @@ const INPUTS = [
   "package.json",
   "package-lock.json",
   "tests/native-artifacts.test.ts",
+  "scripts/qualify-source-access.mjs",
+  "src/runtime/sqlite.ts",
+  "src/runtime/sqlite-protocol.ts",
+  "src/runtime/source-read.ts",
+  "src/runtime/sources.ts",
+  "src/runtime/service.ts",
+  "src/evidence/source-access.ts",
+  "tests/source-access.test.ts",
+  "tests/sqlite-transport.test.ts",
+  "tests/fixtures/native-helper.ts",
+  "tests/fixtures/native-transport-stub.mjs",
 ];
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const receiptSchema = z.strictObject({

@@ -31,6 +31,11 @@ import { SourceAccess, byteChunks } from "./sources.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
 import { SourceReadSet } from "./source-read.js";
 import {
+  defaultNativeHelper,
+  nativeSqliteAvailability,
+  type NativeHelperResolver,
+} from "./sqlite.js";
+import {
   sourceRequirementSchema,
   type MultiSourceReader,
   type SourceObservation,
@@ -187,6 +192,7 @@ export class RuntimeService {
     private readonly timeoutMs = 30_000,
     readonly analysis: AnalysisRunner | null = null,
     multiReaders: readonly MultiSourceReader[] = [],
+    private readonly nativeHelper: NativeHelperResolver = defaultNativeHelper,
   ) {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
       throw new Error("Read timeout must be a positive integer");
@@ -238,6 +244,7 @@ export class RuntimeService {
         : await this.analysis.availability();
     return {
       checkedAtMs: Date.now(),
+      nativeSqlite: await nativeSqliteAvailability(this.nativeHelper),
       sources,
       readers: [...this.readers.keys()],
       multiSourceReaders: [...this.multiReaders.values()].map((reader) => ({
@@ -403,7 +410,13 @@ export class RuntimeService {
       request,
       externalSignal,
       async (id, signal, ensureCurrent) => {
-        const set = new SourceReadSet(id, signal, this.sources, reader);
+        const set = new SourceReadSet(
+          id,
+          signal,
+          this.sources,
+          reader,
+          this.nativeHelper,
+        );
         this.readSets.add(set);
         try {
           await set.prepare(request.sources);
@@ -424,6 +437,7 @@ export class RuntimeService {
             this.readSets.delete(set);
           } catch {
             this.cleanupFailed = true;
+            // eslint-disable-next-line no-unsafe-finally -- Unconfirmed native cleanup must override success/failure and block new generations.
             throw new RuntimeError(
               "SOURCE_CLEANUP_FAILED",
               "Source cleanup failed; no further reads are admitted until cleanup succeeds.",

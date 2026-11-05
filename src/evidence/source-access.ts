@@ -78,7 +78,7 @@ const querySchema = z
 export const sqliteDefinitionSchema = z
   .strictObject({
     userVersions: z
-      .array(z.number().int().nonnegative())
+      .array(z.number().int().nonnegative().max(2147483647))
       .min(1)
       .max(32)
       .readonly(),
@@ -173,6 +173,7 @@ export const sourceObservationSchema = z
     changed: z.boolean(),
     available: z.boolean(),
     userVersion: z.number().int().nonnegative().optional(),
+    snapshotScope: z.enum(["connection", "request"]).optional(),
   })
   .refine((value) => value.finishedAtMs >= value.startedAtMs)
   .readonly();
@@ -199,8 +200,10 @@ export interface SqliteInput {
   readonly kind: "sqlite";
   readonly sourceId: string;
   readonly userVersion: number;
+  readonly snapshotScope: "connection" | "request";
   /**
-   * Run a named code-owned projection in this input's read transaction.
+   * Run a named code-owned projection. WAL retains a connection snapshot;
+   * rollback-mode calls each use a bounded transaction and can observe different commits.
    * @param queryId - Registered query name; not SQL.
    * @param bindings - Exact named parameters required by that query.
    * @returns Bounded original rows; rejects on invalid bindings, limits, cancellation or source/schema failure.
