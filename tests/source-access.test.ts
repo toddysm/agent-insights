@@ -1209,6 +1209,28 @@ test("composite cancellation rejects stale normalization and concurrent cleanup 
   assert.equal(service.selection, null);
 });
 
+test("multi-megabyte blobs within the result budget retain exact bytes and provenance", async (t) => {
+  const data = await fixture(t);
+  const payload = Buffer.alloc(4 * 1024 * 1024, 0xa5);
+  data.writer.prepare("UPDATE items SET payload=?").run(payload);
+  const set = await openSet(data);
+  const database = databaseInput(set);
+  const rows = await database.query("all_rows", {});
+  assert.equal(rows.length, 1);
+  const row = rows[0];
+  assert.ok(row);
+  assert.ok(row.values.payload instanceof Uint8Array);
+  assert.equal(row.values.payload.byteLength, payload.byteLength);
+  assert.equal(
+    createHash("sha256").update(row.values.payload).digest("hex"),
+    createHash("sha256").update(payload).digest("hex"),
+  );
+  const reference = sqliteReference(database.sourceId, row, "payload");
+  assert.equal(reference.location.kind, "sqlite");
+  assert.match(row.fingerprint, /^[a-f0-9]{64}$/);
+  await set.finish();
+});
+
 test("missing native preparation is fatal even for an optional database role", async (t) => {
   const data = await fixture(t);
   const adapter = reader();

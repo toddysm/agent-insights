@@ -78,9 +78,14 @@ const cellSchema = z.discriminatedUnion("type", [
     value: z
       .string()
       .max(Math.ceil(MAX_SQLITE_RESULT_BYTES / 3) * 4)
-      .regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/)
-      .refine(
-        (value) => Buffer.from(value, "base64").toString("base64") === value,
+      .pipe(
+        // Canonical round-tripping rejects alphabet/padding variants without regex stack growth.
+        z
+          .string()
+          .refine(
+            (value) =>
+              Buffer.from(value, "base64").toString("base64") === value,
+          ),
       ),
   }),
 ]);
