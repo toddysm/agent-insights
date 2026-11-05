@@ -112,7 +112,7 @@ export function nativeTarget(
   platform: string = process.platform,
   arch: string = process.arch,
   glibc?: string,
-): string {
+): NativeManifest["target"] {
   const key = `${platform}-${arch}`;
   if (!Object.hasOwn(NATIVE_TARGETS, key))
     throw nativeUnavailable("This platform has no qualified native helper.");
@@ -317,16 +317,16 @@ export async function inspectPreparedHelper(
     throw nativeUnavailable("Native helper architecture mismatch.");
   const parts = installedParts(pin);
   const manifest = await verifyArtifact(root, parts, pin);
-  const executable = await containedPath(root, [
-    ...parts,
-    manifest.binary.name,
-  ]);
   try {
+    const executable = await containedPath(root, [
+      ...parts,
+      manifest.binary.name,
+    ]);
     await access(executable, constants.X_OK);
+    return executable;
   } catch (error) {
     return artifactError(error);
   }
-  return executable;
 }
 
 /** Fixed production lookup; only future reviewed release pins can enable it, never candidate receipts or browser paths. */

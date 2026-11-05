@@ -22,6 +22,8 @@ const INPUTS = [
   "src/native",
   "src/runtime/native-helper.ts",
   "scripts/native-artifact-tools.mjs",
+  "scripts/native-build-context.mjs",
+  "tests/native-build-context.test.mjs",
   "scripts/package-native-helper.mjs",
   "scripts/prepare-native-helper.mjs",
   "scripts/qualify-native-helper.mjs",
@@ -134,43 +136,10 @@ export async function candidateReceipt() {
   return receipt;
 }
 
-/** Build environment deliberately excludes flags, alternate engines/compilers and loader injection from the caller. */
-export function buildEnvironment(targetDirectory) {
-  const env = {};
-  for (const name of [
-    "PATH",
-    "HOME",
-    "USERPROFILE",
-    "SystemRoot",
-    "WINDIR",
-    "TEMP",
-    "TMP",
-    "TMPDIR",
-    "CARGO_HOME",
-    "RUSTUP_HOME",
-    "HTTPS_PROXY",
-    "HTTP_PROXY",
-    "NO_PROXY",
-  ])
-    if (process.env[name] !== undefined) env[name] = process.env[name];
-  // MSVC discovery uses these values on the hosted Windows developer environment.
-  for (const name of [
-    "INCLUDE",
-    "LIB",
-    "LIBPATH",
-    "VCINSTALLDIR",
-    "VCToolsInstallDir",
-    "WindowsSdkDir",
-    "WindowsSDKVersion",
-  ])
-    if (process.env[name] !== undefined) env[name] = process.env[name];
-  return { ...env, CARGO_TARGET_DIR: targetDirectory, CARGO_INCREMENTAL: "0" };
-}
-
 /** Run a native qualification command to completion; any failure prevents creating a trusted receipt. */
-export function qualification(command, args, env = process.env) {
+export function qualification(command, args, env = process.env, cwd = ROOT) {
   const result = spawnSync(command, args, {
-    cwd: ROOT,
+    cwd,
     env,
     stdio: "inherit",
     timeout: 600_000,

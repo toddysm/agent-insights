@@ -49,6 +49,12 @@ Git, and a clean committed checkout. Build dependencies may be restored by Cargo
 only the explicit build command performs this work. It uses `--locked`,
 `--release`, `--no-default-features` and the actual host target in a dedicated
 target directory. Ambient compiler/engine/loader flags are not forwarded.
+Cargo runs from an isolated temporary working directory and configuration home,
+using the exact Rust 1.91.0 executables resolved by rustup. The hashed repository
+Cargo policy is supplied explicitly. Caller `HOME`/`CARGO_HOME` configuration,
+Rust flags and compiler wrappers are not inherited; unexpected ancestor Cargo
+configuration fails closed. Installed-byte qualification uses the same isolation
+and verifies that the parent-loss test actually exists before running it.
 
 From the repository root:
 

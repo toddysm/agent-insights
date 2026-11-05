@@ -9,6 +9,7 @@ name: Native guard and helper checks
       - "src/native/**"
       - "src/runtime/native-helper.ts"
       - "tests/native-artifacts.test.ts"
+      - "tests/native-build-context.test.mjs"
       - "package*.json"
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
@@ -21,6 +22,7 @@ name: Native guard and helper checks
       - "src/native/**"
       - "src/runtime/native-helper.ts"
       - "tests/native-artifacts.test.ts"
+      - "tests/native-build-context.test.mjs"
       - "package*.json"
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
@@ -92,6 +94,7 @@ jobs:
           cargo doc --locked --manifest-path native/sqlite-guard/Cargo.toml
           --no-deps --document-private-items
       - run: npm ci --ignore-scripts
+      - run: node --test tests/native-build-context.test.mjs
       - run: npm run test:native-artifacts
       - name: Package and qualify the exact native candidate
         run: npm run package:native

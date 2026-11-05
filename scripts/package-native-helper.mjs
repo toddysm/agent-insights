@@ -26,10 +26,10 @@ import {
   tool,
   sourceIdentity,
   candidateKey,
-  buildEnvironment,
   dependencyNotices,
   qualification,
 } from "./native-artifact-tools.mjs";
+import { nativeBuildContext } from "./native-build-context.mjs";
 
 assert.equal(
   process.argv.length,
@@ -56,15 +56,17 @@ await lstat(destination).then(
   },
 );
 let stage = await mkdtemp(path.join(parent, ".packaging-"));
+let context;
 try {
   const buildRoot = await ensureDirectories(ROOT, [
     ".build",
     "native-compile",
     key,
   ]);
-  const env = buildEnvironment(buildRoot);
-  const rustc = tool("rustc", ["--version", "--verbose"], { env });
-  const cargo = tool("cargo", ["--version"], { env });
+  context = await nativeBuildContext(ROOT, buildRoot);
+  const { env, cwd } = context;
+  const rustc = tool(context.rustc, ["--version", "--verbose"], { env, cwd });
+  const cargo = tool(context.cargo, ["--version"], { env, cwd });
   assert.ok(rustc.startsWith(`rustc ${NATIVE_POLICY.rustVersion} `));
   assert.ok(
     rustc.split(/\r?\n/).includes(`host: ${target}`),
@@ -72,8 +74,8 @@ try {
   );
   assert.ok(cargo.startsWith(`cargo ${NATIVE_POLICY.rustVersion} `));
   qualification(
-    "cargo",
-    [
+    context.cargo,
+    context.args([
       "build",
       "--locked",
       "--release",
@@ -81,11 +83,12 @@ try {
       "--target",
       target,
       "--manifest-path",
-      CRATE,
+      path.join(ROOT, CRATE),
       "--bin",
       "agent-insights-sqlite-helper",
-    ],
+    ]),
     env,
+    cwd,
   );
   const binaryName = executableName(target);
   const binary = await boundedFile(
@@ -110,8 +113,8 @@ try {
   await checkNativeHandshake(path.join(stage, binaryName), handshake);
   const metadata = JSON.parse(
     tool(
-      "cargo",
-      [
+      context.cargo,
+      context.args([
         "metadata",
         "--locked",
         "--format-version",
@@ -119,9 +122,9 @@ try {
         "--filter-platform",
         target,
         "--manifest-path",
-        CRATE,
-      ],
-      { env },
+        path.join(ROOT, CRATE),
+      ]),
+      { env, cwd },
     ),
   );
   const notices = Buffer.from(await dependencyNotices(metadata));
@@ -165,8 +168,8 @@ try {
     fixtureEnv,
   );
   qualification(
-    "cargo",
-    [
+    context.cargo,
+    context.args([
       "test",
       "--locked",
       "--release",
@@ -174,12 +177,13 @@ try {
       "--target",
       target,
       "--manifest-path",
-      CRATE,
+      path.join(ROOT, CRATE),
       "--test",
       "helper_protocol",
       "parent_loss_exits_while_native_work_and_the_control_channel_remain_open",
-    ],
+    ]),
     fixtureEnv,
+    cwd,
   );
   await verifyArtifact(ROOT, [".build", "native-candidates", target, key], pin);
   assert.deepEqual(
@@ -218,4 +222,5 @@ try {
   );
 } finally {
   if (stage !== undefined) await rm(stage, { recursive: true });
+  if (context !== undefined) await context.cleanup();
 }

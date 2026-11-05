@@ -14,6 +14,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import fsPromises from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import {
   NATIVE_POLICY,
   nativeManifestSchema,
@@ -38,14 +40,53 @@ function unavailable(error: unknown): boolean {
   );
 }
 
+/** Native preparation is optional on unsupported hosts; checksum/metadata tests still run with a fixed target. */
+function supportedTarget(): NativeManifest["target"] | undefined {
+  try {
+    return nativeTarget();
+  } catch (error) {
+    if (!unavailable(error)) throw error;
+    return undefined;
+  }
+}
+const host = supportedTarget();
+const nativeOnly = {
+  skip:
+    host === undefined
+      ? "No qualified native host; file-only verification tests still run."
+      : false,
+};
+
+/** Inject disappearance only at the second exact executable lookup, after its full package verification. */
+function failFinalLookup(t: TestContext, executable: string): void {
+  const original = fsPromises.realpath;
+  let seen = 0;
+  const replacement = t.mock.method(
+    fsPromises,
+    "realpath",
+    async (filename: Parameters<typeof fsPromises.realpath>[0]) => {
+      if (String(filename) === executable && ++seen === 2)
+        throw Object.assign(new Error("synthetic private artifact path"), {
+          code: "ENOENT",
+        });
+      return original(filename);
+    },
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    replacement.mock.restore();
+    syncBuiltinESMExports();
+  });
+}
+
 /** Create a bounded fictional package with an independent trust pin and automatic cleanup. */
 async function fixture(
   t: TestContext,
   binary: Buffer = Buffer.from("exit 1\n"),
+  selected: NativeManifest["target"] = "aarch64-apple-darwin",
 ) {
   const root = await mkdtemp(path.join(os.tmpdir(), "insights-artifact-"));
   t.after(() => rm(root, { recursive: true }));
-  const selected = nativeTarget();
   const parts = ["candidate"];
   const directory = path.join(root, ...parts);
   await mkdir(directory);
@@ -55,7 +96,7 @@ async function fixture(
   );
   const manifest: NativeManifest = {
     formatVersion: 1,
-    target: selected as NativeManifest["target"],
+    target: selected,
     sourceCommit: "a".repeat(40),
     sourceTree: "b".repeat(64),
     cargoLockSha256: "c".repeat(64),
@@ -74,7 +115,7 @@ async function fixture(
       protocolVersion: 1,
       guardVersion: "0.1.0",
       sqliteSourceId: NATIVE_POLICY.sqliteSourceId,
-      target: selected as NativeManifest["target"],
+      target: selected,
       qualificationHooks: false,
       maxRequestBytes: 1048576,
       maxReplyBytes: 25165824,
@@ -161,106 +202,132 @@ test("metadata reads enforce exact byte bounds before allocating or decoding", a
   );
 });
 
-test("linked candidate/install directories are rejected without touching their targets", async (t) => {
-  const f = await fixture(t);
-  const outside = path.join(f.root, "outside");
-  await mkdir(outside);
-  const linked = path.join(f.root, ".native-helper");
-  await symlink(
-    outside,
-    linked,
-    process.platform === "win32" ? "junction" : "dir",
-  );
-  await assert.rejects(prepareArtifact(f.root, f.parts, f.pin), unavailable);
-  assert.deepEqual(await readdir(outside), []);
-  await symlink(
-    f.directory,
-    path.join(f.root, "linked"),
-    process.platform === "win32" ? "junction" : "dir",
-  );
-  await assert.rejects(verifyArtifact(f.root, ["linked"], f.pin), unavailable);
-});
-
-test("cancelled or failed preparation never publishes a partial installation", async (t) => {
-  const f = await fixture(t);
-  const cancellation = new AbortController();
-  cancellation.abort(new Error("synthetic cancellation"));
-  await assert.rejects(
-    prepareArtifact(f.root, f.parts, f.pin, cancellation.signal),
-    /synthetic cancellation/,
-  );
-  await assert.rejects(prepareArtifact(f.root, f.parts, f.pin), unavailable);
-  const parent = path.join(f.root, ".native-helper", f.pin.target);
-  assert.deepEqual(await readdir(parent), []);
-});
-
-test("an interrupted staging directory is never selected as a prepared helper", async (t) => {
-  const f = await fixture(t);
-  const stage = path.join(
-    f.root,
-    ".native-helper",
-    f.pin.target,
-    ".preparing-interrupted",
-  );
-  await mkdir(stage, { recursive: true });
-  await writeFile(path.join(stage, "partial"), "fixture");
-  await assert.rejects(inspectPreparedHelper(f.root, f.pin), unavailable);
-  assert.equal(await readFile(path.join(stage, "partial"), "utf8"), "fixture");
-});
-
-test("cancellation during staging removes only that attempt's files", async (t) => {
-  const f = await fixture(t);
-  const controller = new AbortController();
-  const check = controller.signal.throwIfAborted.bind(controller.signal);
-  let checks = 0;
-  t.mock.method(controller.signal, "throwIfAborted", () => {
-    if (++checks === 3)
-      controller.abort(new Error("cancel during staged copy"));
-    check();
-  });
-  await assert.rejects(
-    prepareArtifact(f.root, f.parts, f.pin, controller.signal),
-    /cancel during staged copy/,
-  );
-  assert.equal(checks, 3);
-  assert.deepEqual(
-    await readdir(path.join(f.root, ".native-helper", f.pin.target)),
-    [],
-  );
-  assert.deepEqual(await verifyArtifact(f.root, f.parts, f.pin), f.manifest);
-});
-
-test("read-only installed verification has no network or executable side effects", async (t) => {
-  const f = await fixture(t);
-  const destination = path.join(f.root, ...installedParts(f.pin));
-  await mkdir(destination, { recursive: true });
-  for (const name of [
-    "manifest.json",
-    f.manifest.binary.name,
-    "THIRD-PARTY-NOTICES.txt",
-  ])
-    await writeFile(
-      path.join(destination, name),
-      await readFile(path.join(f.directory, name)),
+test(
+  "linked candidate/install directories are rejected without touching their targets",
+  nativeOnly,
+  async (t) => {
+    const f = await fixture(t, undefined, host);
+    const outside = path.join(f.root, "outside");
+    await mkdir(outside);
+    const linked = path.join(f.root, ".native-helper");
+    await symlink(
+      outside,
+      linked,
+      process.platform === "win32" ? "junction" : "dir",
     );
-  await chmod(path.join(destination, f.manifest.binary.name), 0o700);
-  t.mock.method(globalThis, "fetch", () => {
-    throw new Error("Network is forbidden");
-  });
-  const before = await readdir(destination);
-  // The fake binary would fail if launched; inspection is strictly checksumming metadata/files.
-  assert.equal(
-    await inspectPreparedHelper(f.root, f.pin),
-    path.join(await realpath(destination), f.manifest.binary.name),
-  );
-  assert.deepEqual(await readdir(destination), before);
-});
+    await assert.rejects(prepareArtifact(f.root, f.parts, f.pin), unavailable);
+    assert.deepEqual(await readdir(outside), []);
+    await symlink(
+      f.directory,
+      path.join(f.root, "linked"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await assert.rejects(
+      verifyArtifact(f.root, ["linked"], f.pin),
+      unavailable,
+    );
+  },
+);
+
+test(
+  "cancelled or failed preparation never publishes a partial installation",
+  nativeOnly,
+  async (t) => {
+    const f = await fixture(t, undefined, host);
+    const cancellation = new AbortController();
+    cancellation.abort(new Error("synthetic cancellation"));
+    await assert.rejects(
+      prepareArtifact(f.root, f.parts, f.pin, cancellation.signal),
+      /synthetic cancellation/,
+    );
+    await assert.rejects(prepareArtifact(f.root, f.parts, f.pin), unavailable);
+    const parent = path.join(f.root, ".native-helper", f.pin.target);
+    assert.deepEqual(await readdir(parent), []);
+  },
+);
+
+test(
+  "an interrupted staging directory is never selected as a prepared helper",
+  nativeOnly,
+  async (t) => {
+    const f = await fixture(t, undefined, host);
+    const stage = path.join(
+      f.root,
+      ".native-helper",
+      f.pin.target,
+      ".preparing-interrupted",
+    );
+    await mkdir(stage, { recursive: true });
+    await writeFile(path.join(stage, "partial"), "fixture");
+    await assert.rejects(inspectPreparedHelper(f.root, f.pin), unavailable);
+    assert.equal(
+      await readFile(path.join(stage, "partial"), "utf8"),
+      "fixture",
+    );
+  },
+);
+
+test(
+  "cancellation during staging removes only that attempt's files",
+  nativeOnly,
+  async (t) => {
+    const f = await fixture(t, undefined, host);
+    const controller = new AbortController();
+    const check = controller.signal.throwIfAborted.bind(controller.signal);
+    let checks = 0;
+    t.mock.method(controller.signal, "throwIfAborted", () => {
+      if (++checks === 3)
+        controller.abort(new Error("cancel during staged copy"));
+      check();
+    });
+    await assert.rejects(
+      prepareArtifact(f.root, f.parts, f.pin, controller.signal),
+      /cancel during staged copy/,
+    );
+    assert.equal(checks, 3);
+    assert.deepEqual(
+      await readdir(path.join(f.root, ".native-helper", f.pin.target)),
+      [],
+    );
+    assert.deepEqual(await verifyArtifact(f.root, f.parts, f.pin), f.manifest);
+  },
+);
+
+test(
+  "read-only installed verification has no network or executable side effects",
+  nativeOnly,
+  async (t) => {
+    const f = await fixture(t, undefined, host);
+    const destination = path.join(f.root, ...installedParts(f.pin));
+    await mkdir(destination, { recursive: true });
+    for (const name of [
+      "manifest.json",
+      f.manifest.binary.name,
+      "THIRD-PARTY-NOTICES.txt",
+    ])
+      await writeFile(
+        path.join(destination, name),
+        await readFile(path.join(f.directory, name)),
+      );
+    await chmod(path.join(destination, f.manifest.binary.name), 0o700);
+    t.mock.method(globalThis, "fetch", () => {
+      throw new Error("Network is forbidden");
+    });
+    const before = await readdir(destination);
+    // The fake binary would fail if launched; inspection is strictly checksumming metadata/files.
+    assert.equal(
+      await inspectPreparedHelper(f.root, f.pin),
+      path.join(await realpath(destination), f.manifest.binary.name),
+    );
+    assert.deepEqual(await readdir(destination), before);
+  },
+);
 
 test(
   "a prepared helper that loses execute permission is explicitly unavailable",
-  { skip: process.platform === "win32" },
+  { skip: host === undefined || process.platform === "win32" },
   async (t) => {
-    const f = await fixture(t);
+    const f = await fixture(t, undefined, host);
     const destination = path.join(f.root, ...installedParts(f.pin));
     await mkdir(destination, { recursive: true });
     for (const name of [
@@ -283,11 +350,52 @@ test("default runtime lookup stays explicitly unavailable with no published pin 
 });
 
 test(
-  "real packaged helper preparation is idempotent and tampering is not repaired silently",
-  { skip: !process.env.AGENT_INSIGHTS_TEST_HELPER },
+  "post-verification lookup races return only controlled unavailable errors",
+  nativeOnly,
+  async (t) => {
+    const f = await fixture(t, undefined, host);
+    const destination = path.join(
+      await realpath(f.root),
+      ...installedParts(f.pin),
+    );
+    await mkdir(destination, { recursive: true });
+    for (const name of [
+      "manifest.json",
+      f.manifest.binary.name,
+      "THIRD-PARTY-NOTICES.txt",
+    ])
+      await writeFile(
+        path.join(destination, name),
+        await readFile(path.join(f.directory, name)),
+      );
+    await chmod(path.join(destination, f.manifest.binary.name), 0o700);
+    failFinalLookup(t, path.join(destination, f.manifest.binary.name));
+    await assert.rejects(inspectPreparedHelper(f.root, f.pin), unavailable);
+  },
+);
+
+test(
+  "final preparation lookup rejection is normalized after atomic publication",
+  { skip: host === undefined || !process.env.AGENT_INSIGHTS_TEST_HELPER },
   async (t) => {
     const binary = await readFile(process.env.AGENT_INSIGHTS_TEST_HELPER!);
-    const f = await fixture(t, binary);
+    const f = await fixture(t, binary, host);
+    const executable = path.join(
+      await realpath(f.root),
+      ...installedParts(f.pin),
+      f.manifest.binary.name,
+    );
+    failFinalLookup(t, executable);
+    await assert.rejects(prepareArtifact(f.root, f.parts, f.pin), unavailable);
+  },
+);
+
+test(
+  "real packaged helper preparation is idempotent and tampering is not repaired silently",
+  { skip: host === undefined || !process.env.AGENT_INSIGHTS_TEST_HELPER },
+  async (t) => {
+    const binary = await readFile(process.env.AGENT_INSIGHTS_TEST_HELPER!);
+    const f = await fixture(t, binary, host);
     const installed = await prepareArtifact(f.root, f.parts, f.pin);
     assert.equal(await inspectPreparedHelper(f.root, f.pin), installed);
     assert.equal(await prepareArtifact(f.root, f.parts, f.pin), installed);

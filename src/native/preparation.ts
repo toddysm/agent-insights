@@ -67,23 +67,41 @@ export async function checkNativeHandshake(
   for (const name of ["SystemRoot", "WINDIR", "TEMP", "TMP"])
     if (process.env[name] !== undefined) env[name] = process.env[name];
   const output = await new Promise<Buffer>((resolve, reject) => {
-    execFile(
-      executable,
-      ["--check"],
-      {
-        env,
-        encoding: "buffer",
-        timeout: 10_000,
-        killSignal: "SIGKILL",
-        maxBuffer: 8192,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        if (error || stderr.length)
-          reject(nativeUnavailable("Native helper self-check failed."));
-        else resolve(stdout);
-      },
-    );
+    try {
+      execFile(
+        executable,
+        ["--check"],
+        {
+          env,
+          encoding: "buffer",
+          timeout: 10_000,
+          killSignal: "SIGKILL",
+          maxBuffer: 8192,
+          windowsHide: true,
+        },
+        (error, stdout, stderr) => {
+          if (error || stderr.length)
+            reject(nativeUnavailable("Native helper self-check failed."));
+          else resolve(stdout);
+        },
+      );
+    } catch (error) {
+      // libuv can throw synchronously for an invalid Windows image instead of invoking the callback.
+      if (
+        error instanceof Error &&
+        "syscall" in error &&
+        error.syscall === "spawn"
+      )
+        reject(
+          nativeUnavailable("Native helper executable could not be started."),
+        );
+      else
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Unexpected native helper launch failure."),
+        );
+    }
   });
   if (output.length < 4 || output.readUInt32BE(0) !== output.length - 4)
     throw nativeUnavailable("Native helper handshake frame is invalid.");
@@ -189,7 +207,7 @@ export async function prepareArtifact(
     stage = undefined;
     await verifyArtifact(root, finalParts, pin);
     signal?.throwIfAborted();
-    return containedPath(root, [...finalParts, manifest.binary.name]);
+    return await containedPath(root, [...finalParts, manifest.binary.name]);
   } catch (error) {
     if (stage !== undefined) await rm(stage, { recursive: true });
     return artifactError(error);
