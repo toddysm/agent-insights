@@ -16,6 +16,13 @@ use std::sync::{
 };
 
 mod io;
+
+/// Arm the test-only VFS failure after the guard has opened the synthetic source.
+#[cfg(test)]
+pub(crate) fn fail_next_read() {
+    io::fail_next_read();
+}
+
 static ENGINE: Mutex<()> = Mutex::new(());
 static STATE: Mutex<Option<State>> = Mutex::new(None);
 static BASE: AtomicPtr<ffi::sqlite3_vfs> = AtomicPtr::new(ptr::null_mut());
@@ -657,9 +664,9 @@ impl GuardedDatabase {
         Ok(started)
     }
 
-    /// End only the scope created by the caller; fixed internal SQL cannot be supplied over the wire.
+    /// End only a still-active scope created by the caller; SQLite may already have rolled it back on I/O failure.
     pub(crate) fn end_read_scope(&mut self, started: bool) -> Result<(), GuardError> {
-        if started {
+        if started && self.retained_snapshot() {
             self.exec(c"ROLLBACK")?;
         }
         Ok(())

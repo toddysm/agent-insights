@@ -548,6 +548,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn automatic_rollback_preserves_the_original_read_error() {
+        const CHILD: &str = "AGENT_INSIGHTS_AUTO_ROLLBACK_TEST";
+        if std::env::var_os(CHILD).is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "helper::query::tests::automatic_rollback_preserves_the_original_read_error",
+                    "--nocapture",
+                ])
+                .env(CHILD, "child")
+                .status()
+                .unwrap();
+            assert!(status.success(), "Automatic-rollback child must pass");
+            return;
+        }
+        assert_eq!(std::env::var(CHILD).unwrap(), "child");
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("source.db");
+        let filename = crate::platform::path_cstring(&path).unwrap();
+        let mut writer = std::ptr::null_mut();
+        // This isolated process creates only its temporary fixture and closes the producer before guard admission.
+        assert_eq!(
+            unsafe { libsqlite3_sys::sqlite3_open(filename.as_ptr(), &mut writer) },
+            libsqlite3_sys::SQLITE_OK
+        );
+        let created = unsafe {
+            libsqlite3_sys::sqlite3_exec(
+            writer,
+            c"CREATE TABLE items(id INTEGER PRIMARY KEY, payload BLOB); INSERT INTO items VALUES(1, zeroblob(16384))".as_ptr(),
+            None, std::ptr::null_mut(), std::ptr::null_mut(),
+        )
+        };
+        let closed = unsafe { libsqlite3_sys::sqlite3_close(writer) };
+        assert_eq!(created, libsqlite3_sys::SQLITE_OK);
+        assert_eq!(closed, libsqlite3_sys::SQLITE_OK);
+        let before = std::fs::read(&path).unwrap();
+        let source = ApprovedSource::capture(&path).unwrap();
+        // No other SQLite connections or callback consumers exist in this isolated child.
+        let mut database = unsafe { GuardedDatabase::open(source) }.unwrap();
+        assert!(!database.retained_snapshot());
+        let result = snapshot(&mut database, |db| {
+            assert!(db.retained_snapshot());
+            crate::policy::fail_next_read();
+            let result = db.scalar_i64(c"SELECT length(payload) FROM items WHERE id=1");
+            assert_eq!(result, Err(GuardError::Io));
+            assert!(
+                !db.retained_snapshot(),
+                "SQLite must have automatically rolled back after the injected read failure"
+            );
+            result.map_err(Failure::from)
+        });
+        assert_eq!(result, Err(Failure::Io));
+        database.close().unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
     fn binding_byte_limit_is_exact_and_values_remain_typed() {
         let mut values = BTreeMap::new();
         // ["string",""] plus the outer array consumes 15 bytes.
