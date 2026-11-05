@@ -67,11 +67,12 @@ No npm install lifecycle hook prepares or downloads a helper.
 Packaging writes:
 
 ```text
-.build/native-candidates/<target>/<source-input-sha256>/
+.build/native-candidates/<target>/<revision-and-input-sha256>/
   agent-insights-sqlite-helper[.exe]
   manifest.json
   THIRD-PARTY-NOTICES.txt
 .build/native-trust/<target>.json
+.build/native-trust/<target>-prepared.json
 ```
 
 The manifest records the Git revision, source-input digest, Cargo lockfile,
@@ -102,6 +103,7 @@ Package-provided filenames cannot select arbitrary locations.
 `npm run qualify:native` executes the process suite, parent-loss test and
 preparation lifecycle tests against the **installed bytes**, and verifies those
 bytes again. Temporary sources and artifact locations belong only to the tests.
+The separate prepared-qualification report is emitted only after these checks pass.
 No private captures or authenticated model calls are used.
 
 The native workflow repeats this on all four targets and retains candidates

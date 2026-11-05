@@ -1,5 +1,7 @@
 /** Re-verify prepared candidate bytes and execute the real process suite against the installed package, never a development fallback. */
 import assert from "node:assert/strict";
+import { writeFile, rename, rm } from "node:fs/promises";
+import path from "node:path";
 import {
   inspectPreparedHelper,
   verifyArtifact,
@@ -8,6 +10,7 @@ import {
 import {
   ROOT,
   candidateReceipt,
+  sourceIdentity,
   qualification,
   CRATE,
 } from "./native-artifact-tools.mjs";
@@ -43,6 +46,43 @@ qualification(
   env,
 );
 await verifyArtifact(ROOT, installedParts(receipt), receipt);
+assert.equal((await sourceIdentity()).sourceCommit, receipt.sourceCommit);
+const report = {
+  target: receipt.target,
+  manifestSha256: receipt.manifestSha256,
+  sourceCommit: receipt.sourceCommit,
+  installedQualification: {
+    passed: true,
+    processSuite: "protocol.mjs",
+    parentLoss: true,
+    preparationTests: true,
+    nodeVersion: process.version,
+    completedAt: new Date().toISOString(),
+  },
+};
+const temporary = path.join(
+  ROOT,
+  ".build",
+  "native-trust",
+  `${receipt.target}-prepared-${process.pid}.json`,
+);
+try {
+  await writeFile(temporary, JSON.stringify(report, null, 2) + "\n", {
+    flag: "wx",
+    mode: 0o600,
+  });
+  await rename(
+    temporary,
+    path.join(
+      ROOT,
+      ".build",
+      "native-trust",
+      `${receipt.target}-prepared.json`,
+    ),
+  );
+} finally {
+  await rm(temporary, { force: true });
+}
 console.log(
   `Prepared ${receipt.target} candidate passed native subprocess qualification; no publication performed.`,
 );

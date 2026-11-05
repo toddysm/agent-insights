@@ -7,6 +7,7 @@ import {
   writeFile,
   readFile,
   readdir,
+  realpath,
   rm,
   symlink,
   chmod,
@@ -205,6 +206,53 @@ test("an interrupted staging directory is never selected as a prepared helper", 
   await writeFile(path.join(stage, "partial"), "fixture");
   await assert.rejects(inspectPreparedHelper(f.root, f.pin), unavailable);
   assert.equal(await readFile(path.join(stage, "partial"), "utf8"), "fixture");
+});
+
+test("cancellation during staging removes only that attempt's files", async (t) => {
+  const f = await fixture(t);
+  const controller = new AbortController();
+  const check = controller.signal.throwIfAborted.bind(controller.signal);
+  let checks = 0;
+  t.mock.method(controller.signal, "throwIfAborted", () => {
+    if (++checks === 3)
+      controller.abort(new Error("cancel during staged copy"));
+    check();
+  });
+  await assert.rejects(
+    prepareArtifact(f.root, f.parts, f.pin, controller.signal),
+    /cancel during staged copy/,
+  );
+  assert.equal(checks, 3);
+  assert.deepEqual(
+    await readdir(path.join(f.root, ".native-helper", f.pin.target)),
+    [],
+  );
+  assert.deepEqual(await verifyArtifact(f.root, f.parts, f.pin), f.manifest);
+});
+
+test("read-only installed verification has no network or executable side effects", async (t) => {
+  const f = await fixture(t);
+  const destination = path.join(f.root, ...installedParts(f.pin));
+  await mkdir(destination, { recursive: true });
+  for (const name of [
+    "manifest.json",
+    f.manifest.binary.name,
+    "THIRD-PARTY-NOTICES.txt",
+  ])
+    await writeFile(
+      path.join(destination, name),
+      await readFile(path.join(f.directory, name)),
+    );
+  t.mock.method(globalThis, "fetch", () => {
+    throw new Error("Network is forbidden");
+  });
+  const before = await readdir(destination);
+  // The fake binary would fail if launched; inspection is strictly checksumming metadata/files.
+  assert.equal(
+    await inspectPreparedHelper(f.root, f.pin),
+    path.join(await realpath(destination), f.manifest.binary.name),
+  );
+  assert.deepEqual(await readdir(destination), before);
 });
 
 test("default runtime lookup stays explicitly unavailable with no published pin and has no preparation side effects", async () => {

@@ -27,6 +27,7 @@ const INPUTS = [
   "scripts/qualify-native-helper.mjs",
   "package.json",
   "package-lock.json",
+  "tests/native-artifacts.test.ts",
 ];
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const receiptSchema = z.strictObject({
@@ -97,6 +98,11 @@ export async function sourceIdentity() {
   };
 }
 
+/** Bind a candidate directory to both the source revision and its exact build inputs. */
+export function candidateKey(identity) {
+  return sha256(JSON.stringify(identity));
+}
+
 /** Load only the separately stored local-build receipt, matching all source identity fields before preparation/testing. */
 export async function candidateReceipt() {
   const selected = nativeTarget();
@@ -122,7 +128,7 @@ export async function candidateReceipt() {
       "Candidate no longer matches this clean source checkout",
     );
   assert.equal(receipt.target, selected);
-  assert.equal(receipt.candidate, identity.sourceTree);
+  assert.equal(receipt.candidate, candidateKey(identity));
   assert.equal(receipt.qualification.platform, process.platform);
   assert.equal(receipt.qualification.architecture, process.arch);
   return receipt;

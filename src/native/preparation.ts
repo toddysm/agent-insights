@@ -142,6 +142,7 @@ export async function prepareArtifact(
       ]);
       await checkNativeHandshake(executable, manifest.handshake);
       await verifyArtifact(root, finalParts, pin);
+      signal?.throwIfAborted();
       return executable;
     }
     stage = await mkdtemp(path.join(parent, ".preparing-"));
@@ -187,6 +188,7 @@ export async function prepareArtifact(
     }
     stage = undefined;
     await verifyArtifact(root, finalParts, pin);
+    signal?.throwIfAborted();
     return containedPath(root, [...finalParts, manifest.binary.name]);
   } catch (error) {
     if (stage !== undefined) await rm(stage, { recursive: true });

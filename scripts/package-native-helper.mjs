@@ -25,6 +25,7 @@ import {
   CRATE,
   tool,
   sourceIdentity,
+  candidateKey,
   buildEnvironment,
   dependencyNotices,
   qualification,
@@ -36,13 +37,14 @@ assert.equal(
   "This build accepts no arbitrary path, target or version arguments.",
 );
 const identity = await sourceIdentity();
+const key = candidateKey(identity);
 const target = nativeTarget();
 const parent = await ensureDirectories(ROOT, [
   ".build",
   "native-candidates",
   target,
 ]);
-const destination = path.join(parent, identity.sourceTree);
+const destination = path.join(parent, key);
 await lstat(destination).then(
   () => {
     throw new Error(
@@ -58,7 +60,7 @@ try {
   const buildRoot = await ensureDirectories(ROOT, [
     ".build",
     "native-compile",
-    identity.sourceTree,
+    key,
   ]);
   const env = buildEnvironment(buildRoot);
   const rustc = tool("rustc", ["--version", "--verbose"], { env });
@@ -179,11 +181,7 @@ try {
     ],
     fixtureEnv,
   );
-  await verifyArtifact(
-    ROOT,
-    [".build", "native-candidates", target, identity.sourceTree],
-    pin,
-  );
+  await verifyArtifact(ROOT, [".build", "native-candidates", target, key], pin);
   assert.deepEqual(
     await sourceIdentity(),
     identity,
@@ -193,7 +191,7 @@ try {
     formatVersion: 1,
     ...pin,
     ...identity,
-    candidate: identity.sourceTree,
+    candidate: key,
     qualification: {
       passed: true,
       processSuite: "protocol.mjs",
