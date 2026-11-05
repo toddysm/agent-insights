@@ -11,11 +11,13 @@ import {
   ROOT,
   candidateReceipt,
   sourceIdentity,
-  tool,
   qualification,
   CRATE,
 } from "./native-artifact-tools.mjs";
-import { nativeBuildContext } from "./native-build-context.mjs";
+import {
+  nativeBuildContext,
+  qualifyNativeTest,
+} from "./native-build-context.mjs";
 
 assert.equal(process.argv.length, 2);
 const receipt = await candidateReceipt();
@@ -38,34 +40,22 @@ const context = await nativeBuildContext(
   path.join(ROOT, ".build", "native-compile", receipt.candidate),
 );
 try {
-  const args = context.args([
-    "test",
-    "--locked",
-    "--release",
-    "--no-default-features",
-    "--target",
-    receipt.target,
-    "--manifest-path",
-    path.join(ROOT, CRATE),
-    "--test",
-    "helper_protocol",
+  qualifyNativeTest(
+    context,
+    [
+      "test",
+      "--locked",
+      "--release",
+      "--no-default-features",
+      "--target",
+      receipt.target,
+      "--manifest-path",
+      path.join(ROOT, CRATE),
+      "--test",
+      "helper_protocol",
+    ],
     "parent_loss_exits_while_native_work_and_the_control_channel_remain_open",
-  ]);
-  // Listing the exact test first prevents a successful zero-test run from issuing a parent-loss receipt.
-  const listed = tool(context.cargo, [...args, "--", "--list"], {
-    env: context.env,
-    cwd: context.cwd,
-  });
-  assert.ok(
-    listed.includes(
-      "parent_loss_exits_while_native_work_and_the_control_channel_remain_open: test",
-    ),
-  );
-  qualification(
-    context.cargo,
-    args,
     { ...context.env, AGENT_INSIGHTS_TEST_HELPER: executable },
-    context.cwd,
   );
 } finally {
   await context.cleanup();

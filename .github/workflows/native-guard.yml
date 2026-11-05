@@ -64,7 +64,8 @@ jobs:
         run: >
           rustup toolchain install 1.91.0 --profile minimal
           --component rustfmt --component clippy
-      # actions/setup-node v7.1.0; Node runs packaging and owned synthetic qualification.
+      # actions/setup-node v7.1.0
+      # Node runs packaging and owned synthetic qualification.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
         with:
           node-version: "24"
@@ -102,7 +103,8 @@ jobs:
         run: npm run prepare:native -- --candidate
       - name: Qualify the exact installed bytes and preparation lifecycle
         run: npm run qualify:native
-      # actions/upload-artifact v7.0.2; retained CI candidates are not a public release.
+      # actions/upload-artifact v7.0.2
+      # Retained CI candidates are not a public release.
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: native-candidate-${{ matrix.host }}-${{ github.sha }}

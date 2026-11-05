@@ -53,8 +53,11 @@ Cargo runs from an isolated temporary working directory and configuration home,
 using the exact Rust 1.91.0 executables resolved by rustup. The hashed repository
 Cargo policy is supplied explicitly. Caller `HOME`/`CARGO_HOME` configuration,
 Rust flags and compiler wrappers are not inherited; unexpected ancestor Cargo
-configuration fails closed. Installed-byte qualification uses the same isolation
-and verifies that the parent-loss test actually exists before running it.
+configuration fails closed. Installed-byte qualification uses the same isolation.
+Both packaged- and installed-byte qualification use the same required-test
+runner: it lists the exact parent-loss test before execution and requires one
+passed, zero failed and zero ignored tests. Missing, cfg-disabled or ignored
+tests cannot produce a passing receipt.
 
 From the repository root:
 

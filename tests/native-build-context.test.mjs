@@ -5,7 +5,10 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { nativeBuildContext } from "../scripts/native-build-context.mjs";
+import {
+  nativeBuildContext,
+  qualifyNativeTest,
+} from "../scripts/native-build-context.mjs";
 
 test("isolated Cargo ignores caller flags, wrappers and config files", async (t) => {
   const root = await mkdtemp(
@@ -34,6 +37,7 @@ test("isolated Cargo ignores caller flags, wrappers and config files", async (t)
     RUSTFLAGS: '--cfg feature="qualification-hooks"',
     RUSTC_WRAPPER: "missing-wrapper",
   });
+
   let context;
   try {
     context = await nativeBuildContext(root, path.join(root, "target"));
@@ -71,4 +75,55 @@ test("isolated Cargo ignores caller flags, wrappers and config files", async (t)
   });
   assert.match(output, /parent_loss_test_is_present \.\.\. ok/);
   assert.match(output, /1 passed; 0 failed/);
+});
+
+test("required native qualification rejects missing, cfg-disabled and ignored tests", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "insights-required-test-"));
+  t.after(() => rm(root, { recursive: true }));
+  await mkdir(path.join(root, ".cargo"));
+  await writeFile(path.join(root, ".cargo", "config.toml"), "");
+  const context = await nativeBuildContext(root, path.join(root, "target"));
+  t.after(() => context.cleanup());
+  await mkdir(path.join(root, "src"));
+  await writeFile(
+    path.join(root, "Cargo.toml"),
+    '[package]\nname="required-test-fixture"\nversion="0.0.0"\nedition="2024"\n',
+  );
+  await writeFile(
+    path.join(root, "src", "lib.rs"),
+    '#[test]\nfn required() {}\n#[test]\nfn required_suffix() { panic!("not the exact test"); }\n#[cfg(any())]\n#[test]\nfn disabled() {}\n#[test]\n#[ignore]\nfn ignored() {}\n',
+  );
+  const args = [
+    "test",
+    "--offline",
+    "--manifest-path",
+    path.join(root, "Cargo.toml"),
+    "--lib",
+  ];
+  // Cargo itself reports success when a name filter selects no tests.
+  const zero = execFileSync(
+    context.cargo,
+    context.args([...args, "renamed", "--", "--exact"]),
+    {
+      cwd: context.cwd,
+      env: context.env,
+      encoding: "utf8",
+      timeout: 120_000,
+    },
+  );
+  assert.match(zero, /test result: ok\. 0 passed/);
+  for (const name of ["renamed", "disabled", "require"])
+    assert.throws(
+      () => qualifyNativeTest(context, args, name),
+      /Required native test is missing/,
+    );
+  assert.throws(
+    () => qualifyNativeTest(context, args, "ignored"),
+    /Required native test did not execute successfully/,
+  );
+  assert.throws(
+    () => qualifyNativeTest(context, args, "required_suffix"),
+    /Command failed/,
+  );
+  qualifyNativeTest(context, args, "required");
 });

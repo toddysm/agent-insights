@@ -5,6 +5,38 @@ import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+/**
+ * Run one required native test only after listing its exact name in the same isolated context.
+ * A missing, cfg-disabled, ignored or failing test must not certify package/installation qualification.
+ * @param {object} context - Isolated Cargo executable, argument policy and working directory.
+ * @param {string[]} args - Code-owned Cargo test arguments selecting the test binary, without a name filter.
+ * @param {string} testName - Exact code-owned Rust test name.
+ * @param {NodeJS.ProcessEnv} env - The same sanitized environment for listing and execution.
+ */
+export function qualifyNativeTest(context, args, testName, env = context.env) {
+  const testArgs = context.args([...args, testName, "--", "--exact"]);
+  const options = {
+    cwd: context.cwd,
+    env,
+    encoding: "utf8",
+    timeout: 600_000,
+    maxBuffer: 8 * 1024 * 1024,
+    windowsHide: true,
+  };
+  const listed = execFileSync(context.cargo, [...testArgs, "--list"], options);
+  assert.ok(
+    listed.split(/\r?\n/).includes(`${testName}: test`),
+    `Required native test is missing: ${testName}`,
+  );
+  const output = execFileSync(context.cargo, testArgs, options);
+  assert.match(
+    output,
+    /^test result: ok\. 1 passed; 0 failed; 0 ignored;/m,
+    `Required native test did not execute successfully: ${testName}`,
+  );
+  process.stdout.write(output);
+}
+
 /** Create a dedicated Cargo home/cwd; only the repository's recorded config is admitted.
  * The returned cleanup removes only the directory created by this call, after all builds/notices are complete.
  */

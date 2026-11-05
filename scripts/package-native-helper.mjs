@@ -29,7 +29,10 @@ import {
   dependencyNotices,
   qualification,
 } from "./native-artifact-tools.mjs";
-import { nativeBuildContext } from "./native-build-context.mjs";
+import {
+  nativeBuildContext,
+  qualifyNativeTest,
+} from "./native-build-context.mjs";
 
 assert.equal(
   process.argv.length,
@@ -167,9 +170,9 @@ try {
     ["--test", "native/sqlite-guard/tests/fixtures/protocol.mjs"],
     fixtureEnv,
   );
-  qualification(
-    context.cargo,
-    context.args([
+  qualifyNativeTest(
+    context,
+    [
       "test",
       "--locked",
       "--release",
@@ -180,10 +183,9 @@ try {
       path.join(ROOT, CRATE),
       "--test",
       "helper_protocol",
-      "parent_loss_exits_while_native_work_and_the_control_channel_remain_open",
-    ]),
+    ],
+    "parent_loss_exits_while_native_work_and_the_control_channel_remain_open",
     fixtureEnv,
-    cwd,
   );
   await verifyArtifact(ROOT, [".build", "native-candidates", target, key], pin);
   assert.deepEqual(
