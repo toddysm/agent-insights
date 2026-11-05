@@ -9,6 +9,7 @@
  * the text and directory operations required by the provider: no host filesystem
  * access, binary-file support, permission modes or SQLite storage is provided.
  */
+/* eslint-disable @typescript-eslint/require-await -- SDK methods must reject asynchronously while in-memory mutations stay atomic, without artificial yields. */
 import path from "node:path";
 import type { SessionFsFileInfo, SessionFsProvider } from "@github/copilot-sdk";
 

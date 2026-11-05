@@ -145,7 +145,7 @@ interface OwnedCopilot {
 /**
  * Await an SDK operation without waiting indefinitely for it after cancellation.
  * @param operation - Lazy asynchronous call; it is not invoked if the signal is already aborted.
- * @param signal - Run-owned cancellation signal whose reason rejects this wait.
+ * @param signal - Run-owned cancellation signal; in-flight non-Error reasons become a fixed cancellation error.
  * @returns The operation's value or rejection, unless cancellation wins first.
  *
  * This helper observes late settlement to avoid unhandled rejections, but does not
@@ -159,7 +159,12 @@ async function waitForCopilot<T>(
   const pending = operation();
   return new Promise<T>((resolve, reject) => {
     /** Reject only this wait; the provider independently owns process termination. */
-    const abort = () => reject(signal.reason);
+    const abort = () =>
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new Error("Copilot operation cancelled."),
+      );
     signal.addEventListener("abort", abort, { once: true });
     if (signal.aborted) abort();
     void pending.then(
@@ -169,7 +174,11 @@ async function waitForCopilot<T>(
       },
       (error: unknown) => {
         signal.removeEventListener("abort", abort);
-        reject(error);
+        reject(
+          error instanceof Error
+            ? error
+            : new Error("Copilot operation failed."),
+        );
       },
     );
   });
@@ -686,15 +695,17 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       throw error;
     }
     this.owned = { client, memory, directory, stopped: false };
-    let stopFailure: unknown;
-    let abortedStop: Promise<void> | null = null;
+    const stop: { pending: Promise<void>; failure?: Error } = {
+      pending: Promise.resolve(),
+    };
     /**
      * Start owned cleanup when the run signal aborts. Errors are retained for the
      * awaited finalizer; firing this callback alone is not confirmation of process exit.
      */
     const abort = () => {
-      abortedStop = this.cleanupOwned().catch((error: unknown) => {
-        stopFailure = error;
+      stop.pending = this.cleanupOwned().catch((error: unknown) => {
+        stop.failure =
+          error instanceof Error ? error : new Error("Copilot cleanup failed.");
       });
     };
     callbacks.signal.addEventListener("abort", abort, { once: true });
@@ -850,8 +861,9 @@ export class CopilotAnalysisProvider implements AnalysisProvider {
       );
     } finally {
       callbacks.signal.removeEventListener("abort", abort);
-      await abortedStop;
-      if (stopFailure !== undefined) throw stopFailure;
+      await stop.pending;
+      // eslint-disable-next-line no-unsafe-finally -- Unconfirmed cleanup must override success/cancellation and retain ownership.
+      if (stop.failure !== undefined) throw stop.failure;
       await this.cleanupOwned();
     }
   }

@@ -29,6 +29,7 @@ export interface CapturedSource {
  * Borrow a bounded capture in at most 64 KiB views, rejecting cancellation before each yield.
  * Readers must not mutate/persist these views; they are not live filesystem handles.
  */
+// eslint-disable-next-line @typescript-eslint/require-await -- Borrowed in-memory bytes retain the reader's asynchronous iteration contract.
 export async function* byteChunks(
   bytes: Uint8Array,
   signal: AbortSignal,
