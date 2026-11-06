@@ -64,6 +64,39 @@ export const referenceSchema = z
   })
   .readonly();
 
+/**
+ * Source-wide operation observations, not session metrics or capture completeness.
+ * Execution and unclassified span counts deduplicate valid native identities; conflicting
+ * identities have their own excluded bucket. Non-execution counts are physical records.
+ */
+export const classificationSchema = z
+  .strictObject({
+    executions: z
+      .strictObject({
+        modelCalls: tokens,
+        toolCalls: tokens,
+        agentSpans: tokens,
+        hookExecutions: tokens,
+      })
+      .readonly(),
+    unclassifiedSpans: z
+      .strictObject({
+        missingOperation: tokens,
+        malformedOperation: tokens,
+        unsupportedOperation: tokens,
+      })
+      .readonly(),
+    conflictingSpans: tokens,
+    nonExecutionRecords: z
+      .strictObject({
+        metrics: tokens,
+        logs: tokens,
+        contentEvents: tokens,
+      })
+      .readonly(),
+  })
+  .readonly();
+
 /** Source metadata contains reported identity, never an identity inferred from a filesystem path. */
 export const sourceSchema = z
   .strictObject({
@@ -77,6 +110,7 @@ export const sourceSchema = z
       })
       .readonly(),
     changedDuringRead: z.boolean().nullable(),
+    classification: classificationSchema.optional(),
     coverage: z
       .strictObject({
         messages: coverageSchema,
@@ -154,7 +188,7 @@ export const eventSchema = z.discriminatedUnion("kind", [
   z
     .strictObject({
       ...eventFields,
-      kind: z.enum(["model-call", "tool-call", "agent-span"]),
+      kind: z.enum(["model-call", "tool-call", "agent-span", "hook-execution"]),
       name: id.nullable(),
       startedAtMs: milliseconds.nullable(),
       endedAtMs: milliseconds.nullable(),
@@ -175,6 +209,16 @@ export const eventSchema = z.discriminatedUnion("kind", [
         .optional(),
       model: z
         .strictObject({ requested: id.nullable(), responded: id.nullable() })
+        .readonly()
+        .optional(),
+      /** Captured hook metadata/content, never a command to execute or a replacement for span status. */
+      hook: z
+        .strictObject({
+          type: id.nullable(),
+          resultKind: id.nullable(),
+          input: z.string().nullable(),
+          output: z.string().nullable(),
+        })
         .readonly()
         .optional(),
       content: executionContentSchema.optional(),
@@ -229,6 +273,9 @@ export const readViewSchema = z
               "unknown-record",
             ]),
             message: id,
+            /** Optional structured diagnostics; earlier readers may supply only a message. */
+            count: tokens.positive().optional(),
+            references: z.array(referenceSchema).min(1).readonly().optional(),
           })
           .readonly(),
       )
@@ -308,6 +355,17 @@ export const readViewSchema = z
         context.addIssue({
           code: "custom",
           message: "Issue references an absent source",
+        });
+      }
+      if (
+        issue.references?.some(
+          (ref) =>
+            ref.sourceId !== issue.sourceId || !sourceIds.has(ref.sourceId),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          message: "Issue references an absent or unrelated source",
         });
       }
     }

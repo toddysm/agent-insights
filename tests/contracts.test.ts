@@ -264,6 +264,80 @@ test("metric units, missing values, contribution scope and stale reads are enfor
   );
 });
 
+test("classification and diagnostic extensions preserve older views and reject invalid counts or anchors", () => {
+  const base = exampleReadView();
+  assert.equal(parseReadView(base).sources[0]?.classification, undefined);
+  const call = base.events[1];
+  assert.ok(call?.kind === "model-call");
+  const classification = {
+    executions: {
+      modelCalls: 0,
+      toolCalls: 0,
+      agentSpans: 0,
+      hookExecutions: 1,
+    },
+    unclassifiedSpans: {
+      missingOperation: 1,
+      malformedOperation: 0,
+      unsupportedOperation: 0,
+    },
+    conflictingSpans: 0,
+    nonExecutionRecords: { metrics: 0, logs: 0, contentEvents: 0 },
+  };
+  const issue = {
+    ...base.issues[0],
+    count: 1,
+    references: call.references,
+  };
+  const extended = {
+    ...base,
+    sources: base.sources.map((source) => ({ ...source, classification })),
+    events: [
+      {
+        ...call,
+        kind: "hook-execution",
+        operation: "execute_hook",
+        hook: { type: "Stop", resultKind: "success", input: "", output: null },
+      },
+    ],
+    issues: [issue],
+  };
+  const view = parseReadView(extended);
+  assert.equal(view.events[0]?.kind, "hook-execution");
+  assert.ok(Object.isFrozen(view.sources[0]?.classification?.executions));
+  assert.ok(Object.isFrozen(view.issues[0]?.references));
+  for (const count of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() =>
+      parseReadView({
+        ...extended,
+        sources: base.sources.map((source) => ({
+          ...source,
+          classification: {
+            ...classification,
+            executions: { ...classification.executions, hookExecutions: count },
+          },
+        })),
+      }),
+    );
+  assert.throws(() =>
+    parseReadView({ ...extended, issues: [{ ...issue, count: 0 }] }),
+  );
+  assert.throws(() =>
+    parseReadView({
+      ...extended,
+      issues: [
+        {
+          ...issue,
+          references: call.references.map((ref) => ({
+            ...ref,
+            sourceId: "absent",
+          })),
+        },
+      ],
+    }),
+  );
+});
+
 test("reader extension point rejects missing/ambiguous registration and accepts a controlled adapter", async () => {
   const reader: EvidenceReader = {
     format: "vscode-otel-jsonl",

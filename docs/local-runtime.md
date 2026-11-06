@@ -81,6 +81,14 @@ truncation. There are no filesystem watchers.
 3. Select `vscode-otel-jsonl` and choose **Read source**.
 4. Inspect the observed session/record counts, **Read coverage** and expandable
    **Read limitations**. Reading does not invoke a model.
+   **Operation classification** separates model calls (chat/embeddings), tool
+   calls, agent executions and hook executions. Missing/empty, malformed and
+   unsupported operations remain visible as unclassified spans, outside execution
+   counts. For nine hooks and two missing-operation spans, expect **Hook
+   executions: 9** and **Unclassified spans (operation missing): 2**.
+   These are source-wide observations, not selected-session metrics or proof of
+   complete capture. Conflicting spans and non-execution metric/log/content-event
+   records have separate counts. Captured hook content is never executed.
 
 The reader targets the extension file exporter inspected in VS Code 1.144.0;
 it is not an Agent Debug Log export, OpenTelemetry Protocol wire export, saved
@@ -91,7 +99,8 @@ fresh-capture smoke test found two session groups and 32 records with limitation
 a separately authorized bounded structural inspection identified empty optional
 tool IDs, hook/unknown operations and missing or parent-only session linkage.
 This is partial compatibility evidence, not a fully qualified producer/runtime.
-The fixes are tracked in [#46](https://github.com/toddysm/agent-insights/issues/46),
+Hook/operation classification is implemented by this refinement; optional tool
+IDs, parent-chat relationships and scoped coverage remain tracked in
 [#47](https://github.com/toddysm/agent-insights/issues/47),
 [#48](https://github.com/toddysm/agent-insights/issues/48) and
 [#49](https://github.com/toddysm/agent-insights/issues/49).

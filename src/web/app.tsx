@@ -98,6 +98,58 @@ async function request<T>(
 }
 
 /**
+ * Display source-wide operation observations, separately from coverage and session metrics.
+ * Unclassified/conflicting spans are excluded from execution counts; no usage or
+ * elapsed-time arithmetic is performed here. Older readers can omit this summary.
+ */
+function SourceClassification({
+  classification,
+}: {
+  classification: NonNullable<ReadView["sources"][number]["classification"]>;
+}): ReactElement {
+  const entries = [
+    ["Model calls", classification.executions.modelCalls],
+    ["Tool calls", classification.executions.toolCalls],
+    ["Agent executions", classification.executions.agentSpans],
+    ["Hook executions", classification.executions.hookExecutions],
+    [
+      "Unclassified spans (operation missing)",
+      classification.unclassifiedSpans.missingOperation,
+    ],
+    [
+      "Unclassified spans (operation malformed)",
+      classification.unclassifiedSpans.malformedOperation,
+    ],
+    [
+      "Unclassified spans (unsupported operation)",
+      classification.unclassifiedSpans.unsupportedOperation,
+    ],
+    ["Conflicting spans (excluded)", classification.conflictingSpans],
+    ["Metric records", classification.nonExecutionRecords.metrics],
+    ["Log records", classification.nonExecutionRecords.logs],
+    ["Content-event records", classification.nonExecutionRecords.contentEvents],
+  ] as const;
+  return (
+    <div role="group" aria-label="Operation classification">
+      <h4>Operation classification</h4>
+      <p>
+        Counts describe this source, not a selected session or complete capture.
+        Hook executions are separate from model and tool calls. Unclassified and
+        conflicting spans are excluded from execution counts.
+      </p>
+      <dl>
+        {entries.map(([label, value]) => (
+          <div key={label}>
+            <dt>{label}</dt>
+            <dd>{value}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
+}
+
+/**
  * Own the displayed read, selection, acknowledgement and current-run controls.
  * It never infers metrics or changes captured evidence. Lost start responses are
  * reconciled through status instead of resubmitting work; terminal data is shown
@@ -632,9 +684,11 @@ function App(): ReactElement {
                     history.
                   </p>
                   {view.sources.map((source) => (
-                    <dl key={source.id}>
-                      {(["messages", "timing", "tools", "tokens"] as const).map(
-                        (dimension) => {
+                    <div key={source.id}>
+                      <dl>
+                        {(
+                          ["messages", "timing", "tools", "tokens"] as const
+                        ).map((dimension) => {
                           const coverage = source.coverage[dimension];
                           return (
                             <div key={dimension}>
@@ -649,9 +703,14 @@ function App(): ReactElement {
                               </dd>
                             </div>
                           );
-                        },
+                        })}
+                      </dl>
+                      {source.classification && (
+                        <SourceClassification
+                          classification={source.classification}
+                        />
                       )}
-                    </dl>
+                    </div>
                   ))}
                   {view.issues.length > 0 && (
                     <details>

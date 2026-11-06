@@ -97,6 +97,114 @@ test("only the selected session reaches the provider and usage stays separate", 
   assert.equal(runner.run?.usage.input, 7);
 });
 
+test("analysis carries hook events and source-wide classification limitations without coercion", async () => {
+  const base = exampleReadView();
+  const call = base.events[1];
+  assert.ok(call?.kind === "model-call");
+  const hook = {
+    ...call,
+    id: "hook-fixture",
+    kind: "hook-execution",
+    operation: "execute_hook",
+    name: "PreToolUse",
+    usage: { basis: "unknown", input: 20, output: null, components: [] },
+    hook: {
+      type: "PreToolUse",
+      resultKind: "success",
+      input: '{"command":"DO_NOT_EXECUTE"}',
+      output: "Fictional result",
+    },
+  };
+  const view = parseReadView({
+    ...base,
+    sources: base.sources.map((source) => ({
+      ...source,
+      classification: {
+        executions: {
+          modelCalls: 0,
+          toolCalls: 0,
+          agentSpans: 0,
+          hookExecutions: 1,
+        },
+        unclassifiedSpans: {
+          missingOperation: 1,
+          malformedOperation: 0,
+          unsupportedOperation: 0,
+        },
+        conflictingSpans: 0,
+        nonExecutionRecords: { metrics: 0, logs: 0, contentEvents: 0 },
+      },
+    })),
+    events: [hook],
+    issues: [
+      {
+        sourceId: "source-fixture",
+        code: "missing-field",
+        message: "Execution operation metadata is missing; span unclassified",
+        count: 1,
+        references: [
+          {
+            sourceId: "source-fixture",
+            recordId: "unknown-span",
+            location: { kind: "jsonl", line: 3, pointer: "" },
+          },
+        ],
+      },
+    ],
+  });
+  let calls = 0;
+  const runner = new AnalysisRunner(
+    {
+      ...syntheticProvider,
+      async analyze(input, callbacks) {
+        calls++;
+        const payload: unknown = JSON.parse(input.prompt);
+        assert.ok(
+          payload !== null &&
+            typeof payload === "object" &&
+            "events" in payload &&
+            "sources" in payload &&
+            "issues" in payload,
+        );
+        const transmitted = parseReadView({
+          ...base,
+          events: payload.events,
+          sources: payload.sources,
+          issues: payload.issues,
+        });
+        assert.equal(transmitted.events[0]?.kind, "hook-execution");
+        assert.deepEqual(transmitted.events[0], view.events[0]);
+        assert.deepEqual(transmitted.sources, view.sources);
+        assert.deepEqual(transmitted.issues, view.issues);
+        assert.match(input.system, /Hook executions are separate/);
+        assert.match(input.system, /never sum nested spans/);
+        assert.match(input.system, /source-wide, not selected-session metrics/);
+        callbacks.progress("running");
+        callbacks.usage({ input: 7, output: 3, model: "synthetic" });
+        return JSON.stringify({
+          readId: request.readId,
+          sessionId: request.sessionId,
+          operationId: request.operationId,
+          eventIds: ["hook-fixture"],
+          data: { answer: "synthetic" },
+        });
+      },
+    },
+    [syntheticOperation],
+  );
+  runner.start(view, request);
+  await tick();
+  assert.equal(calls, 1);
+  assert.equal(runner.run?.state, "succeeded");
+  assert.deepEqual(runner.run.result?.eventIds, ["hook-fixture"]);
+  assert.deepEqual(runner.run.result?.references, call.references);
+  assert.deepEqual(runner.run.usage, {
+    input: 7,
+    output: 3,
+    model: "synthetic",
+  });
+});
+
 test("analysis preserves input observation bounds separately from processing completion", async () => {
   const view = parseReadView({ ...exampleReadView(), finishedAtMs: 9000 });
   const inputs: ProviderInput[] = [];

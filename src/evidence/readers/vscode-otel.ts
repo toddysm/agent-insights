@@ -26,6 +26,17 @@ type Coverage = ReadView["sources"][number]["coverage"]["timing"];
 /** Public issue vocabulary accepted by the shared contract. */
 type IssueCode = ReadView["issues"][number]["code"];
 
+/** Classification uses only explicit operation metadata, never span labels or runtime identity. */
+type OperationClassification =
+  | { kind: "execution"; operation: string; eventKind: Span["kind"] }
+  | { kind: "non-execution"; operation: "content_event" }
+  | {
+      kind: "unclassified";
+      operation: string | null;
+      reason:
+        "missingOperation" | "malformedOperation" | "unsupportedOperation";
+    };
+
 /** Mutable assembly state only; published events are validated and frozen by parseReadView. */
 interface Candidate {
   readonly line: number;
@@ -43,7 +54,13 @@ interface Candidate {
 class Diagnostics {
   private readonly entries = new Map<
     string,
-    { code: IssueCode; message: string; count: number; line: number }
+    {
+      code: IssueCode;
+      message: string;
+      count: number;
+      line: number;
+      references: Reference[];
+    }
   >();
 
   /**
@@ -51,12 +68,27 @@ class Diagnostics {
    * @param code - Shared public issue category.
    * @param message - Application-owned description, never source text or exception text.
    * @param line - First affected one-based source line.
+   * @param references - Optional original anchors; never captured payloads.
    */
-  add(code: IssueCode, message: string, line: number): void {
+  add(
+    code: IssueCode,
+    message: string,
+    line: number,
+    references: readonly Reference[] = [],
+  ): void {
     const key = `${code}:${message}`;
     const previous = this.entries.get(key);
-    if (previous) previous.count++;
-    else this.entries.set(key, { code, message, count: 1, line });
+    if (previous) {
+      previous.count++;
+      for (const ref of references) previous.references.push(ref);
+    } else
+      this.entries.set(key, {
+        code,
+        message,
+        count: 1,
+        line,
+        references: [...references],
+      });
   }
 
   /** Whether limitations prevent a complete-coverage claim for this source. */
@@ -74,6 +106,8 @@ class Diagnostics {
       sourceId,
       code: value.code,
       message: `${value.message} (${value.count} occurrence(s); first line ${value.line}).`,
+      count: value.count,
+      ...(value.references.length ? { references: value.references } : {}),
     }));
   }
 }
@@ -86,6 +120,57 @@ function object(value: unknown): value is Record<string, unknown> {
 /** Preserve a nonempty captured identifier/name verbatim, or leave it unavailable. */
 function name(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/**
+ * Classify an explicit operation without coercing malformed values or trimming reported names.
+ * Missing and whitespace-only strings are absent; a nonempty unrecognized string
+ * is unsupported. Invalid attribute containers/operation types remain malformed.
+ */
+function classifyOperation(attributes: unknown): OperationClassification {
+  if (attributes === undefined)
+    return {
+      kind: "unclassified",
+      operation: null,
+      reason: "missingOperation",
+    };
+  if (!object(attributes))
+    return {
+      kind: "unclassified",
+      operation: null,
+      reason: "malformedOperation",
+    };
+  const operation = attributes["gen_ai.operation.name"];
+  if (
+    !Object.hasOwn(attributes, "gen_ai.operation.name") ||
+    (typeof operation === "string" && operation.trim().length === 0)
+  )
+    return {
+      kind: "unclassified",
+      operation: null,
+      reason: "missingOperation",
+    };
+  if (typeof operation !== "string")
+    return {
+      kind: "unclassified",
+      operation: null,
+      reason: "malformedOperation",
+    };
+  if (operation === "content_event")
+    return { kind: "non-execution", operation };
+  let eventKind: Span["kind"];
+  if (operation === "chat" || operation === "embeddings")
+    eventKind = "model-call";
+  else if (operation === "execute_tool") eventKind = "tool-call";
+  else if (operation === "invoke_agent") eventKind = "agent-span";
+  else if (operation === "execute_hook") eventKind = "hook-execution";
+  else
+    return {
+      kind: "unclassified",
+      operation,
+      reason: "unsupportedOperation",
+    };
+  return { kind: "execution", operation, eventKind };
 }
 
 /**
@@ -248,7 +333,8 @@ function usage(
  * @param line - Physical source line.
  * @param recordId - Original line fingerprint for later replacement detection.
  * @param diagnostics - Receives unsupported/missing-field limitations.
- * @returns A candidate, or null when the operation is not a supported execution.
+ * @param classification - Already classified explicit execution operation.
+ * @returns A normalized candidate; hook content remains quoted evidence only.
  */
 function span(
   raw: Record<string, unknown>,
@@ -256,30 +342,12 @@ function span(
   line: number,
   recordId: string,
   diagnostics: Diagnostics,
-): Candidate | null {
+  classification: Extract<OperationClassification, { kind: "execution" }>,
+): Candidate {
   const attributes = raw.attributes;
-  if (!object(attributes)) {
-    diagnostics.add(
-      "missing-field",
-      "Missing or invalid span attributes",
-      line,
-    );
-    return null;
-  }
-  const operation = name(attributes["gen_ai.operation.name"]);
-  let kind: Span["kind"];
-  if (operation === "chat" || operation === "embeddings") kind = "model-call";
-  else if (operation === "execute_tool") kind = "tool-call";
-  else if (operation === "invoke_agent") kind = "agent-span";
-  else {
-    if (operation !== "content_event")
-      diagnostics.add(
-        "unknown-record",
-        "Unsupported execution operation",
-        line,
-      );
-    return null;
-  }
+  if (!object(attributes))
+    throw new Error("Missing internally classified execution attributes");
+  const { operation, eventKind: kind } = classification;
   const traceId = hex(raw.traceId, 32);
   const spanId = hex(raw.spanId, 16);
   const parent = object(raw.parentSpanContext) ? raw.parentSpanContext : null;
@@ -442,6 +510,34 @@ function span(
     line,
   );
   const spanName = reportedName(raw, "name", diagnostics, line);
+  const hook =
+    kind === "hook-execution"
+      ? {
+          type: reportedName(
+            attributes,
+            "copilot_chat.hook_type",
+            diagnostics,
+            line,
+          ),
+          resultKind: reportedName(
+            attributes,
+            "copilot_chat.hook_result_kind",
+            diagnostics,
+            line,
+          ),
+          input: content("copilot_chat.hook_input"),
+          output: content("copilot_chat.hook_output"),
+        }
+      : undefined;
+  if (
+    hook?.resultKind != null &&
+    !["success", "error", "non_blocking_error"].includes(hook.resultKind)
+  )
+    diagnostics.add(
+      "unknown-record",
+      "Unsupported reported hook result kind",
+      line,
+    );
   if (
     kind === "tool-call" &&
     toolName === null &&
@@ -459,8 +555,11 @@ function span(
       name:
         kind === "tool-call"
           ? toolName
-          : ((kind === "model-call" ? (responded ?? requested) : agentName) ??
-            spanName),
+          : ((kind === "hook-execution"
+              ? hook?.type
+              : kind === "model-call"
+                ? (responded ?? requested)
+                : agentName) ?? spanName),
       startedAtMs: start,
       endedAtMs: end,
       status: status === 1 ? "ok" : status === 2 ? "error" : "unknown",
@@ -470,6 +569,7 @@ function span(
       spanName,
       tool: { name: toolName, callId: toolCallId },
       model: { requested, responded },
+      ...(hook ? { hook } : {}),
       content: {
         inputMessages: content("gen_ai.input.messages"),
         outputMessages: content("gen_ai.output.messages"),
@@ -639,8 +739,12 @@ async function read(input: ReaderInput): Promise<ReadView> {
   const startedAtMs = Date.now();
   const diagnostics = new Diagnostics();
   const candidates = new Map<string, Candidate>();
-  const operations = new Map<string, string | null>();
+  const operations = new Map<
+    string,
+    { classification: OperationClassification; reference: Reference }
+  >();
   const operationConflicts = new Set<string>();
+  const nonExecutionRecords = { metrics: 0, logs: 0, contentEvents: 0 };
   let recognized = false;
   for await (const record of jsonLines(input)) {
     if ("error" in record) {
@@ -662,13 +766,18 @@ async function read(input: ReaderInput): Promise<ReadView> {
       );
       continue;
     }
+    if (Array.isArray(raw.scopeMetrics)) {
+      recognized = true;
+      nonExecutionRecords.metrics++;
+      continue;
+    }
     if (
-      Array.isArray(raw.scopeMetrics) ||
-      (milliseconds(raw.hrTime) !== null &&
-        object(raw.resource) &&
-        object(raw.instrumentationScope))
+      milliseconds(raw.hrTime) !== null &&
+      object(raw.resource) &&
+      object(raw.instrumentationScope)
     ) {
       recognized = true;
+      nonExecutionRecords.logs++;
       continue;
     }
     const spanHeader =
@@ -689,24 +798,54 @@ async function read(input: ReaderInput): Promise<ReadView> {
       continue;
     }
     recognized = true;
-    const operation = object(raw.attributes)
-      ? name(raw.attributes["gen_ai.operation.name"])
-      : null;
+    const classification = classifyOperation(raw.attributes);
+    if (classification.kind === "non-execution") {
+      nonExecutionRecords.contentEvents++;
+      continue;
+    }
+    const ref = reference(input, record.line, record.recordId);
     const traceId = hex(raw.traceId, 32);
     const spanId = hex(raw.spanId, 16);
     // Filtering an unqualified execution must not hide a conflicting native identity.
-    if (operation !== "content_event" && traceId !== null && spanId !== null) {
-      const key = `${traceId}/${spanId}`;
-      if (operations.has(key) && operations.get(key) !== operation) {
+    const key =
+      traceId && spanId ? `${traceId}/${spanId}` : `line-${record.line}`;
+    const earlier = operations.get(key);
+    if (earlier) {
+      if (!isDeepStrictEqual(earlier.classification, classification)) {
         operationConflicts.add(key);
         const previous = candidates.get(key);
+        const refs =
+          previous && !previous.conflict
+            ? [...previous.references, ref]
+            : [earlier.reference, ref];
         if (previous) previous.conflict = true;
         diagnostics.add(
           "unknown-record",
           "Conflicting execution operations share a native identity; excluded",
           record.line,
+          refs,
         );
-      } else operations.set(key, operation);
+      }
+    } else operations.set(key, { classification, reference: ref });
+    if (classification.kind === "unclassified") {
+      const descriptions = {
+        missingOperation:
+          "Execution operation metadata is missing or empty; span unclassified",
+        malformedOperation: object(raw.attributes)
+          ? "Invalid execution operation metadata; span unclassified"
+          : "Missing or invalid span attributes; span unclassified",
+        unsupportedOperation:
+          "Unsupported execution operation; span unclassified and excluded from trusted totals",
+      };
+      diagnostics.add(
+        classification.reason === "unsupportedOperation"
+          ? "unknown-record"
+          : "missing-field",
+        descriptions[classification.reason],
+        record.line,
+        [ref],
+      );
+      continue;
     }
     const candidate = span(
       raw,
@@ -714,8 +853,8 @@ async function read(input: ReaderInput): Promise<ReadView> {
       record.line,
       record.recordId,
       diagnostics,
+      classification,
     );
-    if (candidate === null) continue;
     if (operationConflicts.has(candidate.key)) candidate.conflict = true;
     const previous = candidates.get(candidate.key);
     if (previous) {
@@ -725,11 +864,15 @@ async function read(input: ReaderInput): Promise<ReadView> {
         previous.producer !== candidate.producer ||
         previous.version !== candidate.version
       ) {
+        const refs = previous.conflict
+          ? candidate.references
+          : [...previous.references, ...candidate.references];
         previous.conflict = true;
         diagnostics.add(
           "unknown-record",
           "Conflicting records share a native span identity; excluded",
           record.line,
+          refs,
         );
       }
       previous.references.push(...candidate.references);
@@ -771,6 +914,18 @@ async function read(input: ReaderInput): Promise<ReadView> {
         ? { status: "complete" }
         : { status: "partial", reason };
   const modelCalls = events.filter((event) => event.kind === "model-call");
+  const unclassifiedSpans = {
+    missingOperation: 0,
+    malformedOperation: 0,
+    unsupportedOperation: 0,
+  };
+  let conflictingSpans = 0;
+  for (const [key, { classification }] of operations) {
+    if (operationConflicts.has(key) || candidates.get(key)?.conflict)
+      conflictingSpans++;
+    else if (classification.kind === "unclassified")
+      unclassifiedSpans[classification.reason]++;
+  }
   const producers = new Set(trusted.map((candidate) => candidate.producer));
   const versions = new Set(trusted.map((candidate) => candidate.version));
   return parseReadView({
@@ -788,6 +943,21 @@ async function read(input: ReaderInput): Promise<ReadView> {
           executionHost: "unknown",
         },
         changedDuringRead: null,
+        classification: {
+          executions: {
+            modelCalls: modelCalls.length,
+            toolCalls: events.filter((event) => event.kind === "tool-call")
+              .length,
+            agentSpans: events.filter((event) => event.kind === "agent-span")
+              .length,
+            hookExecutions: events.filter(
+              (event) => event.kind === "hook-execution",
+            ).length,
+          },
+          unclassifiedSpans,
+          conflictingSpans,
+          nonExecutionRecords,
+        },
         coverage: {
           messages: {
             status: "unavailable",
