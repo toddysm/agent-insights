@@ -26,6 +26,13 @@ in-memory views; they must never be serialized into an application session store
 - JSON references use a JSON Pointer; JSON Lines references also use a 1-based
   line number. One reconstructed event can retain multiple original references.
   Source instruction identities remain independent of inferred task segments.
+- SQLite references retain the authorized source, table, typed original primary
+  key, captured column (or whole projection), JSON Pointer within that column
+  when applicable, and a SHA-256 fingerprint of the captured projection.
+  Integers remain exact decimal key strings; row position is never identity.
+  The composite runtime checks row/key/fingerprint and selected-column membership
+  against rows actually returned in that generation. Structured-value pointer
+  meaning remains the domain reader's responsibility.
 - Parent native IDs may refer outside the captured read. This is not permission
   to invent an absent parent or count a wrapper as an extra model call.
 - Coverage is complete, partial with a reason, or unavailable with a reason.
@@ -51,7 +58,15 @@ remain pending in [#11](https://github.com/toddysm/agent-insights/issues/11).
 Producer definitions were inspected at Visual Studio Code commit
 `2c33b50b16c472efe58357d1d2a8a5414bc23fbf` (1.144.0).
 The fixtures are independently authored fictional data; no source implementation
-or private capture was copied. No live capture smoke test has run.
+or private capture was copied. A fresh user-reported smoke test retained execution
+records with partial coverage; a separately authorized fixed-prefix structural
+inspection identified the follow-ups in
+[#46](https://github.com/toddysm/agent-insights/issues/46),
+[#47](https://github.com/toddysm/agent-insights/issues/47),
+[#48](https://github.com/toddysm/agent-insights/issues/48) and
+[#49](https://github.com/toddysm/agent-insights/issues/49).
+The user's producer version and execution runtime remain unconfirmed; this
+does not certify every VS Code version or claim Agent Host reader support.
 
 | Target                        | Producer evidence                                                                                                                                                                                                                                                                                                                            | Available fields / limitations                                                                                                                                                                                                     |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -64,6 +79,13 @@ development kit records and extension file-export JSON Lines are not interchange
 No Agent Debug Log, OTLP, native-record, index-database, older-version or unknown
 schema support is claimed by this contract work. Additional verified adapters
 can extend the format identifiers without introducing a copied dataset.
+
+The shared access foundation additionally declares `copilot-sdk-events-jsonl`,
+`vscode-agenthost-catalog-sqlite` and `vscode-agenthost-session-sqlite`.
+These identify planned native inputs, **not shipped adapters or qualification of
+all producer versions**. Native qualification is tracked in
+[#30](https://github.com/toddysm/agent-insights/issues/30); it is distinct from the
+Local/extension targets above.
 
 The [source fixtures](../tests/fixtures/) include span nesting/cumulative-usage
 hazards, version-3 chat, mutation envelopes, an intentionally truncated tail and
@@ -141,21 +163,21 @@ The implementation inspected these public producer definitions at VS Code commit
 `2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, rather than treating filenames or the
 synthetic fixtures as proof of the wire format:
 
-| Definition | SHA-256 of inspected file bytes |
-| --- | --- |
-| [File exporter](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/node/fileExporters.ts) | `d5fd8f85c2e58d4d59283ec9c28c3339e5be9ca928a3ab8c4d8fafced3055138` |
+| Definition                                                                                                                                                               | SHA-256 of inspected file bytes                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| [File exporter](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/node/fileExporters.ts)            | `d5fd8f85c2e58d4d59283ec9c28c3339e5be9ca928a3ab8c4d8fafced3055138` |
 | [Attribute vocabulary](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/common/genAiAttributes.ts) | `c2e82f03f276d5efb0edb105c0dcf2e5bea9ba60842b7806678a70bea2d63e2c` |
 
-| Producer field/declaration | Reader interpretation |
-| --- | --- |
-| Direct span context, `parentSpanContext`, `resource.attributes`, `instrumentationScope` | Trace-scoped identity and reported metadata, not an OTLP wrapper or a path-derived identity. |
-| `startTime` / `endTime` tuples | Epoch seconds plus nanosecond remainder, converted to milliseconds; missing values stay unavailable. |
-| `gen_ai.operation.name` | Explicit mappings for `chat`, `embeddings`, `execute_tool` and `invoke_agent`; other operations are not guessed. |
-| `gen_ai.conversation.id` / `copilot_chat.chat_session_id` | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text. |
-| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens` | Reported counts on the represented operation; no estimates or missing-to-zero conversion. |
-| Cache attributes and both reasoning-token attribute names | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
-| `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | Optional content-gated attributes retained only as captured strings and source references. |
-| Separate file span/log/metric exporters | A single destination can contain different signal types; non-execution records are not additional calls. |
+| Producer field/declaration                                                                                 | Reader interpretation                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Direct span context, `parentSpanContext`, `resource.attributes`, `instrumentationScope`                    | Trace-scoped identity and reported metadata, not an OTLP wrapper or a path-derived identity.                                     |
+| `startTime` / `endTime` tuples                                                                             | Epoch seconds plus nanosecond remainder, converted to milliseconds; missing values stay unavailable.                             |
+| `gen_ai.operation.name`                                                                                    | Explicit mappings for `chat`, `embeddings`, `execute_tool` and `invoke_agent`; other operations are not guessed.                 |
+| `gen_ai.conversation.id` / `copilot_chat.chat_session_id`                                                  | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text.                |
+| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`                                                 | Reported counts on the represented operation; no estimates or missing-to-zero conversion.                                        |
+| Cache attributes and both reasoning-token attribute names                                                  | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
+| `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | Optional content-gated attributes retained only as captured strings and source references.                                       |
+| Separate file span/log/metric exporters                                                                    | A single destination can contain different signal types; non-execution records are not additional calls.                         |
 
 This is static compatibility evidence, not proof of producer authenticity,
 all-version support, content completeness or live private-capture qualification.
@@ -199,6 +221,38 @@ through this interface. Readers must honor cancellation and report corrupt,
 unsupported or incomplete input explicitly. `selectReader` rejects missing or
 ambiguous registration; it never chooses a silent fallback.
 
+`MultiSourceReader` uses [code-owned source declarations](../src/evidence/source-access.ts).
+The runtime binds one explicitly granted location to each declared role and
+supplies `MultiSourceInput.get(key)`. File roles expose bounded borrowed bytes;
+SQLite roles expose an observed `userVersion`, `snapshotScope` and named parameterized queries,
+not a database connection. Query results preserve bigint/binary cells internally.
+Readers must validate their domain semantics before creating normalized facts.
+
+Optional missing/incompatible inputs are typed unavailable values with controlled
+diagnostics, never empty result sets. They must remain visible as unavailable
+sources and cannot contribute invented references, sessions or measured zero.
+Required-source failures reject the read. Every successful role has a separate
+generation-local source identity even when several roles share one directory grant.
+Readers may use `sqliteReference` from the [composite coordinator](../src/runtime/source-read.ts)
+to construct original row anchors. The runtime validates these witnesses,
+downgrades coverage for detected source changes, awaits database process cleanup
+and rejects stale results before publishing the one current in-memory view.
+Missing native preparation, guard/protocol failures and unconfirmed cleanup are
+fatal even for optional roles. The application never silently substitutes Node
+SQLite or prepares an artifact while reading.
+
+Per-source status observations are independent of captured event timestamps and
+of normalization completion. There is no cross-database atomic snapshot or
+automatic identity/session match. See the [runtime bounds and SQLite caveats](local-runtime.md#shared-file-and-sqlite-access).
+WAL reads expose a connection snapshot; rollback-mode reads expose per-request
+snapshots and release their native locks between queries.
+The [source-access suite](../tests/source-access.test.ts) uses synthetic databases
+and a separate writer process to exercise actual native lock cancellation,
+WAL snapshots, exact limits, cleanup, provenance and the authenticated route.
+The [transport suite](../tests/sqlite-transport.test.ts) independently tests
+malformed framing, stale replies, row witnesses, cleanup failures and actual
+termination using fictional subprocesses without a native release.
+
 With Node.js 24:
 
 ```bash
@@ -206,6 +260,24 @@ npm ci --ignore-scripts
 npm run check
 npm test
 ```
+
+Ordinary tests explicitly skip real native source-access cases when no verified
+candidate is selected. They do not download or compile a helper. To qualify these
+cases, first commit a clean checkout and use the explicit
+[candidate preparation workflow](../native/sqlite-guard/ARTIFACTS.md):
+
+```bash
+npm run build
+npm run package:native
+npm run prepare:native -- --candidate
+npm run qualify:native
+npm run qualify:source-access
+```
+
+The final command verifies the independently recorded candidate and installed
+bytes before selecting it through a test-only resolver. Native continuous
+integration runs this qualification on all four supported targets; it is not
+an arbitrary executable override in the application or a public release.
 
 The root checks compile the TypeScript contracts and run the fixture/contract
 suite. The existing [prototype checks](../design/session-insights/README.md)

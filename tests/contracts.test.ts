@@ -318,6 +318,7 @@ test("shared-source metrics reject another session, ambiguous events and undecla
     ],
     events: [...base.events, otherEvent],
   });
+
   const metric = {
     readId: view.id,
     sessionId: session.id,
@@ -376,6 +377,68 @@ test("shared-source metrics reject another session, ambiguous events and undecla
     events: [{ ...event, sessionId: null }],
   });
   assert.throws(() => parseMetric(metric, unassigned), /another or ambiguous/);
+});
+
+test("SQLite metric contributors cannot substitute a row, column or captured revision", () => {
+  const base = exampleReadView();
+  const event = base.events[0];
+  const session = base.sessions[0];
+  assert.ok(event && session);
+  const reference = {
+    sourceId: "source-fixture",
+    recordId: "original-row",
+    location: {
+      kind: "sqlite",
+      table: "items",
+      key: [{ column: "id", type: "integer", value: "9007199254740993" }],
+      column: "payload",
+      pointer: "",
+      fingerprint: "a".repeat(64),
+    },
+  };
+  const view = parseReadView({
+    ...base,
+    sources: base.sources.map((source) => ({
+      ...source,
+      format: "vscode-agenthost-session-sqlite",
+    })),
+    sessions: [{ ...session, references: [reference] }],
+    events: [{ ...event, references: [reference] }],
+  });
+  const metric = {
+    readId: view.id,
+    sessionId: session.id,
+    key: "messages",
+    basis: "calculated",
+    dimension: "messages",
+    unit: "count",
+    value: 1,
+    coverage: { status: "complete" },
+    contributors: [reference],
+  };
+  assert.equal(parseMetric(metric, view).value, 1);
+  for (const change of [
+    { table: "other" },
+    { key: [{ column: "id", type: "integer", value: "9007199254740994" }] },
+    { column: "other" },
+    { fingerprint: "b".repeat(64) },
+  ])
+    assert.throws(
+      () =>
+        parseMetric(
+          {
+            ...metric,
+            contributors: [
+              {
+                ...reference,
+                location: { ...reference.location, ...change },
+              },
+            ],
+          },
+          view,
+        ),
+      /declared/,
+    );
 });
 
 test("zero anchors require complete relevant evidence, not merely another available dimension", () => {
@@ -578,7 +641,7 @@ test("controlled source fixtures preserve distinct envelopes and intentional inc
   const spanLines = (await readFile(new URL("otel.jsonl", directory), "utf8"))
     .trim()
     .split("\n");
-  const spans: unknown[] = spanLines.map((line) => JSON.parse(line));
+  const spans: unknown[] = spanLines.map((line): unknown => JSON.parse(line));
   const envelope = z.object({
     traceId: z.string().regex(/^[0-9a-f]{32}$/),
     spanId: z.string().regex(/^[0-9a-f]{16}$/),
@@ -610,7 +673,7 @@ test("controlled source fixtures preserve distinct envelopes and intentional inc
       (await readFile(new URL("chat-mutations.jsonl", directory), "utf8"))
         .trim()
         .split("\n")
-        .map((line) => JSON.parse(line)),
+        .map((line): unknown => JSON.parse(line)),
     );
   assert.deepEqual(
     operations.map((entry) => entry.kind),

@@ -10,7 +10,13 @@
  * trigger source reads or acknowledged analysis; status polling only observes work
  * already accepted by the backend. No local/session storage or sample report data is used.
  */
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactElement,
+} from "react";
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
 import { readViewSchema, type ReadView } from "../evidence/contracts.js";
@@ -104,7 +110,7 @@ function App(): ReactElement {
   const [pollError, setPollError] = useState("");
   const [reconciling, setReconciling] = useState(false);
   const [analysisNotice, setAnalysisNotice] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(Boolean(token));
   const [sourceId, setSourceId] = useState("");
   const [relativePath, setRelativePath] = useState("");
   const [format, setFormat] = useState("");
@@ -114,7 +120,7 @@ function App(): ReactElement {
   const [operationId, setOperationId] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const generation = useRef(0);
-  const startAttempt = useRef<{
+  const [startAttempt, setStartAttempt] = useState<{
     previousRunId: string | null;
     readId: string;
     sessionId: string;
@@ -128,7 +134,22 @@ function App(): ReactElement {
     run?.readId === view?.id &&
     run?.sessionId === sessionId &&
     run?.operationId === operationId &&
-    run?.id !== startAttempt.current?.previousRunId;
+    run?.id !== startAttempt?.previousRunId;
+
+  /** Apply source/provider status, retaining only selections still offered by the backend. */
+  const adoptStatus = useCallback((result: RuntimeStatus): void => {
+    setStatus(result);
+    setSourceId((previous) =>
+      result.sources.some((source) => source.id === previous)
+        ? previous
+        : (result.sources[0]?.id ?? ""),
+    );
+    setFormat((previous) =>
+      result.readers.some((reader) => reader === previous)
+        ? previous
+        : (result.readers[0] ?? ""),
+    );
+  }, []);
 
   /**
    * Clear browser-only read/acknowledgement state when its selection changes.
@@ -136,7 +157,7 @@ function App(): ReactElement {
    * refresh and explicit cancellation own those server-side transitions.
    */
   function clearView(): void {
-    startAttempt.current = null;
+    setStartAttempt(null);
     setAnalysisNotice("");
     setPollError("");
     setView(null);
@@ -163,17 +184,7 @@ function App(): ReactElement {
         refresh ? {} : undefined,
       );
       if (current !== generation.current) return;
-      setStatus(result);
-      setSourceId((previous) =>
-        result.sources.some((source) => source.id === previous)
-          ? previous
-          : (result.sources[0]?.id ?? ""),
-      );
-      setFormat((previous) =>
-        result.readers.some((reader) => reader === previous)
-          ? previous
-          : (result.readers[0] ?? ""),
-      );
+      adoptStatus(result);
     } catch (failure) {
       if (current === generation.current)
         setError(
@@ -187,8 +198,28 @@ function App(): ReactElement {
   }
 
   useEffect(() => {
-    if (token) void load(false);
-  }, []);
+    if (!token) return;
+    let active = true;
+    const current = ++generation.current;
+    void request("/api/status", statusSchema)
+      .then((result) => {
+        if (active && current === generation.current) adoptStatus(result);
+      })
+      .catch((failure: unknown) => {
+        if (active && current === generation.current)
+          setError(
+            failure instanceof Error
+              ? failure.message
+              : "Source status could not be refreshed.",
+          );
+      })
+      .finally(() => {
+        if (active && current === generation.current) setBusy(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [adoptStatus]);
 
   useEffect(() => {
     if (!analysisRunning && !reconciling) return;
@@ -207,7 +238,7 @@ function App(): ReactElement {
         if (stopped || current !== generation.current) return;
         setPollError("");
         if (reconciling) {
-          const attempt = startAttempt.current;
+          const attempt = startAttempt;
           const restored = result.analysis.run;
           if (
             attempt &&
@@ -217,7 +248,7 @@ function App(): ReactElement {
             restored.sessionId === attempt.sessionId &&
             restored.operationId === attempt.operationId
           ) {
-            startAttempt.current = null;
+            setStartAttempt(null);
             setError("");
           }
           setStatus(result);
@@ -250,7 +281,7 @@ function App(): ReactElement {
       stopped = true;
       clearTimeout(timer);
     };
-  }, [analysisRunning, run?.id, reconciling]);
+  }, [analysisRunning, run?.id, reconciling, startAttempt]);
 
   /**
    * Handle an explicit Analyze action using the current selection and acknowledgement.
@@ -268,12 +299,12 @@ function App(): ReactElement {
     setError("");
     setPollError("");
     setAnalysisNotice("");
-    startAttempt.current = {
+    setStartAttempt({
       previousRunId: run?.id ?? null,
       readId: view.id,
       sessionId,
       operationId,
-    };
+    });
     try {
       const result = await request("/api/analysis/start", analysisRunSchema, {
         readId: view.id,
@@ -281,7 +312,7 @@ function App(): ReactElement {
         operationId,
         acknowledgement: acknowledged ? ANALYSIS_ACKNOWLEDGEMENT : "",
       });
-      startAttempt.current = null;
+      setStartAttempt(null);
       setStatus((previous) =>
         previous
           ? { ...previous, analysis: { ...previous.analysis, run: result } }
@@ -572,6 +603,12 @@ function App(): ReactElement {
                       </button>
                     </form>
                   )}
+                  <p className="notice" role="status">
+                    Native SQLite:{" "}
+                    {status.nativeSqlite.available ? "prepared" : "unavailable"}
+                    . {status.nativeSqlite.reason} File-only sources and
+                    analysis are independent.
+                  </p>
                   {status.readers.length === 0 && (
                     <p className="notice" role="status">
                       Source readers are not installed yet. Location checks do
@@ -705,7 +742,7 @@ function App(): ReactElement {
                     disabled={busy || analysisLocked || !view}
                     onChange={(event) => {
                       setSessionId(event.target.value);
-                      startAttempt.current = null;
+                      setStartAttempt(null);
                       setAnalysisNotice("");
                       setAcknowledged(false);
                     }}
@@ -724,7 +761,7 @@ function App(): ReactElement {
                     disabled={busy || analysisLocked}
                     onChange={(event) => {
                       setOperationId(event.target.value);
-                      startAttempt.current = null;
+                      setStartAttempt(null);
                       setAnalysisNotice("");
                       setAcknowledged(false);
                     }}

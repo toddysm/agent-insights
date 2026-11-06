@@ -130,7 +130,8 @@ function hex(value: unknown, length: number): string | null {
  */
 function milliseconds(value: unknown): number | null {
   if (!Array.isArray(value) || value.length !== 2) return null;
-  const [seconds, nanos] = value;
+  const seconds: unknown = value[0];
+  const nanos: unknown = value[1];
   if (
     typeof seconds !== "number" ||
     typeof nanos !== "number" ||
