@@ -2,7 +2,7 @@
  * Coordinate authorized source reads and retain one normalized generation in memory.
  *
  * SourceAccess owns native file access; registered EvidenceReader implementations
- * own format parsing. VS Code Copilot Chat is the first planned reader family.
+ * own format parsing. VS Code Copilot Chat is the initial reader family.
  * The optional analysis runner consumes normalized evidence independently of that
  * source format; using Copilot CLI to execute analysis does not change the source.
  *

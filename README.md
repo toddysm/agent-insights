@@ -19,9 +19,10 @@ Its shared access layer can coordinate explicitly authorized files and existing
 harness-owned SQLite databases without creating an application session store.
 This is infrastructure for the Agent Host readers, not installed reader support.
 The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
-memory-only model execution. Real source readers, report views and interpretation
-definitions are not installed yet; the interface reports those capabilities as
-unavailable rather than showing example data.
+memory-only model execution. The first production reader handles VS Code's
+OpenTelemetry extension file export in place. Conversation readers, report views
+and interpretation definitions remain pending; unavailable capabilities do not
+show example data as real results.
 Visual Studio Code Copilot Chat remains the first capture source. Copilot CLI is
 the analysis executor, not the first history source being imported; see the
 [source/executor distinction](docs/copilot-analysis.md#vs-code-evidence-and-the-analysis-executor-are-different).

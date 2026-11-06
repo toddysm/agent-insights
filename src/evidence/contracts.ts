@@ -1,6 +1,6 @@
 /**
  * Validate transient evidence and metrics independently of their source reader
- * and analysis executor. VS Code Copilot Chat is the first planned source family;
+ * and analysis executor. VS Code Copilot Chat is the initial source family;
  * naming a supported format here does not install a parser for it.
  *
  * Readers supply normalized records with original source anchors. Analysis can use
@@ -121,6 +121,24 @@ const eventFields = {
   references: z.array(referenceSchema).min(1).readonly(),
 };
 
+/** Reported identity namespaces are not interchangeable, even when their values match. */
+export const nativeIdentitySchema = z
+  .strictObject({
+    namespace: z.enum(["vscode-chat", "gen-ai-conversation"]),
+    value: id,
+  })
+  .readonly();
+
+/** Source-reported execution content; null means absent/unsupported, never an empty substitute. */
+export const executionContentSchema = z
+  .strictObject({
+    inputMessages: z.string().nullable(),
+    outputMessages: z.string().nullable(),
+    toolArguments: z.string().nullable(),
+    toolResult: z.string().nullable(),
+  })
+  .readonly();
+
 /** Recorded messages and spans only. Missing timestamps/content/usage are explicit nulls. */
 export const eventSchema = z.discriminatedUnion("kind", [
   z
@@ -142,6 +160,24 @@ export const eventSchema = z.discriminatedUnion("kind", [
       endedAtMs: milliseconds.nullable(),
       status: z.enum(["ok", "error", "unknown"]),
       usage: usageSchema.nullable(),
+      /** Trace scope disambiguates native span/parent IDs; absence supports earlier readers. */
+      trace: z
+        .strictObject({ id: id.nullable(), parentId: id.nullable() })
+        .readonly()
+        .optional(),
+      operation: id.optional(),
+      /** Identifiers actually reported on this event, independent of resolved session membership. */
+      nativeIdentities: z.array(nativeIdentitySchema).readonly().optional(),
+      spanName: id.nullable().optional(),
+      tool: z
+        .strictObject({ name: id.nullable(), callId: id.nullable() })
+        .readonly()
+        .optional(),
+      model: z
+        .strictObject({ requested: id.nullable(), responded: id.nullable() })
+        .readonly()
+        .optional(),
+      content: executionContentSchema.optional(),
     })
     .refine(
       (event) =>
@@ -167,6 +203,10 @@ export const readViewSchema = z
           .strictObject({
             id,
             nativeId: id.nullable(),
+            nativeIdentities: z
+              .array(nativeIdentitySchema)
+              .readonly()
+              .optional(),
             sourceIds: z.array(id).min(1).readonly(),
             references: z.array(referenceSchema).min(1).readonly(),
           })
@@ -453,7 +493,13 @@ export interface ReaderInput {
 /** Adapter extension point: no source writes, persistence, model calls or hidden fallback formats. */
 export interface EvidenceReader {
   readonly format: SourceFormat;
-  /** Consume only the supplied stream, honor cancellation and reject unsupported/corrupt input explicitly. */
+  /**
+   * Parse borrowed bytes, honor cancellation and report unsupported/corrupt input.
+   * @param input - Current identity, borrowed stream and cancellation; no filesystem capture bounds.
+   * @returns Adapter candidate with provisional timestamps. The runtime replaces
+   * read timing before publication; only its readTiming.input* fields identify
+   * physical source observation. Never treat adapter timestamps as that interval.
+   */
   read(input: ReaderInput): Promise<ReadView>;
 }
 

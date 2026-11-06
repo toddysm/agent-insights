@@ -1,11 +1,11 @@
 # Project state
 
-Capability inventory as of 2026-11-05. This records project delivery status,
+Capability inventory as of 2026-11-06. This records project delivery status,
 not session data or analysis results.
 
-The merged baseline is main at `4dd75043fb166accdc153ad93aade0f152ce9eed`.
+The merged baseline is main at `5adb0e2984ed62584502a5ca001d372c5e3e037c`.
 The approved architecture and explicit execution breakdown are recorded as
-lightweight revision 13 in
+lightweight revision 14 in
 [#2](https://github.com/toddysm/agent-insights/issues/2), with experience
 revision 2 in [#3](https://github.com/toddysm/agent-insights/issues/3).
 The user approved the plan, runtime baseline and unattended review/merge scope
@@ -19,8 +19,8 @@ implementation after publication. On 2026-11-03 the user clarified that
 **Copilot Agent Host is the intended everyday workflow** and authorized filing
 the adjustment, then authorized source qualification in #30. The user subsequently
 approved the shared read-only SQLite/multi-source direction, requested its
-work items and authorized #33 implementation. The partial implementation is
-preserved in draft [#35](https://github.com/toddysm/agent-insights/pull/35).
+work items and authorized #33 implementation, now merged through
+[#35](https://github.com/toddysm/agent-insights/pull/35).
 After review exposed a source-side file-creation race, the user approved revising
 the safety boundary. The user then approved the revision-12
 [native guard design](https://github.com/toddysm/agent-insights/issues/33#issuecomment-6621343238);
@@ -43,7 +43,9 @@ the user authorized its normal merge. Both configured reviews and all eight
 exact-head checks passed without a waiver, including packaged/installed
 candidate qualification on all four native targets. Public binary distribution
 remains separately gated by #39; the merge does not publish binaries. The superseded
-Local-only plan is not restored by this approval.
+Local-only plan is not restored by this approval. On 2026-11-06 the user
+separately approved the extension-reader refinements and dependency-order start
+in revision 14. This does not substitute extension telemetry for Agent Host evidence.
 
 Tracking currently uses GitHub issues and native sub-issues/dependencies.
 GitHub Project access is unavailable; no board status is claimed.
@@ -62,12 +64,13 @@ or, for lightweight planning, the linked issue-backed design.
 
 These are supporting components, not a complete production analysis workflow.
 
-| Component | Tracking | Landed evidence | Documentation |
-| --- | --- | --- | --- |
-| Rust SQLite source guard core | [#36](https://github.com/toddysm/agent-insights/issues/36) | [#41](https://github.com/toddysm/agent-insights/pull/41), merged 2026-11-04; native source-operation qualification | [Guard development](../native/sqlite-guard/README.md) |
-| Type-aware JavaScript/TypeScript linting | [#42](https://github.com/toddysm/agent-insights/issues/42) | [#41](https://github.com/toddysm/agent-insights/pull/41), merged 2026-11-04; zero-warning validation and configuration tests | [Development checks](../README.md) |
-| Bounded native helper protocol | [#37](https://github.com/toddysm/agent-insights/issues/37) | [#43](https://github.com/toddysm/agent-insights/pull/43), merged 2026-11-05; native process/lifetime qualification | [Helper protocol](../native/sqlite-guard/PROTOCOL.md) |
-| Qualified native candidates and explicit offline preparation | [#38](https://github.com/toddysm/agent-insights/issues/38) | [#44](https://github.com/toddysm/agent-insights/pull/44), merged 2026-11-05; exact packaged/installed qualification on four targets, not a public release | [Artifact workflow and trust](../native/sqlite-guard/ARTIFACTS.md) |
+| Component                                                    | Tracking                                                   | Landed evidence                                                                                                                                                                                            | Documentation                                                           |
+| ------------------------------------------------------------ | ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Rust SQLite source guard core                                | [#36](https://github.com/toddysm/agent-insights/issues/36) | [#41](https://github.com/toddysm/agent-insights/pull/41), merged 2026-11-04; native source-operation qualification                                                                                         | [Guard development](../native/sqlite-guard/README.md)                   |
+| Type-aware JavaScript/TypeScript linting                     | [#42](https://github.com/toddysm/agent-insights/issues/42) | [#41](https://github.com/toddysm/agent-insights/pull/41), merged 2026-11-04; zero-warning validation and configuration tests                                                                               | [Development checks](../README.md)                                      |
+| Bounded native helper protocol                               | [#37](https://github.com/toddysm/agent-insights/issues/37) | [#43](https://github.com/toddysm/agent-insights/pull/43), merged 2026-11-05; native process/lifetime qualification                                                                                         | [Helper protocol](../native/sqlite-guard/PROTOCOL.md)                   |
+| Qualified native candidates and explicit offline preparation | [#38](https://github.com/toddysm/agent-insights/issues/38) | [#44](https://github.com/toddysm/agent-insights/pull/44), merged 2026-11-05; exact packaged/installed qualification on four targets, not a public release                                                  | [Artifact workflow and trust](../native/sqlite-guard/ARTIFACTS.md)      |
+| Shared guarded source access, provenance and cleanup         | [#33](https://github.com/toddysm/agent-insights/issues/33) | [#35](https://github.com/toddysm/agent-insights/pull/35), merged 2026-11-05 as d0cabfcb7ce78d83a061138cd70b1cbaae47b648; all eight exact-head checks passed; scoped user disposition of review limitations | [Runtime source access](local-runtime.md#shared-file-and-sqlite-access) |
 
 ### Existing design artifact
 
@@ -93,18 +96,19 @@ server, with explicit source selection and manual refresh. The
 in-memory execution, validated references, cancellation and separate usage.
 Real-session readers, reports and interpretation definitions remain incomplete.
 The Local-exporter implementation in
-[#29](https://github.com/toddysm/agent-insights/pull/29) is preserved and unmerged.
-It is not Agent Host support, and the user cannot complete its live test because
-the Local harness option is unavailable. The user explicitly requested leaving
-that unfinished work open. Existing conversation work
+[#29](https://github.com/toddysm/agent-insights/pull/29) now resumes on the
+merged runtime/lint baseline under the user's dependency-order request.
+The fresh manual test retained execution records but remained partial; runtime
+identity and full live compatibility are not established. Separate operation,
+identifier, relationship and coverage tasks follow the reader foundation.
+This is not Agent Host support. Existing conversation work
 [#11](https://github.com/toddysm/agent-insights/issues/11) remains paused pending
-separate authorization. Both Local-only items are supplemental/deferred and no
-longer block the required Agent Host delivery.
+separate authorization; no new dependency is added to the Agent Host readers.
 
-| Capability                                                                                                                                                                 | Feature slug            | Tracking issue                                           | PRD doc                                                                   | Docs                                                                                                                                                                              |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Local, read-only analysis of Visual Studio Code Copilot Chat sessions: timing, tools, tokens, tasks/outcomes, steering, artifacts and prompt coaching with source evidence | vscode-session-analysis | [#2](https://github.com/toddysm/agent-insights/issues/2) | [Issue-backed design](https://github.com/toddysm/agent-insights/issues/2) | Capture prerequisites [#1](https://github.com/toddysm/agent-insights/issues/1) and final usage guide [#21](https://github.com/toddysm/agent-insights/issues/21) remain incomplete |
-| Shared authorized read-only SQLite/multi-source access and original references | vscode-session-analysis | [#33](https://github.com/toddysm/agent-insights/issues/33) | [Approved native architecture](https://github.com/toddysm/agent-insights/issues/33#issuecomment-6621343238), execution revision 13 | Partial implementation in draft [#35](https://github.com/toddysm/agent-insights/pull/35); #36/#37/#38 prerequisites are merged, but runtime transport/lease integration remains unfinished and unshipped. Final user docs remain #1/#21 |
+| Capability                                                                                                                                                                 | Feature slug            | Tracking issue                                                                                                        | PRD doc                                                                   | Docs                                                                                                                                                                              |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Local, read-only analysis of Visual Studio Code Copilot Chat sessions: timing, tools, tokens, tasks/outcomes, steering, artifacts and prompt coaching with source evidence | vscode-session-analysis | [#2](https://github.com/toddysm/agent-insights/issues/2)                                                              | [Issue-backed design](https://github.com/toddysm/agent-insights/issues/2) | Capture prerequisites [#1](https://github.com/toddysm/agent-insights/issues/1) and final usage guide [#21](https://github.com/toddysm/agent-insights/issues/21) remain incomplete |
+| Extension-export reader foundation and qualification                                                                                                                       | vscode-session-analysis | [#10](https://github.com/toddysm/agent-insights/issues/10) / [#29](https://github.com/toddysm/agent-insights/pull/29) | Approved refinement revision 14 in #2                                     | Format reader and CLI integration present; live compatibility remains partial. Follow-up classification/coverage fixes are not claimed implemented.                               |
 
 At #35 head `7ef06a70cd1884e3a050f3aba2eef834a93955de`, 91 local
 unit/integration/startup tests, six Chromium cases and all four hosted checks
@@ -114,9 +118,10 @@ and shared-memory (SHM) files, plus unreadable-WAL error misclassification.
 Synthetic probes confirmed that Node read-only/query-only settings and Node
 filesystem permission mode do not enforce the no-create guarantee.
 Those historical passing checks did not qualify the then-missing native guard.
-The guard core, helper protocol and artifact preparation have since landed in
-#41/#43/#44; #35 still needs runtime transport/lease integration before it can
-replace its unsafe path.
+The guard core, helper protocol and artifact preparation landed in #41/#43/#44;
+#35 then replaced the unsafe Node SQLite path and merged its qualified runtime
+integration. Its final merge had explicit user acceptance of the disclosed
+Codex quota/lifecycle-review limitations; that exception does not transfer to #29.
 The historical #35 review lacked Codex quota; that is not a permanent global
 review status. Both configured reviewers completed for #40/#41; #43 merged with
 its own explicit user exception after green checks and resolved feedback.
@@ -134,14 +139,19 @@ required recovery, while preserving WAL snapshots.
 
 ## Planned
 
-| Capability | Feature slug | Tracking issue | PRD doc | Documentation status |
-| ---------- | ------------ | -------------- | ------- | -------------------- |
-| Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Revision 13 and source draft 3 in #30; #31/#32 remain blocked on #33/#30 and are not implemented | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
-| Publish qualified native artifacts | vscode-session-analysis | [#39](https://github.com/toddysm/agent-insights/issues/39) | Follows #38 and #33; separately gated on release approval | Real end-user installation verification; required before complete delivery #20 |
+| Capability                                                                 | Feature slug            | Tracking issue                                                                                                                                                                                                                                    | PRD doc                                                                               | Documentation status                                                                                                                                                                               |
+| -------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Native design preserved; #33 is merged, #30 handoff and reader implementation remain  | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
+| Publish qualified native artifacts                                         | vscode-session-analysis | [#39](https://github.com/toddysm/agent-insights/issues/39)                                                                                                                                                                                        | Follows #38 and #33; separately gated on release approval                             | Real end-user installation verification; required before complete delivery #20                                                                                                                     |
+| Streaming large telemetry files with bounded memory                        | vscode-session-analysis | [#45](https://github.com/toddysm/agent-insights/issues/45)                                                                                                                                                                                        | Proposed, separate design/threshold confirmation; not part of this reader integration | No copied corpus or disk-backed session index; scale/cleanup qualification and #1/#21 docs required                                                                                                |
+| Explicit hook and unclassified-operation handling                          | vscode-session-analysis | [#46](https://github.com/toddysm/agent-insights/issues/46)                                                                                                                                                                                        | Depends on #10; own event kind and contract/consumer updates                          | Synthetic mapping/accounting regressions and related format docs                                                                                                                                   |
+| Optional tool-ID semantics                                                 | vscode-session-analysis | [#47](https://github.com/toddysm/agent-insights/issues/47)                                                                                                                                                                                        | Depends on #10; independent of #46                                                    | Empty/absent versus malformed tests and diagnostic docs                                                                                                                                            |
+| Explicit parent-chat relationships                                         | vscode-session-analysis | [#48](https://github.com/toddysm/agent-insights/issues/48)                                                                                                                                                                                        | Depends on #10; preserve own versus parent identity                                   | Relationship/provenance/accounting tests and docs                                                                                                                                                  |
+| Evidence-specific coverage and attribution                                 | vscode-session-analysis | [#49](https://github.com/toddysm/agent-insights/issues/49)                                                                                                                                                                                        | Depends on #46/#47/#48                                                                | Coverage/diagnostic UI, contract and browser tests; interpretation docs                                                                                                                            |
 
 These are required adjustments to the existing feature, not optional future
 harness support. The guard core, helper protocol and candidate preparation are
-merged; public artifact distribution, runtime integration and Agent Host
+merged, including runtime integration; public artifact distribution and Agent Host
 readers remain unfinished.
 
 Revision 13 established 24 native children and 38 immediate dependency links,
@@ -149,7 +159,10 @@ verified without cycles. The user's later #42 tooling addition brings the
 tracker to 25 children without adding native prerequisite edges. The execution
 order remains #36 -> #37 -> #38 -> #33 ->
 #39 -> complete delivery #20. Existing #1/#21 remain the documentation items.
-Local-only #10/#11 remain open outside that completion gate; #12/#14 no longer
+The user reactivated #10/#29 and approved #46/#47/#48, then #49 for the
+extension-export refinement; #45 remains separate. These add no dependency
+from the Agent Host readers to the unmerged extension reader.
+Local conversation #11 remains paused; #12/#14 no longer
 depend on them. #33 follows the existing runtime and precedes #31/#32.
 The detailed acceptance criteria and dependency order live in those issues.
 
@@ -174,7 +187,7 @@ Agent Host telemetry for detailed per-call evidence. Host telemetry uses
 Reading existing harness databases is not an application-owned session store.
 Shared access [#33](https://github.com/toddysm/agent-insights/issues/33) owns
 bounded queries/cancellation, transient read generations and row/file provenance,
-not source-specific accounting. Its proposed native helper uses a pinned SQLite
+not source-specific accounting. Its integrated native helper uses a pinned SQLite
 engine, a virtual file system (VFS) policy and audited operating-system call
 guards, including internal SHM operations. It preserves SQLite locking and
 permits only existing-file access and bounded existing-SHM coordination.
@@ -212,19 +225,18 @@ remains the selected testing mode.
 
 ## Deferred / Won't do
 
-| Capability                                             | Feature slug            | Tracking issue                                           | Reason                                                                                                                                 |
-| ------------------------------------------------------ | ----------------------- | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| Manual corrections to inferred session interpretations | vscode-session-analysis | [#5](https://github.com/toddysm/agent-insights/issues/5) | Deferred standalone idea, not a required child or dependency of the initial read-only feature; no future correction design is approved |
-| Local/extension execution source support | vscode-session-analysis | [#10](https://github.com/toddysm/agent-insights/issues/10), [#29](https://github.com/toddysm/agent-insights/pull/29) | Open and preserved; the user cannot complete Local live testing. No merge or closure, and no Agent Host completion dependency |
-| Local saved-chat conversation formats | vscode-session-analysis | [#11](https://github.com/toddysm/agent-insights/issues/11) | Open supplemental work, not the primary Agent Host conversation reader or a required blocker |
-| VS Code Agent Debug Log execution adapter qualification | vscode-session-analysis | [#27](https://github.com/toddysm/agent-insights/issues/27) | A particular export adapter is deferred, not Agent Host support. #30 must revisit this deferral if the adapter is needed for the qualified primary path |
-| Optional Agent Host per-call telemetry and effective capture routing | vscode-session-analysis | [#34](https://github.com/toddysm/agent-insights/issues/34) | Unverified follow-up, not passed or required for native history/retained turn-usage analysis; new capture activity requires specific authorization |
+| Capability                                                           | Feature slug            | Tracking issue                                             | Reason                                                                                                                                                  |
+| -------------------------------------------------------------------- | ----------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manual corrections to inferred session interpretations               | vscode-session-analysis | [#5](https://github.com/toddysm/agent-insights/issues/5)   | Deferred standalone idea, not a required child or dependency of the initial read-only feature; no future correction design is approved                  |
+| Local saved-chat conversation formats                                | vscode-session-analysis | [#11](https://github.com/toddysm/agent-insights/issues/11) | Open supplemental work, not the primary Agent Host conversation reader or a required blocker                                                            |
+| VS Code Agent Debug Log execution adapter qualification              | vscode-session-analysis | [#27](https://github.com/toddysm/agent-insights/issues/27) | A particular export adapter is deferred, not Agent Host support. #30 must revisit this deferral if the adapter is needed for the qualified primary path |
+| Optional Agent Host per-call telemetry and effective capture routing | vscode-session-analysis | [#34](https://github.com/toddysm/agent-insights/issues/34) | Unverified follow-up, not passed or required for native history/retained turn-usage analysis; new capture activity requires specific authorization      |
 
 ## Known gaps & debt
 
-| Gap                                                                      | Evidence and next work                                                                                                                                                                           |
-| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Native foundations are merged; runtime integration, public distribution and Agent Host readers remain incomplete | [#41](https://github.com/toddysm/agent-insights/pull/41) completed #36/#42, [#43](https://github.com/toddysm/agent-insights/pull/43) completed #37 and [#44](https://github.com/toddysm/agent-insights/pull/44) completed #38. #33/#35 integration is next; release #39 needs separate permission. Readers remain blocked on integration/source qualification. Optional telemetry remains #34 |
-| Current prototype still contains superseded editing flows                | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                  |
-| Real-session readers, reports and interpretation definitions are not implemented yet | The transport is available, but the local shell reports missing consumers explicitly; delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2) |
-| End-user capture and usage documentation is not complete                 | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application |
+| Gap                                                                                                                 | Evidence and next work                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Native foundations and runtime integration are merged; public distribution and Agent Host readers remain incomplete | #41 completed #36/#42, #43 completed #37, #44 completed #38 and [#35](https://github.com/toddysm/agent-insights/pull/35) completed #33. Release #39 needs separate permission. Source qualification and Agent Host readers remain separate; optional telemetry remains #34. #10/#29 resumes as the dependency for the approved extension-reader refinements #46-#49, not as Agent Host support. |
+| Current prototype still contains superseded editing flows                                                           | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                                                                                                                                                                                                                 |
+| Conversation readers, reports and interpretation definitions remain incomplete                                      | The execution reader and transport are available; missing consumers are reported explicitly. Delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2)                                                                                                                                                                                                        |
+| End-user capture and usage documentation is not complete                                                            | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application                                                                                                                                                                                                |

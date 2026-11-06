@@ -4,7 +4,9 @@ The current runtime implements
 [#9](https://github.com/toddysm/agent-insights/issues/9): source configuration,
 availability checks, a controlled read boundary and an in-memory reader registry.
 It also includes the [Copilot analysis transport](copilot-analysis.md).
-It does not yet include real capture readers, report views or interpretation definitions.
+It includes the VS Code OpenTelemetry extension file-export reader from
+[#10](https://github.com/toddysm/agent-insights/issues/10). Conversation readers,
+report views and interpretation definitions are not installed yet.
 The interface states those limitations explicitly. The
 [historical prototype](../design/session-insights/README.md) is separate and
 continues to use fictional data.
@@ -70,11 +72,43 @@ Only regular files are read, using read-only descriptors. A single read is
 limited to 64 MiB; oversized captures produce an explicit error, not silent
 truncation. There are no filesystem watchers.
 
-No production reader is registered yet, so "Read source" is disabled in this
-build. Internal adapters use the
-[reader contract](evidence-contracts.md); tests use synthetic adapters, not real
-capture support. Single-file readers receive a bounded byte stream and cancellation
-signal. Composite readers receive only their declared, explicitly authorized
+### Read an existing execution capture
+
+1. Start with `--source` pointing to an existing VS Code OpenTelemetry file export
+   or its authorized parent directory. Do not copy the capture into this project.
+2. Open the private launch URL and select the configured source. For a directory,
+   enter the relative capture filename.
+3. Select `vscode-otel-jsonl` and choose **Read source**.
+4. Inspect the observed session/record counts, **Read coverage** and expandable
+   **Read limitations**. Reading does not invoke a model.
+
+The reader targets the extension file exporter inspected in VS Code 1.144.0;
+it is not an Agent Debug Log export, OpenTelemetry Protocol wire export, saved
+chat, native Copilot history or arbitrary JSON Lines reader. See the exact
+[format and evidence limits](evidence-contracts.md#execution-reader-behavior).
+Synthetic exporter-shaped fixtures qualify the declared format. A user-reported
+fresh-capture smoke test found two session groups and 32 records with limitations;
+a separately authorized bounded structural inspection identified empty optional
+tool IDs, hook/unknown operations and missing or parent-only session linkage.
+This is partial compatibility evidence, not a fully qualified producer/runtime.
+The fixes are tracked in [#46](https://github.com/toddysm/agent-insights/issues/46),
+[#47](https://github.com/toddysm/agent-insights/issues/47),
+[#48](https://github.com/toddysm/agent-insights/issues/48) and
+[#49](https://github.com/toddysm/agent-insights/issues/49).
+
+Malformed independent records can yield a partial read with valid records
+retained. A trailing unfinished record is reported, not silently discarded.
+After the writer finishes, choose **Read source** again. Unsupported input without
+usable evidence reports unavailable data rather than successful zero totals.
+Records without an unambiguous reported session remain unassigned; paths and
+timestamps are not used to invent one. Existing capture prerequisites remain
+tracked in [#1](https://github.com/toddysm/agent-insights/issues/1).
+
+Production readers are registered by the executable. Trusted embedding/tests may
+explicitly supply their own reader list; the server factory alone defaults to
+none. All adapters receive bounded bytes and cancellation through the
+[reader contract](evidence-contracts.md), not arbitrary filesystem access.
+Composite readers receive only their declared, explicitly authorized
 file/database roles, not permission to select arbitrary paths.
 
 Read views remain in process memory. Refresh, cancellation and process shutdown
@@ -83,10 +117,22 @@ newer read or refresh. Source-change metadata is a best-effort observation, not
 a claim of an atomic filesystem snapshot. This is not a security sandbox against
 a hostile process already running with the same operating-system account.
 
-The view's read-completion timestamp includes adapter parsing and normalization.
-Authenticated status retains the separate input-capture bounds in `readTiming`,
-so processing latency is not mistaken for newer source observation. Source-change
-checks apply to that input-capture interval, not to later adapter computation.
+The published view's `startedAtMs` is the input-capture start, but its
+`finishedAtMs` includes adapter processing and validation. It is not the time
+through which the harness source was observed. Authenticated status separates
+these meanings:
+
+| Field                          | Meaning                                                          |
+| ------------------------------ | ---------------------------------------------------------------- |
+| `readTiming.inputStartedAtMs`  | Physical source capture started.                                 |
+| `readTiming.inputFinishedAtMs` | Physical source capture finished.                                |
+| `readTiming.finishedAtMs`      | Processing finished; equals the published view's `finishedAtMs`. |
+
+Use the two `input*` fields for source observation. Never substitute processing
+completion for `inputFinishedAtMs`; if capture timing is unavailable, report it
+as unavailable. Source-change checks apply to the capture interval, not later
+adapter computation. Low-level adapter results contain provisional assembly
+timestamps that the runtime replaces before publishing a read view.
 The read deadline also uses a monotonic elapsed-time check before publication:
 synchronous parsing cannot publish an overdue result merely because it delayed
 the timeout callback. Cancellation cannot preempt JavaScript that is currently

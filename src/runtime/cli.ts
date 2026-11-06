@@ -7,6 +7,7 @@
 import { parseConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
 import { startRuntime } from "./server.js";
+import { productionReaders } from "../evidence/readers/index.js";
 
 /**
  * Launch from process arguments, or print usage when help was requested.
@@ -21,7 +22,7 @@ async function main(): Promise<void> {
     );
     return;
   }
-  const runtime = await startRuntime(config);
+  const runtime = await startRuntime(config, { readers: productionReaders });
   process.stdout.write(
     `Agent Insights: ${runtime.launchUrl}\nKeep this launch URL private. Access stays in memory; reopen the full URL after a page reload.\n`,
   );

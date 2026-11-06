@@ -8,8 +8,13 @@ in-memory views; they must never be serialized into an application session store
 
 ## Read generations and provenance
 
-- Every read has an independent `id`, wall-clock read-start/read-finish bounds,
-  source metadata, sessions, events and visible issues.
+- Every read has an independent `id`, source metadata, sessions, events and visible
+  issues. In runtime-published views, `startedAtMs` is input-capture start and
+  `finishedAtMs` is processing completion, including adapter work and validation.
+  The separate `readTiming.inputStartedAtMs`/`inputFinishedAtMs` values describe
+  physical source observation; processing completion is not an observation bound.
+  Direct adapter results have only provisional assembly timestamps because
+  `ReaderInput` does not carry filesystem capture timing.
 - At least one source must be retained, including for unavailable or unsupported
   input; a completely empty view must not disguise a failed read.
 - Timestamps are Unix milliseconds. Durations use milliseconds, including
@@ -44,15 +49,24 @@ in-memory views; they must never be serialized into an application session store
 it rejects invalid input rather than repairing it. It does not prove a producer's
 claims, reconstruct transcripts, correlate sessions or detect format compatibility.
 Unknown producer properties and incomplete input must be handled explicitly by
-the future source readers, not disguised as successful empty data.
+source readers, not disguised as successful empty data.
 
 ## Initial reader targets and evidence limits
 
-These are bounded implementation targets, not shipped reader support.
+The execution reader now implements the first target; both conversation targets
+remain pending in [#11](https://github.com/toddysm/agent-insights/issues/11).
 Producer definitions were inspected at Visual Studio Code commit
 `2c33b50b16c472efe58357d1d2a8a5414bc23fbf` (1.144.0).
 The fixtures are independently authored fictional data; no source implementation
-or private capture was copied. No live capture smoke test has run.
+or private capture was copied. A fresh user-reported smoke test retained execution
+records with partial coverage; a separately authorized fixed-prefix structural
+inspection identified the follow-ups in
+[#46](https://github.com/toddysm/agent-insights/issues/46),
+[#47](https://github.com/toddysm/agent-insights/issues/47),
+[#48](https://github.com/toddysm/agent-insights/issues/48) and
+[#49](https://github.com/toddysm/agent-insights/issues/49).
+The user's producer version and execution runtime remain unconfirmed; this
+does not certify every VS Code version or claim Agent Host reader support.
 
 | Target                        | Producer evidence                                                                                                                                                                                                                                                                                                                            | Available fields / limitations                                                                                                                                                                                                     |
 | ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -79,6 +93,98 @@ an unknown schema. The [normalized fixture](../tests/fixtures/read-view.ts) and
 [tests](../tests/contracts.test.ts) exercise partial, unavailable, changing and
 complementary-source views. Structural fixture checks are not live-producer or
 platform certification.
+
+### Execution reader behavior
+
+The [execution adapter](../src/evidence/readers/vscode-otel.ts) is installed by the
+normal command-line application. Its supported operations are `chat` and
+`embeddings` (model calls), `execute_tool` (tool calls) and `invoke_agent` (agent
+spans). Known log/metric records and standalone `content_event` records are not
+extra executions. Unqualified operations and unknown shapes produce limitations.
+Logs are recognized through their required time/resource/instrumentation-scope
+fields; optional severity and body fields are not prerequisites.
+Span name/kind fields also identify compatible spans when both timestamps are
+absent; missing timing does not discard otherwise usable execution or parent evidence.
+Missing or malformed required exporter resource/scope metadata retains usable
+records only with an explicit limitation and reduced coverage. Reported
+model/tool/producer names with unsupported types are not silently coerced or
+treated like ordinary omission.
+
+The adapter preserves trace-scoped span identity, parent context, reported
+model/tool names, timestamps, status and usage. Optional typed `trace`, `operation`,
+`spanName`, `model`, `tool` and `content` fields extend execution events without breaking older
+normalized fixtures. Content retains only known captured string attributes:
+input/output messages and tool arguments/results. These are quoted evidence,
+not reconstructed conversation messages or executable instructions. Their
+original attribute pointers are included in event references.
+For this adapter, each reference's `recordId` is `sha256:` followed by the digest
+of the original physical line bytes, excluding LF but retaining any CR or initial
+byte-order mark. Together with source/line/pointer, it allows later evidence
+resolution to detect replacement rather than silently show different content.
+It is a content fingerprint, not producer authentication or a retained raw copy.
+The original span label is separate from the reported tool name/call ID. A generic
+`execute_tool` label does not manufacture a missing tool name. Cyclic native parent
+relationships are diagnosed even when records have explicit session identifiers.
+
+Execution-event `nativeIdentities` preserve only identifiers actually reported
+on that event, even when it cannot be assigned to a session. An inherited
+association does not manufacture per-event hints. Session `nativeIdentities`
+aggregate the distinct `vscode-chat` and `gen-ai-conversation` namespaces.
+An explicit editor identity can resolve a
+uniquely matching conversation alias within this read; ambiguous aliases remain
+unassigned. Missing identities can inherit only an unambiguous captured parent
+association, never a filename, trace-only guess or temporal match. Cross-source
+correlation remains separate.
+
+Identical supported span facts/identities/producer metadata collapse to one
+execution with all original line references. Conflicting repeated native
+trace/span identities are excluded with a visible issue. Unsupported attributes
+are not interpreted; their original records remain referenced in the harness.
+Native execution identities are checked before unsupported operations are filtered:
+an unqualified operation cannot hide a conflict with a supported call in either
+source order. Intentionally ignored log/metric/content telemetry stays separate.
+
+Model-call token counts are per-call. Non-model usage accounting remains unknown,
+not additional model consumption. Cache/reasoning component overlap remains
+unknown; identical legacy/new reasoning aliases represent one component and
+conflicting aliases produce a limitation. Missing counts remain null, including
+missing output usage; explicit reported zero remains zero.
+
+Coverage concerns supported evidence in the bounded read, not all session history.
+Execution content does not establish conversation coverage. Dropped-field counts,
+recognized truncation markers, damaged records and incomplete timing/usage
+reduce coverage. Absence of a truncation marker does not prove that the producer
+captured all content; effective capture settings still matter. Raw parser errors
+and captured payloads are never diagnostic messages.
+
+### Producer mapping evidence
+
+The implementation inspected these public producer definitions at VS Code commit
+`2c33b50b16c472efe58357d1d2a8a5414bc23fbf`, rather than treating filenames or the
+synthetic fixtures as proof of the wire format:
+
+| Definition                                                                                                                                                               | SHA-256 of inspected file bytes                                    |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
+| [File exporter](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/node/fileExporters.ts)            | `d5fd8f85c2e58d4d59283ec9c28c3339e5be9ca928a3ab8c4d8fafced3055138` |
+| [Attribute vocabulary](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/common/genAiAttributes.ts) | `c2e82f03f276d5efb0edb105c0dcf2e5bea9ba60842b7806678a70bea2d63e2c` |
+
+| Producer field/declaration                                                                                 | Reader interpretation                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Direct span context, `parentSpanContext`, `resource.attributes`, `instrumentationScope`                    | Trace-scoped identity and reported metadata, not an OTLP wrapper or a path-derived identity.                                     |
+| `startTime` / `endTime` tuples                                                                             | Epoch seconds plus nanosecond remainder, converted to milliseconds; missing values stay unavailable.                             |
+| `gen_ai.operation.name`                                                                                    | Explicit mappings for `chat`, `embeddings`, `execute_tool` and `invoke_agent`; other operations are not guessed.                 |
+| `gen_ai.conversation.id` / `copilot_chat.chat_session_id`                                                  | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text.                |
+| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`                                                 | Reported counts on the represented operation; no estimates or missing-to-zero conversion.                                        |
+| Cache attributes and both reasoning-token attribute names                                                  | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
+| `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | Optional content-gated attributes retained only as captured strings and source references.                                       |
+| Separate file span/log/metric exporters                                                                    | A single destination can contain different signal types; non-execution records are not additional calls.                         |
+
+This is static compatibility evidence, not proof of producer authenticity,
+all-version support, content completeness or live private-capture qualification.
+Fixtures are independently authored and contain no copied source implementation
+or private capture. If a reviewer cannot retrieve the upstream definitions,
+that independent-verification gap must remain explicit rather than becoming a
+claimed successful check.
 
 ## Calculated metrics
 

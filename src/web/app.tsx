@@ -388,10 +388,19 @@ function App(): ReactElement {
       if (current !== generation.current) return;
       setView(view);
       setStatus(nextStatus);
+      const partial =
+        view.issues.length > 0 ||
+        view.sources.some((source) =>
+          Object.values(source.coverage).some(
+            (coverage) => coverage.status === "partial",
+          ),
+        );
       const summary =
         view.sessions.length === 0 && view.events.length === 0
           ? "No session evidence is available from this read."
-          : `Read completed: ${view.sessions.length} sessions and ${view.events.length} records.`;
+          : view.sessions.length === 0
+            ? `${view.events.length} record${view.events.length === 1 ? " was" : "s were"} read, but no session could be identified.`
+            : `${partial ? "Partial read" : "Read completed"}: ${view.sessions.length} session${view.sessions.length === 1 ? "" : "s"} and ${view.events.length} record${view.events.length === 1 ? "" : "s"}.`;
       const limitations = view.issues
         .slice(0, 3)
         .map((issue) => issue.message)
@@ -614,6 +623,47 @@ function App(): ReactElement {
                 <p className="notice" role="status">
                   {readNotice}
                 </p>
+              )}
+              {view && (
+                <section aria-labelledby="read-coverage-heading">
+                  <h3 id="read-coverage-heading">Read coverage</h3>
+                  <p>
+                    Coverage describes this bounded read, not all session
+                    history.
+                  </p>
+                  {view.sources.map((source) => (
+                    <dl key={source.id}>
+                      {(["messages", "timing", "tools", "tokens"] as const).map(
+                        (dimension) => {
+                          const coverage = source.coverage[dimension];
+                          return (
+                            <div key={dimension}>
+                              <dt>
+                                {dimension[0]?.toUpperCase()}
+                                {dimension.slice(1)}
+                              </dt>
+                              <dd>
+                                {coverage.status}
+                                {coverage.status !== "complete" &&
+                                  `: ${coverage.reason}`}
+                              </dd>
+                            </div>
+                          );
+                        },
+                      )}
+                    </dl>
+                  ))}
+                  {view.issues.length > 0 && (
+                    <details>
+                      <summary>Read limitations ({view.issues.length})</summary>
+                      <ul>
+                        {view.issues.map((issue, index) => (
+                          <li key={index}>{issue.message}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </section>
               )}
             </section>
             <section

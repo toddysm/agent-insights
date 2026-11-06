@@ -4,7 +4,7 @@
  * Readers supply evidence; application-owned operations supply interpretation
  * instructions; a provider executes those instructions. These are separate
  * responsibilities: using Copilot CLI as a provider does not select CLI history
- * as the evidence source. VS Code Copilot Chat is the first planned source.
+ * as the evidence source. VS Code Copilot Chat is the initial source.
  *
  * Zod schemas run at browser/server boundaries. TypeScript interfaces describe
  * internal collaborators and are erased during compilation. This module performs

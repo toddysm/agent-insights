@@ -515,6 +515,8 @@ test("read completion includes adapter work while retaining the actual input obs
   const timing = (await service.status()).readTiming;
   assert.ok(timing);
   assert.equal(timing.readId, view.id);
+  assert.equal(view.startedAtMs, timing.inputStartedAtMs);
+  assert.ok(view.startedAtMs <= timing.inputFinishedAtMs);
   assert.ok(timing.inputFinishedAtMs <= adapterStartedAt);
   assert.ok(view.finishedAtMs >= adapterFinishedAt);
   assert.equal(timing.finishedAtMs, view.finishedAtMs);
@@ -1180,10 +1182,23 @@ test("control bodies enforce the exact 8192-byte boundary", async (t) => {
   }
 });
 
-test("the packaged CLI starts a responsive loopback service and shuts down without saved state", async (t) => {
-  const child = spawn(process.execPath, [".build/src/runtime/cli.js"], {
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+test("the packaged CLI registers the execution reader and reads only on explicit request without saved state", async (t) => {
+  const { root, file } = await fixture(t);
+  const bytes = await readFile("tests/fixtures/otel.jsonl");
+  await writeFile(file, bytes);
+  const child = spawn(
+    process.execPath,
+    [
+      ".build/src/runtime/cli.js",
+      "--source",
+      file,
+      "--copilot-path",
+      path.join(root, "no-model-runtime"),
+    ],
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
   const exited: Promise<unknown[]> = once(child, "exit");
   t.after(async () => {
     if (child.exitCode === null && child.signalCode === null)
@@ -1208,7 +1223,53 @@ test("the packaged CLI starts a responsive loopback service and shuts down witho
     headers: { "X-Agent-Insights-Token": token },
   });
   assert.equal(response.status, 200);
-  assert.equal(statusSchema.parse(await response.json()).sources.length, 0);
+  const status = statusSchema.parse(await response.json());
+  assert.equal(status.sources.length, 1);
+  assert.deepEqual(status.readers, ["vscode-otel-jsonl"]);
+  assert.equal(status.hasReadView, false);
+  const headers = {
+    "X-Agent-Insights-Token": token,
+    Origin: launch.origin,
+    "Content-Type": "application/json",
+  };
+  const selection = {
+    sourceId: status.sources[0]?.id,
+    relativePath: "",
+    format: "vscode-otel-jsonl",
+  };
+  const read = await fetch(launch.origin + "/api/read", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(selection),
+  });
+  assert.equal(read.status, 200);
+  const view = parseReadView(await read.json());
+  assert.equal(view.sessions.length, 1);
+  assert.equal(view.events.length, 2);
+  assert.equal(view.sources[0]?.changedDuringRead, false);
+  assert.deepEqual(await readFile(file), bytes);
+  assert.deepEqual((await readdir(path.dirname(file))).sort(), [
+    "capture.jsonl",
+  ]);
+  await writeFile(file, '{"version":"unsupported"}');
+  const unchanged = statusSchema.parse(
+    await (await fetch(launch.origin + "/api/status", { headers })).json(),
+  );
+  assert.equal(unchanged.readTiming?.readId, view.id);
+  assert.equal(unchanged.analysis.run, null);
+  const reread = parseReadView(
+    await (
+      await fetch(launch.origin + "/api/read", {
+        method: "POST",
+        headers,
+        body: JSON.stringify(selection),
+      })
+    ).json(),
+  );
+  assert.notEqual(reread.id, view.id);
+  assert.equal(reread.sources[0]?.format, null);
+  assert.equal(reread.events.length, 0);
+  assert.equal(reread.sources[0]?.coverage.tokens.status, "unavailable");
   child.kill("SIGTERM");
   const [code, termination] = await exited;
   assert.ok(
