@@ -50,7 +50,10 @@ interface Candidate {
   conflict: boolean;
 }
 
-/** Bounded-by-category diagnostics: repeated failures do not retain payloads or one issue per record. */
+/**
+ * Aggregate one payload-free issue per category, retaining each occurrence's
+ * supplied original references rather than keeping one issue per record.
+ */
 class Diagnostics {
   private readonly entries = new Map<
     string,
@@ -64,7 +67,8 @@ class Diagnostics {
   >();
 
   /**
-   * Accumulate a controlled message, retaining only count and first physical line.
+   * Accumulate a controlled message, count and first physical line, preserving
+   * all supplied original references for each occurrence.
    * @param code - Shared public issue category.
    * @param message - Application-owned description, never source text or exception text.
    * @param line - First affected one-based source line.
