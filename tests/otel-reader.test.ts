@@ -517,6 +517,29 @@ test("repeated conflicts retain all original anchors with linear diagnostic grow
     ],
     [1, 2, 3, 4],
   );
+  const missing = record({}, { "gen_ai.operation.name": undefined });
+  for (const records of [
+    [first, conflicting, first],
+    [first, conflicting, conflicting, first],
+    [first, missing, first],
+    [missing, first, first],
+  ]) {
+    const conflicted = await read(records);
+    assert.equal(conflicted.events.length, 0);
+    assert.equal(conflicted.sources[0]?.classification?.conflictingSpans, 1);
+    const lines = new Set(
+      conflicted.issues.flatMap((diagnostic) =>
+        (diagnostic.references ?? []).map((ref) => {
+          assert.ok(ref.location.kind === "jsonl");
+          return ref.location.line;
+        }),
+      ),
+    );
+    assert.deepEqual(
+      [...lines].sort((a, b) => a - b),
+      Array.from({ length: records.length }, (_, index) => index + 1),
+    );
+  }
 });
 
 test("nested hooks and agent wrappers keep model usage separate without aggregating intervals", async () => {

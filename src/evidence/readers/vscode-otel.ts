@@ -859,6 +859,8 @@ async function read(input: ReaderInput): Promise<ReadView> {
     const previous = candidates.get(candidate.key);
     if (previous) {
       if (
+        previous.conflict ||
+        candidate.conflict ||
         !isDeepStrictEqual(previous.facts, candidate.facts) ||
         !isDeepStrictEqual(previous.identities, candidate.identities) ||
         previous.producer !== candidate.producer ||
@@ -876,7 +878,16 @@ async function read(input: ReaderInput): Promise<ReadView> {
         );
       }
       previous.references.push(...candidate.references);
-    } else candidates.set(candidate.key, candidate);
+    } else {
+      candidates.set(candidate.key, candidate);
+      if (candidate.conflict)
+        diagnostics.add(
+          "unknown-record",
+          "Conflicting records share a native span identity; excluded",
+          record.line,
+          candidate.references,
+        );
+    }
   }
   input.signal.throwIfAborted();
   const trusted = [...candidates.values()].filter(

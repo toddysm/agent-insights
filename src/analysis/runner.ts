@@ -256,9 +256,14 @@ export class AnalysisRunner {
         sources: view.sources.filter((source) =>
           session.sourceIds.includes(source.id),
         ),
-        issues: view.issues.filter((issue) =>
-          session.sourceIds.includes(issue.sourceId),
-        ),
+        issues: view.issues
+          .filter((issue) => session.sourceIds.includes(issue.sourceId))
+          .map((issue) => ({
+            sourceId: issue.sourceId,
+            code: issue.code,
+            message: issue.message,
+            ...(issue.count === undefined ? {} : { count: issue.count }),
+          })),
         events,
       }),
     };

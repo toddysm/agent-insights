@@ -175,7 +175,16 @@ test("analysis carries hook events and source-wide classification limitations wi
         assert.equal(transmitted.events[0]?.kind, "hook-execution");
         assert.deepEqual(transmitted.events[0], view.events[0]);
         assert.deepEqual(transmitted.sources, view.sources);
-        assert.deepEqual(transmitted.issues, view.issues);
+        assert.deepEqual(transmitted.issues, [
+          {
+            sourceId: "source-fixture",
+            code: "missing-field",
+            message:
+              "Execution operation metadata is missing; span unclassified",
+            count: 1,
+          },
+        ]);
+        assert.equal(transmitted.issues[0]?.references, undefined);
         assert.match(input.system, /Hook executions are separate/);
         assert.match(input.system, /never sum nested spans/);
         assert.match(input.system, /source-wide, not selected-session metrics/);
@@ -203,6 +212,53 @@ test("analysis carries hook events and source-wide classification limitations wi
     output: 3,
     model: "synthetic",
   });
+});
+
+test("unrelated source-wide diagnostic anchors do not exhaust a small selected-session analysis budget", async () => {
+  const base = exampleReadView();
+  const fingerprint = `sha256:${"a".repeat(64)}`;
+  const view = parseReadView({
+    ...base,
+    issues: [
+      ...base.issues,
+      {
+        sourceId: "source-fixture",
+        code: "missing-field",
+        message: "Execution operation metadata is missing; span unclassified",
+        count: 1000,
+        references: Array.from({ length: 1000 }, (_, index) => ({
+          sourceId: "source-fixture",
+          recordId: fingerprint,
+          location: { kind: "jsonl", line: index + 3, pointer: "" },
+        })),
+      },
+    ],
+  });
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(view.issues)) > ANALYSIS_INPUT_LIMIT,
+  );
+  let calls = 0;
+  const runner = new AnalysisRunner(
+    {
+      ...syntheticProvider,
+      async analyze(input, callbacks) {
+        calls++;
+        assert.ok(!input.prompt.includes(fingerprint));
+        assert.ok(
+          Buffer.byteLength(input.system) + Buffer.byteLength(input.prompt) <
+            ANALYSIS_INPUT_LIMIT,
+        );
+        assert.ok(input.prompt.includes('"count":1000'));
+        return syntheticProvider.analyze(input, callbacks);
+      },
+    },
+    [syntheticOperation],
+  );
+  runner.start(view, request);
+  await tick();
+  assert.equal(calls, 1);
+  assert.equal(runner.run?.state, "succeeded");
+  assert.equal(view.issues[1]?.references?.length, 1000);
 });
 
 test("analysis preserves input observation bounds separately from processing completion", async () => {

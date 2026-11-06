@@ -173,9 +173,12 @@ reports nine hook executions and two unclassified spans, not eleven unsupported
 calls.
 These observations are not trusted per-session metrics, a complete-capture claim
 or runtime identification. Unclassified/conflicting records still limit coverage.
-Analysis receives relevant source-wide classification and payload-free issues
-alongside selected-session events; source counts must not be mistaken for that
-session's totals. Earlier version-1 views without these optional fields remain valid.
+Analysis receives relevant source-wide classification and payload-free diagnostic
+summaries (source, code, message and optional occurrence count) alongside
+selected-session events. Full diagnostic anchor arrays remain in the read view,
+not the model input: unrelated source records must not consume a small selected
+session's analysis budget. Source counts must not be mistaken for that session's
+totals. Earlier version-1 views without these optional fields remain valid.
 
 Model-call token counts are per-call. Non-model usage accounting remains unknown,
 not additional model consumption, including aggregate usage on hooks or agent spans.
