@@ -20,6 +20,7 @@ import {
   NATIVE_POLICY,
   nativeManifestSchema,
   nativeTarget,
+  releasedNativePin,
   executableName,
   sha256,
   verifyArtifact,
@@ -31,6 +32,11 @@ import {
   type NativePin,
 } from "../src/runtime/native-helper.js";
 import { prepareArtifact } from "../src/native/preparation.js";
+import { prepareReleasedArtifact } from "../src/native/release-preparation.js";
+import {
+  NATIVE_RELEASE,
+  NATIVE_RELEASE_PINS,
+} from "../src/runtime/native-release.js";
 import { RuntimeError } from "../src/runtime/errors.js";
 
 /** Expect a controlled failure, never an empty/success-shaped unavailable result. */
@@ -344,10 +350,282 @@ test(
   },
 );
 
-test("default runtime lookup stays explicitly unavailable with no published pin and has no preparation side effects", async () => {
+test("default runtime lookup stays explicitly unavailable without the pinned installation and never prepares it", async () => {
   await assert.rejects(preparedNativeHelper(), unavailable);
   await assert.rejects(preparedNativeHelper(), unavailable);
 });
+
+/** Extend the owned synthetic package with independently trusted release provenance and exact metadata length. */
+async function releaseFixture(t: TestContext, binary?: Buffer) {
+  const f = await fixture(t, binary, host);
+  f.manifest.sourceCommit = NATIVE_RELEASE.sourceCommit;
+  const raw = Buffer.from(JSON.stringify(f.manifest) + "\n");
+  await writeFile(path.join(f.directory, "manifest.json"), raw);
+  return {
+    ...f,
+    pin: {
+      target: f.manifest.target,
+      manifestSha256: sha256(raw),
+      manifestBytes: raw.length,
+    },
+  };
+}
+
+/** Serve only fixed release asset names from synthetic owned files; record requests without making network calls. */
+async function releaseDownloads(
+  t: TestContext,
+  f: Awaited<ReturnType<typeof releaseFixture>>,
+  replace?: (asset: string, bytes: Buffer) => Response,
+) {
+  const assets = new Map([
+    [
+      `manifest-${f.pin.target}.json`,
+      await readFile(path.join(f.directory, "manifest.json")),
+    ],
+    [
+      `agent-insights-sqlite-helper-${f.pin.target}${f.pin.target === "x86_64-pc-windows-msvc" ? ".exe" : ""}`,
+      await readFile(path.join(f.directory, f.manifest.binary.name)),
+    ],
+    [
+      `THIRD-PARTY-NOTICES-${f.pin.target}.txt`,
+      await readFile(path.join(f.directory, "THIRD-PARTY-NOTICES.txt")),
+    ],
+  ]);
+  const requests: string[] = [];
+  t.mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
+    const url =
+      typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+    assert.ok(url.startsWith(NATIVE_RELEASE.downloadBase));
+    const asset = url.slice(NATIVE_RELEASE.downloadBase.length);
+    requests.push(asset);
+    const bytes = assets.get(asset);
+    assert.ok(
+      bytes,
+      "Only the three fixed release filenames may be requested.",
+    );
+    return replace
+      ? replace(asset, bytes)
+      : new Response(Uint8Array.from(bytes), {
+          headers: { "content-length": String(bytes.length) },
+        });
+  });
+  return requests;
+}
+
+test("release policy pins exactly four targets to one qualified revision, never latest or candidate receipts", () => {
+  assert.equal(NATIVE_RELEASE_PINS.length, 4);
+  assert.equal(new Set(NATIVE_RELEASE_PINS.map((pin) => pin.target)).size, 4);
+  assert.equal(
+    NATIVE_RELEASE.sourceCommit,
+    "d0cabfcb7ce78d83a061138cd70b1cbaae47b648",
+  );
+  assert.equal(NATIVE_RELEASE.qualificationRun, "42125840919");
+  assert.ok(NATIVE_RELEASE.downloadBase.endsWith("/native-helper-v0.1.0/"));
+  assert.throws(() => releasedNativePin("../candidate"), unavailable);
+  for (const pin of NATIVE_RELEASE_PINS) {
+    assert.equal(releasedNativePin(pin.target), pin);
+    assert.match(pin.manifestSha256, /^[a-f0-9]{64}$/);
+    assert.ok(
+      pin.manifestBytes > 0 &&
+        pin.manifestBytes <= NATIVE_POLICY.maxMetadataBytes,
+    );
+    assert.ok(Object.isFrozen(pin));
+  }
+});
+
+test(
+  "release preparation rejects invalid pins and cancellation before network or staging",
+  nativeOnly,
+  async (t) => {
+    const f = await releaseFixture(t);
+    const requests = await releaseDownloads(t, f);
+    await assert.rejects(
+      prepareReleasedArtifact(f.root, { ...f.pin, manifestSha256: "invalid" }),
+      unavailable,
+    );
+    await assert.rejects(
+      prepareReleasedArtifact(f.root, {
+        ...f.pin,
+        manifestBytes: NATIVE_POLICY.maxMetadataBytes + 1,
+      }),
+      unavailable,
+    );
+    await assert.rejects(
+      prepareReleasedArtifact(f.root, { ...f.pin, manifestBytes: -1 }),
+      unavailable,
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await assert.rejects(
+      prepareReleasedArtifact(f.root, f.pin, controller.signal),
+      { name: "AbortError" },
+    );
+    assert.deepEqual(requests, []);
+    assert.deepEqual(await readdir(f.root), ["candidate"]);
+  },
+);
+
+test(
+  "release preparation authenticates metadata before downloading or running an executable",
+  nativeOnly,
+  async (t) => {
+    const f = await releaseFixture(t);
+    const requests = await releaseDownloads(
+      t,
+      f,
+      (_asset, bytes) =>
+        new Response(Uint8Array.from(Buffer.alloc(bytes.length))),
+    );
+    await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+    assert.deepEqual(requests, [`manifest-${f.pin.target}.json`]);
+    assert.deepEqual(
+      await readdir(path.join(f.root, ".native-helper", f.pin.target)),
+      [],
+    );
+  },
+);
+
+test(
+  "release preparation rejects separately pinned metadata for another source revision",
+  nativeOnly,
+  async (t) => {
+    const f = await releaseFixture(t);
+    f.manifest.sourceCommit = "a".repeat(40);
+    const raw = Buffer.from(JSON.stringify(f.manifest) + "\n");
+    await writeFile(path.join(f.directory, "manifest.json"), raw);
+    f.pin.manifestSha256 = sha256(raw);
+    f.pin.manifestBytes = raw.length;
+    const requests = await releaseDownloads(t, f);
+    await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+    assert.equal(requests.length, 1);
+  },
+);
+
+test(
+  "release downloads reject failed requests and untrusted redirects without leaking diagnostics",
+  nativeOnly,
+  async (t) => {
+    for (const status of [404, 500]) {
+      const f = await releaseFixture(t);
+      await releaseDownloads(
+        t,
+        f,
+        () => new Response("unavailable", { status }),
+      );
+      await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+    }
+    const f = await releaseFixture(t);
+    const requests = await releaseDownloads(
+      t,
+      f,
+      () =>
+        new Response(null, {
+          status: 302,
+          headers: { location: "https://untrusted.invalid/private" },
+        }),
+    );
+    await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+    assert.equal(requests.length, 1);
+    t.mock.method(globalThis, "fetch", async () => {
+      throw new TypeError("synthetic private transport diagnostic");
+    });
+    await assert.rejects(
+      prepareReleasedArtifact(f.root, f.pin),
+      (error: unknown) =>
+        unavailable(error) &&
+        error instanceof Error &&
+        !error.message.includes("private"),
+    );
+  },
+);
+
+test(
+  "release downloads bound missing-length streams and reject truncated, tampered and oversized bytes",
+  nativeOnly,
+  async (t) => {
+    for (const adjustment of [-1, 0, 1]) {
+      const f = await releaseFixture(t);
+      await releaseDownloads(t, f, (asset, bytes) => {
+        if (asset.startsWith("manifest-"))
+          return new Response(Uint8Array.from(bytes));
+        return new Response(
+          Uint8Array.from(Buffer.alloc(bytes.length + adjustment)),
+        );
+      });
+      await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+      assert.deepEqual(
+        await readdir(path.join(f.root, ".native-helper", f.pin.target)),
+        [],
+      );
+    }
+    const f = await releaseFixture(t);
+    await releaseDownloads(
+      t,
+      f,
+      (_asset, bytes) =>
+        new Response(Uint8Array.from(bytes), {
+          headers: { "content-length": String(bytes.length + 1) },
+        }),
+    );
+    await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+  },
+);
+
+test(
+  "interrupted release body streams fail explicitly and leave no selected installation",
+  nativeOnly,
+  async (t) => {
+    const f = await releaseFixture(t);
+    await releaseDownloads(
+      t,
+      f,
+      () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.error(
+                new TypeError("synthetic interrupted transport"),
+              );
+            },
+          }),
+        ),
+    );
+    await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+    assert.deepEqual(
+      await readdir(path.join(f.root, ".native-helper", f.pin.target)),
+      [],
+    );
+  },
+);
+
+test(
+  "real helper release preparation checks the handshake and is offline/idempotent after installation",
+  {
+    skip: host === undefined || !process.env.AGENT_INSIGHTS_TEST_HELPER,
+  },
+  async (t) => {
+    const f = await releaseFixture(
+      t,
+      await readFile(process.env.AGENT_INSIGHTS_TEST_HELPER!),
+    );
+    const requests = await releaseDownloads(t, f);
+    const executable = await prepareReleasedArtifact(f.root, f.pin);
+    assert.equal(requests.length, 3);
+    assert.equal(await inspectPreparedHelper(f.root, f.pin), executable);
+    t.mock.method(globalThis, "fetch", () => {
+      throw new Error("Existing installations must not trigger downloads.");
+    });
+    assert.equal(await prepareReleasedArtifact(f.root, f.pin), executable);
+    await chmod(executable, 0o700);
+    await writeFile(executable, "tampered");
+    await assert.rejects(prepareReleasedArtifact(f.root, f.pin), unavailable);
+    assert.equal(requests.length, 3);
+  },
+);
 
 test(
   "post-verification lookup races return only controlled unavailable errors",
