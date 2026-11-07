@@ -8,7 +8,11 @@ import { createHash } from "node:crypto";
 import test from "node:test";
 import { vscodeOtelReader } from "../src/evidence/readers/vscode-otel.js";
 import { jsonLines } from "../src/evidence/readers/jsonl.js";
-import type { ReaderInput, ReadView } from "../src/evidence/contracts.js";
+import {
+  parseReadView,
+  type ReaderInput,
+  type ReadView,
+} from "../src/evidence/contracts.js";
 
 const trace = "1".repeat(32);
 const otherTrace = "2".repeat(32);
@@ -137,6 +141,443 @@ test("normalizes exact identity, time units, content, status and usage with orig
   assert.equal(view.sources[0]?.coverage.messages.status, "unavailable");
   assert.equal(view.sources[0]?.changedDuringRead, null);
   assert.ok(Object.isFrozen(event.content));
+});
+
+test("explicit operations keep embeddings, hooks, tools and agent executions distinct", async () => {
+  const operations = [
+    "chat",
+    "embeddings",
+    "execute_tool",
+    "invoke_agent",
+    "execute_hook",
+  ];
+  const view = await read(
+    operations.map((operation, index) =>
+      record(
+        {
+          spanId: (index + 1).toString(16).padStart(16, "0"),
+          name: "misleading execute_hook label",
+        },
+        {
+          "gen_ai.operation.name": operation,
+          "gen_ai.tool.name": "fictional_tool",
+        },
+      ),
+    ),
+  );
+  assert.deepEqual(
+    view.events.map((event) => event.kind),
+    ["model-call", "model-call", "tool-call", "agent-span", "hook-execution"],
+  );
+  assert.deepEqual(
+    view.events.map((event) => event.kind !== "message" && event.operation),
+    operations,
+  );
+  assert.deepEqual(view.sources[0]?.classification?.executions, {
+    modelCalls: 2,
+    toolCalls: 1,
+    agentSpans: 1,
+    hookExecutions: 1,
+  });
+  assert.equal(view.sources[0]?.identity.executionHost, "unknown");
+  assert.equal(view.issues.length, 0);
+});
+
+test("hook metadata, status, timing and quoted content survive contract parsing with original anchors", async () => {
+  const raw = record(
+    { name: "execute_hook PreToolUse", status: { code: 2 } },
+    {
+      "gen_ai.operation.name": "execute_hook",
+      "copilot_chat.hook_type": "PreToolUse",
+      "copilot_chat.hook_result_kind": "non_blocking_error",
+      "copilot_chat.hook_input": '{"command":"DO_NOT_EXECUTE"}',
+      "copilot_chat.hook_output": "Fictional hook error",
+      "copilot_chat.chat_session_id": "editor-hook",
+    },
+  );
+  const view = parseReadView(JSON.parse(JSON.stringify(await read([raw]))));
+  const hook = view.events[0];
+  assert.ok(hook?.kind === "hook-execution");
+  assert.equal(hook.operation, "execute_hook");
+  assert.equal(hook.name, "PreToolUse");
+  assert.equal(hook.spanName, "execute_hook PreToolUse");
+  assert.equal(hook.status, "error");
+  assert.equal(hook.startedAtMs, 1760000000100);
+  assert.equal(hook.endedAtMs, 1760000001200);
+  assert.equal(hook.usage?.basis, "unknown");
+  assert.equal(hook.usage.input, 20);
+  assert.deepEqual(hook.hook, {
+    type: "PreToolUse",
+    resultKind: "non_blocking_error",
+    input: '{"command":"DO_NOT_EXECUTE"}',
+    output: "Fictional hook error",
+  });
+  assert.ok(Object.isFrozen(hook.hook));
+  assert.deepEqual(hook.nativeIdentities, [
+    { namespace: "vscode-chat", value: "editor-hook" },
+    { namespace: "gen-ai-conversation", value: nativeSession },
+  ]);
+  for (const field of ["hook_input", "hook_output"])
+    assert.ok(
+      hook.references.some(
+        (ref) => ref.location.pointer === `/attributes/copilot_chat.${field}`,
+      ),
+    );
+  assert.equal(
+    hook.references[0]?.recordId,
+    `sha256:${createHash("sha256").update(JSON.stringify(raw)).digest("hex")}`,
+  );
+  assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
+});
+
+test("nine hooks and two missing-operation spans are not eleven unsupported executions", async () => {
+  const hooks = Array.from({ length: 9 }, (_, index) =>
+    record(
+      { spanId: (index + 1).toString(16).padStart(16, "0") },
+      {
+        "gen_ai.operation.name": "execute_hook",
+        "copilot_chat.hook_type": "PostToolUse",
+      },
+    ),
+  );
+  const missing = [10, 11].map((index) =>
+    record(
+      {
+        spanId: index.toString(16).padStart(16, "0"),
+        name: "execute_hook misleading",
+      },
+      {
+        "gen_ai.operation.name": undefined,
+      },
+    ),
+  );
+  const view = await read([
+    ...hooks,
+    ...missing,
+    hooks[0],
+    missing[0],
+    { scopeMetrics: [], resource: {} },
+    { hrTime: [1760000000, 0], resource: {}, instrumentationScope: {} },
+    record({}, { "gen_ai.operation.name": "content_event" }),
+  ]);
+  assert.equal(view.events.length, 9);
+  assert.ok(view.events.every((event) => event.kind === "hook-execution"));
+  assert.deepEqual(view.sources[0]?.classification, {
+    executions: {
+      modelCalls: 0,
+      toolCalls: 0,
+      agentSpans: 0,
+      hookExecutions: 9,
+    },
+    unclassifiedSpans: {
+      missingOperation: 2,
+      malformedOperation: 0,
+      unsupportedOperation: 0,
+    },
+    conflictingSpans: 0,
+    nonExecutionRecords: { metrics: 1, logs: 1, contentEvents: 1 },
+  });
+  assert.equal(view.issues.length, 1);
+  const issue = view.issues[0];
+  assert.equal(issue?.code, "missing-field");
+  assert.equal(issue.count, 3);
+  assert.deepEqual(
+    issue.references?.map(
+      (ref) => ref.location.kind === "jsonl" && ref.location.line,
+    ),
+    [10, 11, 13],
+  );
+  assert.ok(!issue.message.includes("Unsupported execution operation"));
+  assert.equal(view.sources[0]?.coverage.timing.status, "partial");
+  assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
+  assert.equal(
+    view.events[0]?.references.filter((ref) => ref.location.pointer === "")
+      .length,
+    2,
+  );
+});
+
+test("missing, empty, malformed and unsupported operations stay distinct and payload-free", async () => {
+  const values = [
+    undefined,
+    "",
+    " \t",
+    null,
+    0,
+    {},
+    [],
+    "PRIVATE_OPERATION_MARKER",
+    " chat ",
+  ];
+  const view = await read(
+    values.map((value, index) =>
+      record(
+        { spanId: (index + 1).toString(16).padStart(16, "0") },
+        {
+          "gen_ai.operation.name": value,
+        },
+      ),
+    ),
+  );
+  assert.equal(view.events.length, 0);
+  assert.equal(view.sessions.length, 0);
+  assert.deepEqual(view.sources[0]?.classification?.unclassifiedSpans, {
+    missingOperation: 3,
+    malformedOperation: 4,
+    unsupportedOperation: 2,
+  });
+  const reasons = view.issues.filter((issue) => issue.references);
+  assert.equal(reasons.length, 3);
+  assert.deepEqual(
+    reasons.map((issue) => issue.count),
+    [3, 4, 2],
+  );
+  assert.equal(reasons.flatMap((issue) => issue.references ?? []).length, 9);
+  assert.ok(!JSON.stringify(view).includes("PRIVATE_OPERATION_MARKER"));
+  assert.ok(
+    view.issues.some((issue) =>
+      issue.message.includes("excluded from trusted totals"),
+    ),
+  );
+  const containers = await read([
+    record({ attributes: undefined }),
+    record({ spanId: "2".repeat(16), attributes: null }),
+    record({ spanId: "3".repeat(16), attributes: [] }),
+  ]);
+  assert.deepEqual(containers.sources[0]?.classification?.unclassifiedSpans, {
+    missingOperation: 1,
+    malformedOperation: 2,
+    unsupportedOperation: 0,
+  });
+});
+
+test("hook metadata omission does not manufacture a hook type and malformed content limits coverage", async () => {
+  const omitted = await read([
+    record({}, { "gen_ai.operation.name": "execute_hook" }),
+  ]);
+  const event = omitted.events[0];
+  assert.ok(event?.kind === "hook-execution");
+  assert.deepEqual(event.hook, {
+    type: null,
+    resultKind: null,
+    input: null,
+    output: null,
+  });
+  const malformed = await read([
+    record(
+      {},
+      {
+        "gen_ai.operation.name": "execute_hook",
+        "copilot_chat.hook_type": 42,
+        "copilot_chat.hook_result_kind": "unknown-result",
+        "copilot_chat.hook_input": {},
+        "copilot_chat.hook_output":
+          "[VS Code: value truncated for persistence]",
+      },
+    ),
+  ]);
+  assert.equal(malformed.events.length, 1);
+  assert.equal(
+    malformed.sources[0]?.classification?.executions.hookExecutions,
+    1,
+  );
+  assert.equal(malformed.sources[0]?.coverage.timing.status, "partial");
+  assert.ok(
+    malformed.issues.some((issue) => issue.message.includes("hook_type")),
+  );
+  assert.ok(
+    malformed.issues.some((issue) =>
+      issue.message.includes("hook result kind"),
+    ),
+  );
+  assert.ok(
+    malformed.issues.some((issue) =>
+      issue.message.includes("content representation"),
+    ),
+  );
+  assert.ok(
+    malformed.issues.some((issue) => issue.code === "truncated-record"),
+  );
+});
+
+test("hook duplicates and unsupported identity conflicts never inflate execution counts", async () => {
+  const hook = record(
+    {},
+    {
+      "gen_ai.operation.name": "execute_hook",
+      "copilot_chat.hook_type": "Stop",
+    },
+  );
+  for (const unknown of [undefined, "", null, "unqualified", "chat"]) {
+    const conflicting = record({}, { "gen_ai.operation.name": unknown });
+    for (const pair of [
+      [hook, conflicting],
+      [conflicting, hook],
+    ]) {
+      const view = await read([...pair, hook]);
+      assert.equal(view.events.length, 0);
+      assert.equal(
+        view.sources[0]?.classification?.executions.hookExecutions,
+        0,
+      );
+      assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+      assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
+      const conflict = view.issues.find((issue) =>
+        issue.message.includes("Conflicting execution operations"),
+      );
+      assert.ok(conflict?.references);
+      assert.ok(
+        conflict?.references?.some(
+          (ref) => ref.location.kind === "jsonl" && ref.location.line === 1,
+        ),
+      );
+      assert.ok(
+        conflict.references.some(
+          (ref) => ref.location.kind === "jsonl" && ref.location.line === 2,
+        ),
+      );
+    }
+  }
+  const changed = await read([
+    hook,
+    record(
+      {},
+      {
+        "gen_ai.operation.name": "execute_hook",
+        "copilot_chat.hook_type": "PreToolUse",
+      },
+    ),
+  ]);
+  assert.equal(changed.sources[0]?.classification?.conflictingSpans, 1);
+  assert.equal(changed.events.length, 0);
+  assert.equal(
+    changed.issues.find((issue) =>
+      issue.message.includes("Conflicting records"),
+    )?.references?.length,
+    4,
+  );
+  const distinct = await read([hook, hook, { ...hook, traceId: otherTrace }]);
+  assert.equal(
+    distinct.sources[0]?.classification?.executions.hookExecutions,
+    2,
+  );
+});
+
+test("repeated conflicts retain all original anchors with linear diagnostic growth", async () => {
+  const first = record(
+    {},
+    {
+      "gen_ai.operation.name": "execute_hook",
+      "copilot_chat.hook_type": "Stop",
+    },
+  );
+  const conflicting = record(
+    {},
+    {
+      "gen_ai.operation.name": "execute_hook",
+      "copilot_chat.hook_type": "PostToolUse",
+    },
+  );
+  const repetitions = 1000;
+  const view = await read([
+    first,
+    ...Array.from({ length: repetitions }, () => conflicting),
+  ]);
+  const issue = view.issues.find((value) =>
+    value.message.includes("Conflicting records"),
+  );
+  assert.equal(view.events.length, 0);
+  assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+  assert.equal(issue?.count, repetitions);
+  assert.equal(issue?.references?.length, (repetitions + 1) * 2);
+  assert.equal(
+    new Set(
+      issue?.references?.map(
+        (ref) => ref.location.kind === "jsonl" && ref.location.line,
+      ),
+    ).size,
+    repetitions + 1,
+  );
+  const operationConflict = await read([
+    first,
+    first,
+    first,
+    record({}, { "gen_ai.operation.name": undefined }),
+  ]);
+  const excluded = operationConflict.issues.find((value) =>
+    value.message.includes("Conflicting execution operations"),
+  );
+  assert.deepEqual(
+    [
+      ...new Set(
+        excluded?.references?.map(
+          (ref) => ref.location.kind === "jsonl" && ref.location.line,
+        ),
+      ),
+    ],
+    [1, 2, 3, 4],
+  );
+  const missing = record({}, { "gen_ai.operation.name": undefined });
+  for (const records of [
+    [first, conflicting, first],
+    [first, conflicting, conflicting, first],
+    [first, missing, first],
+    [missing, first, first],
+  ]) {
+    const conflicted = await read(records);
+    assert.equal(conflicted.events.length, 0);
+    assert.equal(conflicted.sources[0]?.classification?.conflictingSpans, 1);
+    const lines = new Set(
+      conflicted.issues.flatMap((diagnostic) =>
+        (diagnostic.references ?? []).map((ref) => {
+          assert.ok(ref.location.kind === "jsonl");
+          return ref.location.line;
+        }),
+      ),
+    );
+    assert.deepEqual(
+      [...lines].sort((a, b) => a - b),
+      Array.from({ length: records.length }, (_, index) => index + 1),
+    );
+  }
+});
+
+test("nested hooks and agent wrappers keep model usage separate without aggregating intervals", async () => {
+  const parent = record(
+    { spanId: "2".repeat(16) },
+    { "gen_ai.operation.name": "invoke_agent" },
+  );
+  const child = record(
+    {
+      spanId: "3".repeat(16),
+      parentSpanContext: { traceId: trace, spanId: "2".repeat(16) },
+    },
+    {
+      "gen_ai.operation.name": "execute_hook",
+      "gen_ai.conversation.id": undefined,
+    },
+  );
+  const view = await read([parent, child, record()]);
+  assert.deepEqual(
+    view.events.map((event) => event.kind !== "message" && event.usage?.basis),
+    ["unknown", "unknown", "per-call"],
+  );
+  assert.equal(view.events[0]?.sessionId, view.events[1]?.sessionId);
+  assert.deepEqual(view.sources[0]?.classification?.executions, {
+    modelCalls: 1,
+    toolCalls: 0,
+    agentSpans: 1,
+    hookExecutions: 1,
+  });
+  assert.ok(
+    view.events.every(
+      (event) =>
+        event.kind !== "message" &&
+        event.startedAtMs === 1760000000100 &&
+        event.endedAtMs === 1760000001200,
+    ),
+  );
+  assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
 });
 
 test("mixed telemetry and duplicate wrappers do not become extra executions", async () => {

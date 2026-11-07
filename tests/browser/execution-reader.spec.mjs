@@ -116,6 +116,83 @@ test("the normal application reads execution evidence, shows coverage and clears
       page.getByText("PRIVATE_PARSE_MARKER", { exact: false }),
     ).toHaveCount(0);
 
+    const raw = JSON.parse(bytes.toString().split("\n")[0]);
+    const hookRecords = Array.from({ length: 11 }, (_, index) => ({
+      ...raw,
+      spanId: (index + 1).toString(16).padStart(16, "0"),
+      name: "execute_hook misleading span label",
+      attributes: {
+        "gen_ai.conversation.id": "synthetic-session",
+        ...(index < 9
+          ? {
+              "gen_ai.operation.name": "execute_hook",
+              "copilot_chat.hook_type": "PreToolUse",
+              "copilot_chat.hook_input":
+                '{"command":"PRIVATE_HOOK_MARKER_DO_NOT_EXECUTE"}',
+            }
+          : {}),
+      },
+    }));
+    const hookBytes = Buffer.from(
+      hookRecords.map((record) => JSON.stringify(record)).join("\n") + "\n",
+    );
+    await writeFile(file, hookBytes);
+    await page
+      .getByRole("button", { name: "Read source", exact: true })
+      .click();
+    await expect(
+      page.getByText(/Partial read: 1 session and 9 records/),
+    ).toBeVisible();
+    const classification = coverage.getByRole("group", {
+      name: "Operation classification",
+    });
+    await expect(classification).toBeVisible();
+    await expect(
+      classification
+        .locator("div")
+        .filter({
+          has: page.locator("dt", { hasText: /^Hook executions$/ }),
+        })
+        .locator("dd"),
+    ).toHaveText("9");
+    await expect(
+      classification
+        .locator("div")
+        .filter({
+          has: page.locator("dt", {
+            hasText: /^Unclassified spans \(operation missing\)$/,
+          }),
+        })
+        .locator("dd"),
+    ).toHaveText("2");
+    await expect(
+      classification
+        .locator("div")
+        .filter({
+          has: page.locator("dt", { hasText: /^Model calls$|^Tool calls$/ }),
+        })
+        .locator("dd"),
+    ).toHaveText(["0", "0"]);
+    await expect(
+      coverage.getByText(/Unsupported execution operation/),
+    ).toHaveCount(0);
+    await coverage.getByText(/Read limitations \(/).click();
+    await expect(
+      coverage.getByText(/span unclassified \(2 occurrence/),
+    ).toBeVisible();
+    await expect(
+      page.getByText("PRIVATE_HOOK_MARKER", { exact: false }),
+    ).toHaveCount(0);
+    expect(await readFile(file)).toEqual(hookBytes);
+    expect(await readdir(directory)).toEqual(["fictional.jsonl"]);
+    expect(
+      await page.evaluate(
+        () =>
+          document.documentElement.scrollWidth <=
+          document.documentElement.clientWidth,
+      ),
+    ).toBe(true);
+
     await writeFile(file, '{"version":"unsupported"}');
     await page
       .getByRole("button", { name: "Read source", exact: true })

@@ -1251,11 +1251,55 @@ test("the packaged CLI registers the execution reader and reads only on explicit
   assert.deepEqual((await readdir(path.dirname(file))).sort(), [
     "capture.jsonl",
   ]);
+  const raw: unknown = JSON.parse(bytes.toString().split("\n")[0] ?? "");
+  assert.ok(raw !== null && typeof raw === "object" && !Array.isArray(raw));
+  const hook = {
+    ...raw,
+    attributes: {
+      "gen_ai.operation.name": "execute_hook",
+      "gen_ai.conversation.id": "synthetic-session",
+      "copilot_chat.hook_type": "Stop",
+      "copilot_chat.hook_result_kind": "success",
+      "copilot_chat.hook_input": '{"command":"DO_NOT_EXECUTE"}',
+      "copilot_chat.hook_output": "Fictional output",
+    },
+  };
+  const unclassified = {
+    ...raw,
+    spanId: "3".repeat(16),
+    attributes: { "gen_ai.conversation.id": "synthetic-session" },
+  };
+  const hookBytes = Buffer.from(
+    `${JSON.stringify(hook)}\n${JSON.stringify(unclassified)}\n`,
+  );
+  await writeFile(file, hookBytes);
+  const hookResponse = await fetch(launch.origin + "/api/read", {
+    method: "POST",
+    headers,
+    body: JSON.stringify(selection),
+  });
+  assert.equal(hookResponse.status, 200);
+  const hookView = parseReadView(await hookResponse.json());
+  assert.equal(hookView.events.length, 1);
+  const hookEvent = hookView.events[0];
+  assert.ok(hookEvent?.kind === "hook-execution");
+  assert.equal(hookEvent.hook?.input, '{"command":"DO_NOT_EXECUTE"}');
+  assert.equal(
+    hookView.sources[0]?.classification?.executions.hookExecutions,
+    1,
+  );
+  assert.equal(
+    hookView.sources[0]?.classification?.unclassifiedSpans.missingOperation,
+    1,
+  );
+  assert.equal(hookView.issues[0]?.references?.[0]?.location.kind, "jsonl");
+  assert.deepEqual(await readFile(file), hookBytes);
+  assert.deepEqual(await readdir(path.dirname(file)), ["capture.jsonl"]);
   await writeFile(file, '{"version":"unsupported"}');
   const unchanged = statusSchema.parse(
     await (await fetch(launch.origin + "/api/status", { headers })).json(),
   );
-  assert.equal(unchanged.readTiming?.readId, view.id);
+  assert.equal(unchanged.readTiming?.readId, hookView.id);
   assert.equal(unchanged.analysis.run, null);
   const reread = parseReadView(
     await (

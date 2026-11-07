@@ -98,9 +98,11 @@ platform certification.
 
 The [execution adapter](../src/evidence/readers/vscode-otel.ts) is installed by the
 normal command-line application. Its supported operations are `chat` and
-`embeddings` (model calls), `execute_tool` (tool calls) and `invoke_agent` (agent
-spans). Known log/metric records and standalone `content_event` records are not
-extra executions. Unqualified operations and unknown shapes produce limitations.
+`embeddings` (distinct operation values within model calls), `execute_tool`
+(tool calls), `invoke_agent` (agent spans) and `execute_hook` (hook executions).
+Hook executions are not tool or model calls. Known log/metric records and
+standalone `content_event` records are not extra executions. Unqualified operations
+and unknown shapes produce limitations.
 Logs are recognized through their required time/resource/instrumentation-scope
 fields; optional severity and body fields are not prerequisites.
 Span name/kind fields also identify compatible spans when both timestamps are
@@ -111,12 +113,19 @@ model/tool/producer names with unsupported types are not silently coerced or
 treated like ordinary omission.
 
 The adapter preserves trace-scoped span identity, parent context, reported
-model/tool names, timestamps, status and usage. Optional typed `trace`, `operation`,
-`spanName`, `model`, `tool` and `content` fields extend execution events without breaking older
-normalized fixtures. Content retains only known captured string attributes:
+model/tool/hook names, timestamps, status and usage. Optional typed `trace`,
+`operation`, `spanName`, `model`, `tool`, `hook` and `content` fields extend
+execution events without breaking older normalized fixtures. Content retains
+only known captured string attributes:
 input/output messages and tool arguments/results. These are quoted evidence,
 not reconstructed conversation messages or executable instructions. Their
 original attribute pointers are included in event references.
+Hook metadata retains `copilot_chat.hook_type` and `copilot_chat.hook_result_kind`
+as `hook.type` and `hook.resultKind`; the result kind does not replace the captured
+span status. `copilot_chat.hook_input` and `copilot_chat.hook_output` become quoted
+`hook.input` and `hook.output` strings with original attribute pointers. Neither
+the reader nor analysis executes captured commands. Missing hook metadata stays
+null; malformed content and unsupported result kinds produce limitations.
 For this adapter, each reference's `recordId` is `sha256:` followed by the digest
 of the original physical line bytes, excluding LF but retaining any CR or initial
 byte-order mark. Together with source/line/pointer, it allows later evidence
@@ -144,9 +153,39 @@ Native execution identities are checked before unsupported operations are filter
 an unqualified operation cannot hide a conflict with a supported call in either
 source order. Intentionally ignored log/metric/content telemetry stays separate.
 
+Missing/empty/whitespace-only operation metadata, malformed values/attribute
+containers and unknown nonempty operations are distinct unclassified-span
+diagnostics. They do not create execution events or inferred sessions from span
+labels. Diagnostics include optional structured `count` and original `references`,
+never the unknown operation value or captured payload. Counts describe diagnostic
+occurrences, including duplicate physical records.
+
+Optional source `classification` exposes source-wide observations:
+`executions` (`modelCalls`, `toolCalls`, `agentSpans`, `hookExecutions`),
+`unclassifiedSpans` (`missingOperation`, `malformedOperation`, `unsupportedOperation`),
+`conflictingSpans` and `nonExecutionRecords` (`metrics`, `logs`, `contentEvents`).
+Execution/unclassified counts deduplicate valid native trace/span identities;
+identity-less spans count separately by original line. Conflicting identities
+are excluded into their own bucket rather than counted as executions or ordinary
+unclassified spans. Non-execution counts count physical records, not invocations.
+For nine qualified hooks and two distinct missing-operation spans, the summary
+reports nine hook executions and two unclassified spans, not eleven unsupported
+calls.
+These observations are not trusted per-session metrics, a complete-capture claim
+or runtime identification. Unclassified/conflicting records still limit coverage.
+Analysis receives relevant source-wide classification and payload-free diagnostic
+summaries (source, code, message and optional occurrence count) alongside
+selected-session events. Full diagnostic anchor arrays remain in the read view,
+not the model input: unrelated source records must not consume a small selected
+session's analysis budget. Source counts must not be mistaken for that session's
+totals. Earlier version-1 views without these optional fields remain valid.
+
 Model-call token counts are per-call. Non-model usage accounting remains unknown,
-not additional model consumption. Cache/reasoning component overlap remains
-unknown; identical legacy/new reasoning aliases represent one component and
+not additional model consumption, including aggregate usage on hooks or agent spans.
+Captured intervals are retained individually; nested spans must not be summed as
+elapsed time. This classification change does not implement the metrics calculator.
+Cache/reasoning component overlap remains unknown; identical legacy/new
+reasoning aliases represent one component and
 conflicting aliases produce a limitation. Missing counts remain null, including
 missing output usage; explicit reported zero remains zero.
 
@@ -168,16 +207,17 @@ synthetic fixtures as proof of the wire format:
 | [File exporter](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/node/fileExporters.ts)            | `d5fd8f85c2e58d4d59283ec9c28c3339e5be9ca928a3ab8c4d8fafced3055138` |
 | [Attribute vocabulary](https://github.com/microsoft/vscode/blob/2c33b50b16c472efe58357d1d2a8a5414bc23fbf/extensions/copilot/src/platform/otel/common/genAiAttributes.ts) | `c2e82f03f276d5efb0edb105c0dcf2e5bea9ba60842b7806678a70bea2d63e2c` |
 
-| Producer field/declaration                                                                                 | Reader interpretation                                                                                                            |
-| ---------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Direct span context, `parentSpanContext`, `resource.attributes`, `instrumentationScope`                    | Trace-scoped identity and reported metadata, not an OTLP wrapper or a path-derived identity.                                     |
-| `startTime` / `endTime` tuples                                                                             | Epoch seconds plus nanosecond remainder, converted to milliseconds; missing values stay unavailable.                             |
-| `gen_ai.operation.name`                                                                                    | Explicit mappings for `chat`, `embeddings`, `execute_tool` and `invoke_agent`; other operations are not guessed.                 |
-| `gen_ai.conversation.id` / `copilot_chat.chat_session_id`                                                  | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text.                |
-| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`                                                 | Reported counts on the represented operation; no estimates or missing-to-zero conversion.                                        |
-| Cache attributes and both reasoning-token attribute names                                                  | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
-| `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result` | Optional content-gated attributes retained only as captured strings and source references.                                       |
-| Separate file span/log/metric exporters                                                                    | A single destination can contain different signal types; non-execution records are not additional calls.                         |
+| Producer field/declaration                                                                                       | Reader interpretation                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| Direct span context, `parentSpanContext`, `resource.attributes`, `instrumentationScope`                          | Trace-scoped identity and reported metadata, not an OTLP wrapper or a path-derived identity.                                     |
+| `startTime` / `endTime` tuples                                                                                   | Epoch seconds plus nanosecond remainder, converted to milliseconds; missing values stay unavailable.                             |
+| `gen_ai.operation.name`                                                                                          | Explicit mappings for `chat`, `embeddings`, `execute_tool`, `invoke_agent` and `execute_hook`; other operations are not guessed. |
+| `copilot_chat.hook_type`, `copilot_chat.hook_result_kind`, `copilot_chat.hook_input`, `copilot_chat.hook_output` | Reported hook metadata and quoted strings with original anchors; not tool calls or commands to execute.                          |
+| `gen_ai.conversation.id` / `copilot_chat.chat_session_id`                                                        | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text.                |
+| `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`                                                       | Reported counts on the represented operation; no estimates or missing-to-zero conversion.                                        |
+| Cache attributes and both reasoning-token attribute names                                                        | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
+| `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`       | Optional content-gated attributes retained only as captured strings and source references.                                       |
+| Separate file span/log/metric exporters                                                                          | A single destination can contain different signal types; non-execution records are not additional calls.                         |
 
 This is static compatibility evidence, not proof of producer authenticity,
 all-version support, content completeness or live private-capture qualification.

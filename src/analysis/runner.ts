@@ -237,6 +237,9 @@ export class AnalysisRunner {
         "Return only JSON with readId, sessionId, operationId, eventIds and data.",
         "Cite one or more supplied event IDs; data must satisfy the analysis task.",
         "Missing evidence is unavailable, not zero. Distinguish facts from model judgments.",
+        "Hook executions are separate from tool/model calls. Only per-call model usage is model consumption.",
+        "Recorded span intervals may overlap; never sum nested spans as elapsed time.",
+        "Classification counts and read issues are source-wide, not selected-session metrics or proof of completeness.",
         operation.instructions,
       ].join("\n"),
       prompt: JSON.stringify({
@@ -253,6 +256,14 @@ export class AnalysisRunner {
         sources: view.sources.filter((source) =>
           session.sourceIds.includes(source.id),
         ),
+        issues: view.issues
+          .filter((issue) => session.sourceIds.includes(issue.sourceId))
+          .map((issue) => ({
+            sourceId: issue.sourceId,
+            code: issue.code,
+            message: issue.message,
+            ...(issue.count === undefined ? {} : { count: issue.count }),
+          })),
         events,
       }),
     };
