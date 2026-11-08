@@ -23,6 +23,7 @@ name: Native guard and helper checks
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/native-guard.yml"
+      - ".github/workflows/native-release.yml"
   push:
     branches: [main]
     paths:
@@ -45,6 +46,7 @@ name: Native guard and helper checks
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/native-guard.yml"
+      - ".github/workflows/native-release.yml"
   workflow_dispatch:
     inputs:
       verify_release:

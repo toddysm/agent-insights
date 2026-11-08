@@ -350,9 +350,33 @@ test(
   },
 );
 
-test("default runtime lookup stays explicitly unavailable without the pinned installation and never prepares it", async () => {
+test("default runtime lookup simulates missing preparation independently of existing checkout installations", async (t) => {
+  const original = fsPromises.lstat;
+  let missingLookups = 0;
+  const replacement = t.mock.method(
+    fsPromises,
+    "lstat",
+    async (filename: Parameters<typeof fsPromises.lstat>[0]) => {
+      if (path.basename(String(filename)) === ".native-helper") {
+        missingLookups++;
+        throw Object.assign(new Error("Synthetic missing installation"), {
+          code: "ENOENT",
+        });
+      }
+      return original(filename);
+    },
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    replacement.mock.restore();
+    syncBuiltinESMExports();
+  });
+  t.mock.method(globalThis, "fetch", () => {
+    throw new Error("Runtime lookup must not download missing preparation.");
+  });
   await assert.rejects(preparedNativeHelper(), unavailable);
   await assert.rejects(preparedNativeHelper(), unavailable);
+  assert.equal(missingLookups, 2);
 });
 
 /** Extend the owned synthetic package with independently trusted release provenance and exact metadata length. */
