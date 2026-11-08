@@ -23,6 +23,7 @@ name: Native guard and helper checks
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/native-guard.yml"
+      - ".github/workflows/native-release.yml"
   push:
     branches: [main]
     paths:
@@ -45,7 +46,13 @@ name: Native guard and helper checks
       - ".cargo/config.toml"
       - "rust-toolchain.toml"
       - ".github/workflows/native-guard.yml"
+      - ".github/workflows/native-release.yml"
   workflow_dispatch:
+    inputs:
+      verify_release:
+        description: "Verify the pinned public release without rebuilding"
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -56,6 +63,7 @@ concurrency:
 
 jobs:
   native:
+    if: ${{ !inputs.verify_release }}
     strategy:
       fail-fast: false
       matrix:
@@ -135,3 +143,6 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
+  published-release:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.verify_release }}
+    uses: ./.github/workflows/native-release.yml

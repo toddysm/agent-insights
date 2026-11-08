@@ -21,6 +21,7 @@ const INPUTS = [
   "rust-toolchain.toml",
   "src/native",
   "src/runtime/native-helper.ts",
+  "src/runtime/native-release.ts",
   "scripts/native-artifact-tools.mjs",
   "scripts/native-build-context.mjs",
   "tests/native-build-context.test.mjs",

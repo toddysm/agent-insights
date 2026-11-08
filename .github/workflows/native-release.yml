@@ -1,0 +1,66 @@
+---
+name: Verify published native helper release
+
+"on":
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            host: aarch64-apple-darwin
+          - os: macos-15-intel
+            host: x86_64-apple-darwin
+          - os: ubuntu-24.04
+            host: x86_64-unknown-linux-gnu
+          - os: windows-2025
+            host: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-node v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+      - run: npm ci --ignore-scripts
+      - name: Prepare only the pinned release through the end-user command
+        run: npm run prepare:native
+      - name: Check runtime lookup and idempotent offline preparation
+        env:
+          EXPECTED_NATIVE_TARGET: ${{ matrix.host }}
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from "node:assert/strict";
+          import {
+            nativeTarget,
+            preparedNativeHelper,
+            releasedNativePin,
+          } from "./.build/src/runtime/native-helper.js";
+          import {
+            prepareReleasedArtifact,
+          } from "./.build/src/native/release-preparation.js";
+          assert.equal(nativeTarget(), process.env.EXPECTED_NATIVE_TARGET);
+          const executable = await preparedNativeHelper();
+          globalThis.fetch = () => {
+            throw new Error("Idempotent preparation must remain offline.");
+          };
+          assert.equal(
+            await prepareReleasedArtifact(process.cwd(), releasedNativePin()),
+            executable,
+          );
+          console.log(
+            "Pinned download/checksum/handshake/runtime check passed.",
+          );
+          NODE

@@ -9,6 +9,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { RuntimeError } from "./errors.js";
+import {
+  NATIVE_RELEASE_PINS,
+  type NativeReleasePin,
+} from "./native-release.js";
 
 export const NATIVE_POLICY = Object.freeze({
   protocolVersion: 1,
@@ -96,9 +100,6 @@ export interface NativePin {
   readonly target: string;
   readonly manifestSha256: string;
 }
-
-// Publication (#39) must add reviewed pins. Missing release support is explicit, never a candidate fallback.
-const RELEASE_PINS: readonly NativePin[] = [];
 
 /** Fixed errors carry no native paths, command output or source data across the application boundary. */
 export function nativeUnavailable(
@@ -329,14 +330,21 @@ export async function inspectPreparedHelper(
   }
 }
 
-/** Fixed production lookup; only future reviewed release pins can enable it, never candidate receipts or browser paths. */
-export async function preparedNativeHelper(): Promise<string> {
-  const selected = nativeTarget();
-  const pin = RELEASE_PINS.find((entry) => entry.target === selected);
+/** Select an immutable application-owned release pin; unsupported targets never fall back to candidates. */
+export function releasedNativePin(
+  selected: string = nativeTarget(),
+): NativeReleasePin {
+  const pin = NATIVE_RELEASE_PINS.find((entry) => entry.target === selected);
   if (!pin)
     throw nativeUnavailable(
-      "No native helper release is pinned yet. File-only and analysis features are unchanged.",
+      "No qualified native helper release is pinned for this platform. File-only and analysis features are unchanged.",
     );
+  return pin;
+}
+
+/** Inspect only installed bytes for the fixed release; missing/tampered preparation never causes a download or repair. */
+export async function preparedNativeHelper(): Promise<string> {
+  const pin = releasedNativePin();
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   return inspectPreparedHelper(root, pin);
 }

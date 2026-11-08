@@ -19,6 +19,7 @@ name: Application validation
       - "playwright.config.mjs"
       - "README.md"
       - ".github/workflows/validate.yml"
+      - ".github/workflows/native-release.yml"
   push:
     branches: [main]
     paths:
@@ -37,6 +38,7 @@ name: Application validation
       - "playwright.config.mjs"
       - "README.md"
       - ".github/workflows/validate.yml"
+      - ".github/workflows/native-release.yml"
   workflow_dispatch:
 
 permissions:

@@ -210,10 +210,13 @@ filesystem Promise; any eventual result is discarded and cannot launch a helper.
 This does not cancel the underlying operating-system artifact read itself.
 
 Status and the source panel expose `nativeSqlite` availability separately from
-source-reader registration and the model executor. No public release pins exist
-yet, so normal startup reports native SQLite unavailable pending
-[#39](https://github.com/toddysm/agent-insights/issues/39), even if a developer
-candidate was built locally. File-only reads and model availability are independent.
+source-reader registration and the model executor. This checkout pins only
+`native-helper-v0.1.0`; a pin alone does not establish publication or installation.
+The release/download qualification record remains
+[#39](https://github.com/toddysm/agent-insights/issues/39). Explicitly run
+`npm run prepare:native` before database reads. Missing preparation reports
+native SQLite unavailable, even if a developer candidate was built locally.
+File-only reads and model availability are independent.
 Missing, unsupported or tampered native preparation is fatal for a database read,
 including an optional role; it never becomes a successful empty result.
 Neither startup nor reading builds, downloads, repairs or installs the helper.

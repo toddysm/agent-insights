@@ -1,8 +1,7 @@
 # Native helper artifacts and explicit preparation
 
 [#38](https://github.com/toddysm/agent-insights/issues/38) builds qualified
-**release candidates**. It does not publish binaries. Public download locations,
-reviewed release pins and compiler-free distribution remain gated by
+**release candidates**. It does not publish binaries. Versioned publication and end-user installation verification remain gated by
 [#39](https://github.com/toddysm/agent-insights/issues/39).
 
 ## Trust and current availability
@@ -10,8 +9,9 @@ reviewed release pins and compiler-free distribution remain gated by
 A checksum inside a package cannot authenticate that package. Verification
 requires an independently trusted manifest digest:
 
-- Production lookup uses only application-owned release pins. There are no
-  published pins yet, so it reports `NATIVE_GUARD_UNAVAILABLE` explicitly.
+- Production lookup uses only application-owned release pins. This checkout
+  pins `native-helper-v0.1.0`; missing/tampered installation reports
+  `NATIVE_GUARD_UNAVAILABLE` explicitly. A pin does not prove publication.
 - Developer preparation is an explicit `--candidate` workflow. A clean local
   build writes its trust receipt **outside** the packaged directory, only after
   qualification passes. The receipt must match the current clean source checkout.
@@ -41,6 +41,69 @@ Unsupported architectures and non-GNU Linux fail explicitly, without selecting
 another target. OS (operating system) compatibility is qualified on the recorded
 runner version; the self-check rejects binaries that cannot execute on the
 preparing machine. Broader older-OS compatibility is not inferred from a triple.
+
+## Versioned release preparation
+
+Publication and actual download verification are recorded in
+[#39](https://github.com/toddysm/agent-insights/issues/39). Until that record
+confirms rollout, do not infer availability from the pins in a checkout.
+This native-helper prerelease is not a complete application release.
+
+The [application-owned pins](../../src/runtime/native-release.ts) select only
+`native-helper-v0.1.0`, sourced from
+`d0cabfcb7ce78d83a061138cd70b1cbaae47b648`. Its exact packaged and installed
+candidates passed on all four native runners in
+[qualification run 42125840919](https://github.com/toddysm/agent-insights/actions/runs/42125840919).
+Publishing renames those verified files; it does not rebuild their contents.
+Guard version is `0.1.0`, protocol version is `1`, Rust is `1.91.0`, and the
+manifest pins the exact SQLite source identifier and build options.
+
+With Node.js 24+, npm and the application checkout, explicitly run:
+
+```sh
+npm ci --ignore-scripts
+npm run prepare:native
+```
+
+No Rust toolchain or C compiler is needed for release preparation. The npm
+command builds only the application control code. It accepts no URL, version,
+executable path or browser/model-supplied override.
+
+The three fixed GitHub release asset names for the selected target are:
+
+- `manifest-<target>.json`
+- `agent-insights-sqlite-helper-<target>` (append `.exe` for Windows)
+- `THIRD-PARTY-NOTICES-<target>.txt`
+
+All URLs use the exact repository/tag in the pins, not `latest`. HTTPS redirects
+are limited to GitHub's fixed release transport hosts, without credentials.
+The independently pinned manifest digest and byte length are checked **before**
+an executable is downloaded. Its source revision, target, engine and guard
+contract must match. Executable and notices downloads enforce exact hashes and
+byte counts even without `Content-Length`, sharing a 90-second download deadline.
+No archive extraction or package install hook runs.
+
+Successful preparation checks the source-free handshake and atomically installs
+verified bytes at `.native-helper/<target>/<manifest-sha256>/`. Output is
+sanitized JSON containing `prepared`, `release`, `target`, `sourceCommit` and
+`manifestSha256`, never local build paths or native diagnostics. An existing
+installation is verified and self-checked offline; tampering is an error, not
+an automatic redownload/repair.
+
+An unavailable release, unsupported platform, checksum/length mismatch,
+permission failure or incompatible self-check reports
+`NATIVE_GUARD_UNAVAILABLE` and a nonzero exit status. Failed attempts remove
+only their own download/preparation staging directories. File-only and analysis
+features remain independent; no read or refresh retries preparation.
+
+After separately authorized publication, the
+[release smoke workflow](../../.github/workflows/native-release.yml) executes
+this exact end-user command on all four supported runners, then checks runtime
+lookup and offline idempotence. It can be called from the existing native
+workflow with `verify_release=true`; ordinary native qualification remains the
+default. This smoke path installs no Rust/C tools and builds no replacement
+native binaries. Candidate/fixture checks are not a substitute for this actual
+release download qualification.
 
 ## Contributor workflow
 
@@ -134,13 +197,15 @@ application-owned pin and installed bytes immediately before launch, validate th
 [protocol handshake](PROTOCOL.md), keep parent/source leases, and surface
 unavailability without disabling file-only or analysis features. No read/refresh
 path downloads, builds, prepares or selects a browser/model-provided executable.
-The existing application does not yet register native database readers.
+The shared SQLite runtime integration shipped through
+[#33](https://github.com/toddysm/agent-insights/issues/33). That is separate from
+source-specific reader delivery and verification of published native artifacts.
 
 ## Failure, upgrade and rollback
 
 | Symptom                               | Action                                                                                                                                                                                               |
 | ------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| No pinned release                     | Expected before #39. Use the explicit local candidate workflow for development; do not invent a download URL or checksum.                                                                            |
+| Release asset unavailable             | Check the #39 rollout record and retry explicit release preparation; never invent a URL/checksum or fall back to a development candidate.                                                            |
 | Dirty checkout / source mismatch      | Commit the intended source, then package a new candidate. Do not edit the receipt to bypass the mismatch.                                                                                            |
 | Candidate already exists              | Preserve the previous candidate; explicitly remove only that verified owned candidate directory if a rebuild of identical inputs is intended. Packaging does not recursively delete arbitrary roots. |
 | Missing or checksum-mismatched file   | Stop using it. Obtain/rebuild the trusted candidate; do not accept its self-declared hash.                                                                                                           |
@@ -150,3 +215,16 @@ The existing application does not yet register native database readers.
 
 Final ordinary-user capture/usage documentation remains #1/#21. This contributor
 guide does not claim that public compiler-free installation has shipped.
+
+Release upgrades or rollback require a reviewed application pin change, not
+replacing assets under an existing tag. Stop the application before removing
+only a verified owned content-addressed installation; never remove harness
+sources. Restore a prior reviewed checkout/pin only when its release is still
+trusted and qualified. Before the first release, there is no earlier released
+helper to roll back to: file-only operation remains available.
+
+Revocation is a separately authorized release withdrawal **and** a reviewed
+pin-removal/update PR. Deleting remote assets alone does not revoke already
+installed bytes. Stop native reads and remove the exact revoked installation
+after verifying its target/digest; do not silently select another directory.
+Keep #39 open if any supported platform's end-user verification fails.

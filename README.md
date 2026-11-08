@@ -35,7 +35,10 @@ adds bounded process communication and supervision. Artifact delivery and Node
 integration remain separate gates; this does not change installed reader availability.
 The [native artifact workflow](native/sqlite-guard/ARTIFACTS.md) now builds and
 qualifies candidates and explicitly prepares checksum-verified local builds.
-No native release is pinned or published yet; reads never download/build helpers.
+The versioned native-helper pin and explicit compiler-free preparation path are
+described there; publication and end-user verification are tracked in
+[#39](https://github.com/toddysm/agent-insights/issues/39).
+Reads never download, build or repair helpers.
 
 To validate the implementation with Node.js 24:
 
