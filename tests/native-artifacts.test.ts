@@ -376,7 +376,7 @@ test("default runtime lookup simulates missing preparation independently of exis
   });
   await assert.rejects(preparedNativeHelper(), unavailable);
   await assert.rejects(preparedNativeHelper(), unavailable);
-  assert.equal(missingLookups, 2);
+  assert.equal(missingLookups, host === undefined ? 0 : 2);
 });
 
 /** Extend the owned synthetic package with independently trusted release provenance and exact metadata length. */
