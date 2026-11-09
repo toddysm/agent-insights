@@ -1,4 +1,4 @@
-/** Read-only access to startup-authorized locations; no scanning, writes or retained byte cache. */
+/** Read-only access to startup-authorized locations; bounded captures/borrowed streams, no writes or byte cache. */
 import { constants } from "node:fs";
 import {
   access,
@@ -30,6 +30,25 @@ export interface CapturedSource {
   readonly changed: boolean;
   readonly startedAtMs: number;
   readonly finishedAtMs: number;
+}
+
+/**
+ * Borrowed descriptor with a fixed admitted prefix. The callback must finish all
+ * iteration before returning; SourceAccess owns acquisition and confirmed closure.
+ * Repeated passes are positional and never chase a growing writer.
+ */
+export interface StreamedSource {
+  readonly identity: FileState;
+  readonly boundary: number;
+  readonly startedAtMs: number;
+  /** Re-read the admitted prefix in bounded chunks; premature EOF and cancellation reject. */
+  chunks(): AsyncIterable<Uint8Array>;
+  /**
+   * Revalidate grant/locator/descriptor identity. `changed` compares admission or
+   * the previous successful verification; call serially. `appended` compares the
+   * admitted boundary. Metadata stability does not replace a prefix digest.
+   */
+  verify(): Promise<{ changed: boolean; appended: boolean }>;
 }
 
 /**
@@ -484,6 +503,72 @@ export class SourceAccess {
           startedAtMs,
           finishedAtMs: Date.now(),
         };
+      } finally {
+        await close();
+      }
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * Borrow an authorized original descriptor without whole-file allocation or a file-size ceiling.
+   * The returned promise owns even late acquisition and rejected closes; cancelling
+   * a wait is not cleanup. Callers must retain settlement and use the publication barrier.
+   * Metadata and record/work budgets belong to the borrower, not this authorization layer.
+   */
+  async withStream<T>(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+    borrow: (source: StreamedSource) => Promise<T>,
+  ): Promise<T> {
+    if (signal.aborted) throw cancelledRead(signal);
+    const startedAtMs = Date.now();
+    const { grant, canonical, candidate } = await this.resolve(sourceId, relativePath, signal);
+    try {
+      const handle = await open(canonical, constants.O_RDONLY |
+        (process.platform === "win32" ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK));
+      const close = this.ownClose(handle);
+      try {
+        if (signal.aborted) throw cancelledRead(signal);
+        const before = await handle.stat({ bigint: true });
+        if (!before.isFile())
+          throw new RuntimeError("NOT_A_FILE", "Select a regular capture file.", 400);
+        if (before.size > BigInt(Number.MAX_SAFE_INTEGER))
+          throw new RuntimeError("SOURCE_TOO_LARGE", "The source exceeds safe byte-coordinate limits.", 413);
+        if (!(await pointsToOpenedFile(candidate, canonical, before)))
+          throw new RuntimeError("SOURCE_CHANGED", "The source changed while opening; refresh and retry.", 409);
+        if (signal.aborted) throw cancelledRead(signal);
+        const boundary = Number(before.size);
+        let lastVerified = before;
+        const source: StreamedSource = {
+          identity: fileState(before), boundary, startedAtMs,
+          async *chunks() {
+            for (let position = 0; position < boundary;) {
+              if (signal.aborted) throw cancelledRead(signal);
+              const buffer = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, boundary - position));
+              const { bytesRead } = await handle.read(buffer, 0, buffer.length, position);
+              if (signal.aborted) throw cancelledRead(signal);
+              if (!bytesRead)
+                throw new RuntimeError("SOURCE_CHANGED", "The admitted source prefix was truncated; refresh and retry.", 409);
+              position += bytesRead;
+              yield buffer.subarray(0, bytesRead);
+            }
+          },
+          verify: async () => {
+            if (signal.aborted) throw cancelledRead(signal);
+            await this.inspect(grant);
+            const after = await handle.stat({ bigint: true });
+            if (after.size < before.size || !(await pointsToOpenedFile(candidate, canonical, before)))
+              throw new RuntimeError("SOURCE_CHANGED", "The source identity or admitted prefix changed; refresh and retry.", 409);
+            if (signal.aborted) throw cancelledRead(signal);
+            const changed = !sameFileState(lastVerified, after);
+            lastVerified = after;
+            return { changed, appended: after.size > before.size };
+          },
+        };
+        return await borrow(source);
       } finally {
         await close();
       }

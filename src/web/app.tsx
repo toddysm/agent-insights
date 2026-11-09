@@ -30,6 +30,7 @@ import {
   type RuntimeStatus,
 } from "../runtime/protocol.js";
 import "./styles.css";
+import { StreamingScanPanel } from "./streaming-scan.js";
 
 /**
  * Read bootstrap access from the initial URL fragment and remove that fragment from history.
@@ -169,6 +170,7 @@ function App(): ReactElement {
   const [readNotice, setReadNotice] = useState("");
   const [view, setView] = useState<ReadView | null>(null);
   const [sessionId, setSessionId] = useState("");
+  const [scanReset, setScanReset] = useState(0);
   const [operationId, setOperationId] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const generation = useRef(0);
@@ -208,7 +210,8 @@ function App(): ReactElement {
    * This does not call the backend or independently cancel its work; source reads,
    * refresh and explicit cancellation own those server-side transitions.
    */
-  function clearView(): void {
+  function clearView(resetScan = true): void {
+    if (resetScan) setScanReset((previous) => previous + 1);
     setStartAttempt(null);
     setAnalysisNotice("");
     setPollError("");
@@ -654,6 +657,17 @@ function App(): ReactElement {
                         Read source
                       </button>
                     </form>
+                  )}
+                  {status.sources.length > 0 && format === "vscode-otel-jsonl" && (
+                    <StreamingScanPanel
+                      key={JSON.stringify([sourceId, relativePath, format, scanReset])}
+                      sourceId={sourceId}
+                      relativePath={relativePath}
+                      disabled={busy || analysisLocked || !selected?.available}
+                      send={request}
+                      onStart={() => { clearView(false); setReadNotice(""); }}
+                      onBusy={setBusy}
+                    />
                   )}
                   <p className="notice" role="status">
                     Native SQLite:{" "}

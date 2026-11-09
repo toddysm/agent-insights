@@ -11,18 +11,35 @@ import type { ReaderInput } from "../contracts.js";
 export type JsonLine =
   | {
       readonly line: number;
+      readonly byteOffset: number;
+      readonly byteLength: number;
       readonly terminated: boolean;
       readonly value: unknown;
       readonly recordId: string;
     }
   | {
       readonly line: number;
+      readonly byteOffset: number;
+      readonly byteLength: number;
       readonly terminated: boolean;
-      readonly error: "encoding" | "json";
+      readonly error: "encoding" | "json" | "oversized";
     };
+
+/** Code-owned framing limits and payload-free physical-line observations, including blanks. */
+export interface JsonLinePolicy {
+  readonly maxRecordBytes: number;
+  readonly onLine?: (line: {
+    line: number;
+    byteOffset: number;
+    byteLength: number;
+    terminated: boolean;
+    blank: boolean;
+  }) => void;
+}
 
 /**
  * Decode one physical line and parse JSON; blank lines retain numbering but emit nothing.
+ * Contiguous input is borrowed synchronously; only fragmented lines allocate a joined byte buffer.
  * @param parts - Borrowed byte slices comprising this line, excluding LF.
  * @param line - One-based physical line number, including blank lines.
  * @param terminated - Whether LF ended the record, rather than end of input.
@@ -32,13 +49,19 @@ function decode(
   parts: readonly Uint8Array[],
   line: number,
   terminated: boolean,
-): JsonLine | null {
+): (
+  | Omit<Extract<JsonLine, { value: unknown }>, "byteOffset" | "byteLength">
+  | Omit<Extract<JsonLine, { error: string }>, "byteOffset" | "byteLength">
+) | null {
   const size = parts.reduce((total, part) => total + part.byteLength, 0);
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const part of parts) {
-    bytes.set(part, offset);
-    offset += part.byteLength;
+  const contiguous = parts.length === 1 ? parts[0] : undefined;
+  const bytes = contiguous ?? new Uint8Array(size);
+  if (!contiguous) {
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.byteLength;
+    }
   }
   let text: string;
   try {
@@ -71,19 +94,48 @@ function decode(
  * @returns Records in source order; a complete final record needs no newline.
  * @throws Rejects on cancellation or stream failure; yields controlled syntax/encoding failures.
  */
-export async function* jsonLines(input: ReaderInput): AsyncGenerator<JsonLine> {
+export async function* jsonLines(
+  input: ReaderInput,
+  policy: JsonLinePolicy = { maxRecordBytes: 64 * 1024 * 1024 },
+): AsyncGenerator<JsonLine> {
+  if (!Number.isSafeInteger(policy.maxRecordBytes) || policy.maxRecordBytes < 1)
+    throw new RangeError("Record byte limit must be a positive safe integer");
   input.signal.throwIfAborted();
   let parts: Uint8Array[] = [];
   let line = 1;
+  let size = 0;
+  let byteOffset = 0;
+  let oversized = false;
+  /** Exclude oversized lines before collecting/decoding; retain only a bounded unfinished record. */
+  const append = (part: Uint8Array): void => {
+    size += part.byteLength;
+    if (size > policy.maxRecordBytes) {
+      oversized = true;
+      parts = [];
+    } else if (!oversized && part.byteLength) parts.push(part);
+  };
+  /** Finish a physical record; its byte coordinates exclude LF but include CR when present. */
+  const finish = (terminated: boolean): JsonLine | null => {
+    const record = oversized
+      ? { line, terminated, error: "oversized" as const }
+      : decode(parts, line, terminated);
+    policy.onLine?.({ line, byteOffset, byteLength: size, terminated, blank: record === null });
+    const result = record === null ? null : { ...record, byteOffset, byteLength: size };
+    byteOffset += size + (terminated ? 1 : 0);
+    line++;
+    size = 0;
+    parts = [];
+    oversized = false;
+    return result;
+  };
   for await (const chunk of input.bytes) {
     input.signal.throwIfAborted();
     let start = 0;
     for (let index = 0; index < chunk.byteLength; index++) {
       if (chunk[index] !== 10) continue;
       input.signal.throwIfAborted();
-      parts.push(chunk.subarray(start, index));
-      const record = decode(parts, line++, true);
-      parts = [];
+      append(chunk.subarray(start, index));
+      const record = finish(true);
       start = index + 1;
       if (record !== null) yield record;
       if (line % 256 === 0) {
@@ -91,13 +143,13 @@ export async function* jsonLines(input: ReaderInput): AsyncGenerator<JsonLine> {
         input.signal.throwIfAborted();
       }
     }
-    if (start < chunk.byteLength) parts.push(chunk.subarray(start));
+    if (start < chunk.byteLength) append(chunk.subarray(start));
     await setImmediate();
     input.signal.throwIfAborted();
   }
   input.signal.throwIfAborted();
-  if (parts.length > 0) {
-    const record = decode(parts, line, false);
+  if (size > 0) {
+    const record = finish(false);
     if (record !== null) yield record;
   }
 }

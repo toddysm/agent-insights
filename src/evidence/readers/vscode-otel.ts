@@ -5,6 +5,7 @@
  * No source paths, model calls, filesystem writes or captured-content logs occur.
  */
 import { isDeepStrictEqual } from "node:util";
+import { createHash } from "node:crypto";
 import {
   parseReadView,
   type EvidenceReader,
@@ -12,6 +13,7 @@ import {
   type ReadView,
 } from "../contracts.js";
 import { jsonLines } from "./jsonl.js";
+import { ScanBudgetExceeded, type OtelScanPolicy } from "../streaming.js";
 
 /** Shared normalized execution event, excluding reconstructed messages. */
 type Span = Exclude<ReadView["events"][number], { kind: "message" }>;
@@ -48,13 +50,17 @@ interface Candidate {
   readonly version: string | null;
   readonly references: Reference[];
   conflict: boolean;
+  /** Compact scans compare full normalized facts before discarding payloads. */
+  signature?: string;
 }
 
 /**
- * Aggregate one payload-free issue per category, retaining each occurrence's
- * supplied original references rather than keeping one issue per record.
+ * Aggregate one payload-free issue per category. Small reads preserve supplied
+ * references; compact scans retain the first affected anchor and exact count.
  */
 class Diagnostics {
+  /** Compact scans preserve the first affected anchor and exact occurrence count, not an unbounded reference list. */
+  constructor(private readonly compact = false) {}
   private readonly entries = new Map<
     string,
     {
@@ -84,14 +90,15 @@ class Diagnostics {
     const previous = this.entries.get(key);
     if (previous) {
       previous.count++;
-      for (const ref of references) previous.references.push(ref);
+      if (!this.compact)
+        for (const ref of references) previous.references.push(ref);
     } else
       this.entries.set(key, {
         code,
         message,
         count: 1,
         line,
-        references: [...references],
+        references: this.compact ? references.slice(0, 1) : [...references],
       });
   }
 
@@ -210,6 +217,13 @@ function hex(value: unknown, length: number): string | null {
     !/^0+$/.test(value)
     ? value
     : null;
+}
+
+/** Use validated original ID spelling or the original physical line; shared by scans and detail rescans. */
+export function vscodeOtelRecordKey(raw: unknown, line: number): string {
+  const traceId = object(raw) ? hex(raw.traceId, 32) : null;
+  const spanId = object(raw) ? hex(raw.spanId, 16) : null;
+  return traceId && spanId ? `${traceId}/${spanId}` : `line-${line}`;
 }
 
 /**
@@ -550,7 +564,7 @@ function span(
     diagnostics.add("missing-field", "Tool name was not reported", line);
   return {
     line,
-    key: traceId && spanId ? `${traceId}/${spanId}` : `line-${line}`,
+    key: vscodeOtelRecordKey(raw, line),
     parentKey: validParent ? `${parentTraceId}/${parentId}` : null,
     facts: {
       kind,
@@ -735,13 +749,25 @@ function associate(
 /**
  * Consume the extension file exporter without reading or persisting any other source.
  * @param input - Authorized bounded byte stream and generation-owned cancellation.
+ * @param policy - Optional code-owned scan ceilings; drops payloads only after full-fact
+ * duplicate/conflict comparison and rejects rather than evicting correlation state.
  * @returns Immutable adapter candidate with original anchors and provisional assembly
  * timestamps. RuntimeService supplies published read timing and separate capture bounds.
  * @throws Rejects on cancellation, stream errors or an internal contract violation.
  */
-async function read(input: ReaderInput): Promise<ReadView> {
+async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadView> {
   const startedAtMs = Date.now();
-  const diagnostics = new Diagnostics();
+  const diagnostics = new Diagnostics(policy !== undefined);
+  let retainedBytes = 0;
+  let retainedReferences = 0;
+  /** Conservatively charge decoded metadata and references before retaining another identity. */
+  const reserve = (value: unknown, references = 0): void => {
+    if (!policy) return;
+    retainedBytes += 4 * Buffer.byteLength(JSON.stringify(value), "utf8") + 512;
+    retainedReferences += references;
+    if (retainedBytes > policy.maxMetadataBytes) throw new ScanBudgetExceeded("metadata");
+    if (retainedReferences > policy.maxReferences) throw new ScanBudgetExceeded("references");
+  };
   const candidates = new Map<string, Candidate>();
   const operations = new Map<
     string,
@@ -750,11 +776,25 @@ async function read(input: ReaderInput): Promise<ReadView> {
   const operationConflicts = new Set<string>();
   const nonExecutionRecords = { metrics: 0, logs: 0, contentEvents: 0 };
   let recognized = false;
-  for await (const record of jsonLines(input)) {
+  for await (const record of jsonLines(input, policy && {
+    maxRecordBytes: policy.maxRecordBytes,
+    onLine: (line) => {
+      policy.onLine(line);
+      policy.counts.records++;
+      if (line.blank) policy.counts.blank++;
+    },
+  })) {
     if ("error" in record) {
+      if (policy) {
+        if (record.error === "oversized") policy.counts.oversized++;
+        else if (!record.terminated) policy.counts.incomplete++;
+        else policy.counts.malformed++;
+      }
       diagnostics.add(
         record.terminated ? "unknown-record" : "truncated-record",
-        record.error === "encoding"
+        record.error === "oversized"
+          ? "Record exceeds the byte limit; excluded from execution coverage"
+          : record.error === "encoding"
           ? "Invalid UTF-8 record"
           : "Malformed JSON record",
         record.line,
@@ -763,6 +803,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
     }
     const raw = record.value;
     if (!object(raw)) {
+      if (policy) policy.counts.unknown++;
       diagnostics.add(
         "unknown-record",
         "Unsupported telemetry record shape",
@@ -773,6 +814,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
     if (Array.isArray(raw.scopeMetrics)) {
       recognized = true;
       nonExecutionRecords.metrics++;
+      if (policy) policy.counts.metrics++;
       continue;
     }
     if (
@@ -782,6 +824,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
     ) {
       recognized = true;
       nonExecutionRecords.logs++;
+      if (policy) policy.counts.logs++;
       continue;
     }
     const spanHeader =
@@ -794,6 +837,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
       ("traceId" in raw || "spanId" in raw) &&
       ("startTime" in raw || "endTime" in raw || spanHeader);
     if (!isSpan) {
+      if (policy) policy.counts.unknown++;
       diagnostics.add(
         "unknown-record",
         "Unsupported telemetry record shape",
@@ -805,14 +849,22 @@ async function read(input: ReaderInput): Promise<ReadView> {
     const classification = classifyOperation(raw.attributes);
     if (classification.kind === "non-execution") {
       nonExecutionRecords.contentEvents++;
+      if (policy) policy.counts.contentEvents++;
       continue;
     }
-    const ref = reference(input, record.line, record.recordId);
-    const traceId = hex(raw.traceId, 32);
-    const spanId = hex(raw.spanId, 16);
+    if (policy) {
+      if (classification.kind === "execution") policy.counts.executionRecords++;
+      else policy.counts.unclassifiedRecords++;
+    }
+    const ref: Reference = {
+      ...reference(input, record.line, record.recordId),
+      ...(policy ? { location: {
+        kind: "jsonl" as const, line: record.line, pointer: "",
+        byteOffset: record.byteOffset, byteLength: record.byteLength,
+      } } : {}),
+    };
     // Filtering an unqualified execution must not hide a conflicting native identity.
-    const key =
-      traceId && spanId ? `${traceId}/${spanId}` : `line-${record.line}`;
+    const key = vscodeOtelRecordKey(raw, record.line);
     const earlier = operations.get(key);
     if (earlier) {
       if (!isDeepStrictEqual(earlier.classification, classification)) {
@@ -830,7 +882,11 @@ async function read(input: ReaderInput): Promise<ReadView> {
           refs,
         );
       }
-    } else operations.set(key, { classification, reference: ref });
+    } else {
+      if (policy && operations.size >= policy.maxIdentities) throw new ScanBudgetExceeded("identities");
+      reserve({ key, classification, reference: ref }, 1);
+      operations.set(key, { classification, reference: ref });
+    }
     if (classification.kind === "unclassified") {
       const descriptions = {
         missingOperation:
@@ -851,7 +907,7 @@ async function read(input: ReaderInput): Promise<ReadView> {
       );
       continue;
     }
-    const candidate = span(
+    let candidate = span(
       raw,
       input,
       record.line,
@@ -859,13 +915,28 @@ async function read(input: ReaderInput): Promise<ReadView> {
       diagnostics,
       classification,
     );
+    if (policy) {
+      candidate.signature = createHash("sha256")
+        .update(JSON.stringify([candidate.facts, candidate.identities, candidate.producer, candidate.version]))
+        .digest("hex");
+      candidate.references.splice(0, candidate.references.length, ref);
+      // Full-fact signatures still detect conflicting content after payloads are discarded.
+      candidate = {
+        ...candidate,
+        facts: {
+          ...candidate.facts,
+          ...(candidate.facts.hook ? { hook: { ...candidate.facts.hook, input: null, output: null } } : {}),
+          content: { inputMessages: null, outputMessages: null, toolArguments: null, toolResult: null },
+        },
+      };
+    }
     if (operationConflicts.has(candidate.key)) candidate.conflict = true;
     const previous = candidates.get(candidate.key);
     if (previous) {
       if (
         previous.conflict ||
         candidate.conflict ||
-        !isDeepStrictEqual(previous.facts, candidate.facts) ||
+        (policy ? previous.signature !== candidate.signature : !isDeepStrictEqual(previous.facts, candidate.facts)) ||
         !isDeepStrictEqual(previous.identities, candidate.identities) ||
         previous.producer !== candidate.producer ||
         previous.version !== candidate.version
@@ -881,8 +952,11 @@ async function read(input: ReaderInput): Promise<ReadView> {
           refs,
         );
       }
-      previous.references.push(...candidate.references);
+      if (policy) {
+        if (previous.signature === candidate.signature) policy.counts.duplicates++;
+      } else previous.references.push(...candidate.references);
     } else {
+      reserve(candidate, candidate.references.length);
       candidates.set(candidate.key, candidate);
       if (candidate.conflict)
         diagnostics.add(
@@ -1019,3 +1093,12 @@ export const vscodeOtelReader: EvidenceReader = {
   format: "vscode-otel-jsonl",
   read,
 };
+
+/**
+ * Use the same format/correlation rules with bounded payload-free metadata.
+ * Duplicate contributors are counted, not retained; source paging retrieves them
+ * later without adding them again to metrics. Budget exhaustion rejects, never evicts.
+ */
+export function scanVscodeOtel(input: ReaderInput, policy: OtelScanPolicy): Promise<ReadView> {
+  return read(input, policy);
+}

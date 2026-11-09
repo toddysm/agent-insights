@@ -68,9 +68,93 @@ For a database, the grant also covers its exact existing `-wal`, `-shm` and
 `-journal` companions, subject to the same identity and size checks, not arbitrary
 neighboring paths. Traversal, cross-drive paths, links
 escaping the canonical grant, and retargeted configured links are rejected.
-Only regular files are read, using read-only descriptors. A single read is
-limited to 64 MiB; oversized captures produce an explicit error, not silent
-truncation. There are no filesystem watchers.
+Only regular files are read, using read-only descriptors. **Read source** retains
+the 64 MiB small-capture ceiling; **Scan JSONL source** streams the installed
+extension-export format without allocating a file-sized buffer. SQLite main
+files and sidecars retain their existing 64 MiB limits. These are separate from
+record, metadata and selected-detail budgets below. There are no filesystem watchers.
+
+### Scan large JSONL captures in place
+
+Select the authorized file/directory and `vscode-otel-jsonl`, then choose
+**Scan JSONL source**. Do not truncate, split or copy normal captures. The scan
+admits the original descriptor's starting byte length, reads 64 KiB chunks and
+finishes at that boundary rather than chasing an active writer.
+It does not invoke a model or transmit source content.
+
+The interface shows physical-record/category counts and per-pass byte progress.
+**complete** means complete for the admitted interval, not proof of complete
+session capture. **partial**, **cancelled**, **source-changed**, **budget-exceeded**,
+**format-unsupported**, **failed** and **cleanup-failed** are distinct outcomes.
+Malformed/oversized independent lines, incomplete trailing writes, conflicting
+identities and unassigned executions reduce coverage. A metrics/log-only source
+reports telemetry but unavailable execution timing/tools/tokens, **not zero usage**.
+Messages/conversation coverage remains separate.
+
+Choose a **Scanned session** (or **Unassigned executions**), optionally enter
+inclusive recorded-start bounds in epoch milliseconds, then **Load original
+evidence**. Correlation uses the whole admitted source, including parents outside
+the selected time window. Unknown start times are excluded when a time filter
+is present. Session and evidence pages replace previous pages rather than adding
+an unbounded browser collection. Physical duplicate contributors are evidence,
+not extra executions or additive model usage.
+
+Each evidence page reopens the authorized original, verifies file identity and
+hashes the complete admitted prefix before publication. This deliberately costs
+a rescan per page; progress reports its additional pass/work bytes. Line numbers,
+byte offsets/lengths and SHA-256 fingerprints refer to the original physical
+record (excluding LF, including CR when present), never a normalized array index.
+Append beyond the boundary can be reported separately after continuity checking;
+**Rescan JSONL source** creates a new generation to include later bytes. Rotation,
+replacement, truncation or changed prefix bytes invalidate evidence. These checks
+are best-effort observations, **not an atomic snapshot of a live file**.
+Both scans and evidence pages rehash after a detected metadata change. A further
+change detected at final verification rejects publication with **source-changed**
+rather than serving unverified evidence or retrying indefinitely against a writer.
+If an evidence read invalidates its scan, the old session catalog, selection and
+evidence page are cleared; rescan the source before retrieving evidence again.
+Expired completed scans report **budget-exceeded** instead of remaining
+publishable. Expiration never claims that an owned detail descriptor was closed.
+Catalog pagination also reconciles current authority, so an expired page request
+clears cached sessions/evidence and leaves an explicit rescan available.
+
+**Cancel scan** acknowledges cancellation independently of descriptor cleanup.
+It clears catalog/detail authority and prevents late publication. New reads remain
+blocked behind the owned cleanup barrier. If the five-second cleanup confirmation
+fails, use **Retry source cleanup**; an acknowledgement alone never asserts that
+the descriptor closed.
+Lost scan/catalog responses are reconciled from request-matching status without
+automatically rescanning. A start request lost before server admission cannot
+restore an older scan's catalog. If status cannot be reached, controls stay locked
+while status polling retries; they unlock only after cleanup is confirmed. Detail requests
+also reconcile final cleanup, including failed descriptor closure.
+
+| Resource | Current ceiling / behavior |
+| --- | --- |
+| Physical record | 256 KiB before collection/decoding; excluded independent lines are counted explicitly |
+| Retained metadata | 8 MiB of charged metadata (four times serialized bytes plus per-entry overhead), not an exact RSS measurement |
+| Native identities | 8,192; exceeding a ceiling returns unavailable totals, never silent eviction |
+| Retained references | 32,768; compact metadata retains first anchors, with contributor pages rescanned from the original |
+| Catalog/evidence page | At most 20 entries |
+| Selected raw detail budget | 512 KiB of original record bytes per page, including whitespace/CR but excluding LF; a record that cannot fit is an explicit budget error |
+| Serialized detail response | 1 MiB maximum |
+| Cumulative physical-read work | 8 GiB per generation, including continuity/detail passes |
+| Generation lifetime | 15 minutes, checked monotonically; expiration requires an explicit rescan |
+
+These are not a blanket input-size ceiling or an analysis model context allowance.
+A single giant session and very many sessions can both exhaust metadata before
+the file ends. Such a scan returns **budget-exceeded**, admitted/scanned bounds
+and unavailable totals, not a sampled complete catalog. No persistent cursor,
+session index, copied corpus, temporary disk spill or application database exists.
+Restarting loses the catalog and requires another scan. Cursors are signed,
+generation/selection-bound and expire; using them with another scan/source or
+changed time bounds is rejected.
+
+Large synthetic scale qualification is separate from real producer compatibility.
+Run `npm run qualify:streaming` from a clean committed checkout. Passed receipts
+are rejected if the working tree is dirty or HEAD changes during qualification.
+This implementation does not expand the schema mappings described below.
+No new private-source inspection or real-capture qualification is implied.
 
 ### Read an existing execution capture
 

@@ -15,6 +15,7 @@
     "prepare:native": "npm run build && node scripts/prepare-native-helper.mjs",
     "qualify:native": "node scripts/qualify-native-helper.mjs",
     "qualify:source-access": "node scripts/qualify-source-access.mjs",
+    "qualify:streaming": "npm run build && node scripts/qualify-jsonl-streaming.mjs",
     "test:native-artifacts": "npm run build && node --test .build/tests/native-artifacts.test.js",
     "test": "npm run build && node --test .build/tests/*.test.js tests/startup.test.mjs",
     "test:startup": "node --test tests/startup.test.mjs",

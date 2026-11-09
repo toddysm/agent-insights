@@ -42,6 +42,8 @@ export const referenceSchema = z
           kind: z.literal("jsonl"),
           line: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
           pointer,
+          byteOffset: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+          byteLength: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
         })
         .readonly(),
       z
