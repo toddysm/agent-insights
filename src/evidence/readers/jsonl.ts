@@ -39,6 +39,7 @@ export interface JsonLinePolicy {
 
 /**
  * Decode one physical line and parse JSON; blank lines retain numbering but emit nothing.
+ * Contiguous input is borrowed synchronously; only fragmented lines allocate a joined byte buffer.
  * @param parts - Borrowed byte slices comprising this line, excluding LF.
  * @param line - One-based physical line number, including blank lines.
  * @param terminated - Whether LF ended the record, rather than end of input.
@@ -53,11 +54,14 @@ function decode(
   | Omit<Extract<JsonLine, { error: string }>, "byteOffset" | "byteLength">
 ) | null {
   const size = parts.reduce((total, part) => total + part.byteLength, 0);
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const part of parts) {
-    bytes.set(part, offset);
-    offset += part.byteLength;
+  const contiguous = parts.length === 1 ? parts[0] : undefined;
+  const bytes = contiguous ?? new Uint8Array(size);
+  if (!contiguous) {
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.byteLength;
+    }
   }
   let text: string;
   try {
