@@ -219,6 +219,13 @@ function hex(value: unknown, length: number): string | null {
     : null;
 }
 
+/** Use validated original ID spelling or the original physical line; shared by scans and detail rescans. */
+export function vscodeOtelRecordKey(raw: unknown, line: number): string {
+  const traceId = object(raw) ? hex(raw.traceId, 32) : null;
+  const spanId = object(raw) ? hex(raw.spanId, 16) : null;
+  return traceId && spanId ? `${traceId}/${spanId}` : `line-${line}`;
+}
+
 /**
  * Convert producer tuples without accepting a different format's string units.
  * @param value - Epoch seconds and nanosecond remainder in [0, 1e9), both integers.
@@ -557,7 +564,7 @@ function span(
     diagnostics.add("missing-field", "Tool name was not reported", line);
   return {
     line,
-    key: traceId && spanId ? `${traceId}/${spanId}` : `line-${line}`,
+    key: vscodeOtelRecordKey(raw, line),
     parentKey: validParent ? `${parentTraceId}/${parentId}` : null,
     facts: {
       kind,
@@ -856,11 +863,8 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
         byteOffset: record.byteOffset, byteLength: record.byteLength,
       } } : {}),
     };
-    const traceId = hex(raw.traceId, 32);
-    const spanId = hex(raw.spanId, 16);
     // Filtering an unqualified execution must not hide a conflicting native identity.
-    const key =
-      traceId && spanId ? `${traceId}/${spanId}` : `line-${record.line}`;
+    const key = vscodeOtelRecordKey(raw, record.line);
     const earlier = operations.get(key);
     if (earlier) {
       if (!isDeepStrictEqual(earlier.classification, classification)) {

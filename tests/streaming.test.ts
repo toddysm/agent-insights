@@ -550,3 +550,37 @@ test("the metadata charge passes its exact boundary and rejects one additional c
   await assert.rejects(scanVscodeOtel(input(text), { ...policy, counts: counts(), maxMetadataBytes: high - 1 }),
     (error) => error instanceof ScanBudgetExceeded && error.budget === "metadata");
 });
+
+test("uppercase native IDs retain physical-line identity and never attach to lowercase executions", async (t) => {
+  const traceId = "abcdef0123456789".repeat(2);
+  const spanId = "abcdef0123456789";
+  const text = [
+    span(1, { "gen_ai.conversation.id": "upper" }, { traceId: traceId.toUpperCase(), spanId: spanId.toUpperCase() }),
+    span(1, { "gen_ai.conversation.id": "lower" }, { traceId, spanId }),
+  ].map((value) => JSON.stringify(value)).join("\n");
+  const { service } = await fixture(t, text);
+  const result = await scan(service);
+  const sessions = service.scanCatalog.catalog(result.id, null).sessions;
+  assert.equal(sessions.length, 2);
+  const upper = await details(service, result.id, sessions[0]!.id);
+  const lower = await details(service, result.id, sessions[1]!.id);
+  assert.deepEqual(upper.contributors.map((entry) => entry.line), [1]);
+  assert.deepEqual(lower.contributors.map((entry) => entry.line), [2]);
+  assert.equal(upper.contributors[0]!.event.nativeId, null);
+  assert.equal(lower.contributors[0]!.event.nativeId, spanId);
+});
+
+test("metrics, logs and content events sharing execution IDs do not consume detail pages or invalidate unchanged sources", async (t) => {
+  const execution = span();
+  const text = [...Array.from({ length: STREAM_LIMITS.pageRecords }, () => execution),
+    { ...execution, hrTime: [1760000000, 0] },
+    span(1, { "gen_ai.operation.name": "content_event" }), { ...execution, scopeMetrics: [] }]
+    .map((value) => JSON.stringify(value)).join("\n");
+  const { service } = await fixture(t, text);
+  const result = await scan(service);
+  const page = await details(service, result.id, service.scanCatalog.catalog(result.id, null).sessions[0]!.id);
+  assert.deepEqual(page.contributors.map((entry) => entry.line),
+    Array.from({ length: STREAM_LIMITS.pageRecords }, (_, index) => index + 1));
+  assert.equal(page.next, null);
+  assert.equal(service.scanCatalog.status?.phase, "complete");
+});

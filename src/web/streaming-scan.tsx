@@ -1,5 +1,5 @@
 /** Minimal bounded scan/catalog/evidence interaction; never parses a capture or invokes a model in the browser. */
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { z } from "zod";
 import {
   scanStatusSchema, scanEnvelopeSchema, catalogPageSchema, detailPageSchema,
@@ -24,6 +24,7 @@ interface ScanPanelProps {
 export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onStart, onBusy }: ScanPanelProps): ReactElement {
   const [scan, setScan] = useState<ScanStatus | null>(null);
   const [working, setWorking] = useState(false);
+  const [reconciling, setReconciling] = useState(false);
   const [error, setError] = useState("");
   const [catalog, setCatalog] = useState<z.infer<typeof catalogPageSchema> | null>(null);
   const [details, setDetails] = useState<z.infer<typeof detailPageSchema> | null>(null);
@@ -31,19 +32,43 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const generation = useRef(0);
+  const needsCatalog = catalog === null;
+  const locked = working || reconciling || scan?.cleanupPending === true;
+
+  /** Reconcile lost responses without resubmitting work; keep ownership locked until status is confirmed. */
+  const reconcile = useCallback(async (current: number, restoreCatalog: boolean): Promise<void> => {
+    try {
+      const result = await send("/api/scan/status", scanEnvelopeSchema);
+      if (current !== generation.current) return;
+      setScan(result.scan);
+      if (restoreCatalog && result.scan && ["complete", "partial"].includes(result.scan.phase)) {
+        const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.scan.id, cursor: null });
+        if (current !== generation.current) return;
+        setCatalog(page);
+      }
+      const pending = result.scan?.cleanupPending === true;
+      setReconciling(pending); onBusy(pending);
+    } catch (failure) {
+      if (current === generation.current) {
+        setReconciling(true); onBusy(true);
+        setError(failure instanceof Error ? failure.message : "The source cleanup state could not be checked.");
+      }
+    }
+  }, [send, onBusy]);
 
   useEffect(() => {
-    if (!working && !scan?.cleanupPending) return;
+    if (!working && !scan?.cleanupPending && !reconciling) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     /** Observe progress, not source content; failed polls are visible and do not resubmit work. */
     async function poll(): Promise<void> {
+      const current = generation.current;
       try {
-        const result = await send("/api/scan/status", scanEnvelopeSchema);
-        if (stopped) return;
-        if (result.scan) {
-          setScan(result.scan);
-          if (!working && !result.scan.cleanupPending) onBusy(false);
+        if (!working) await reconcile(current, needsCatalog);
+        else {
+          const result = await send("/api/scan/status", scanEnvelopeSchema);
+          if (stopped || current !== generation.current) return;
+          if (result.scan) setScan(result.scan);
         }
       } catch (failure) {
         if (!stopped) setError(failure instanceof Error ? failure.message : "Scan progress could not be checked.");
@@ -52,32 +77,28 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     }
     void poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [working, scan?.cleanupPending, send, onBusy]);
+  }, [working, scan?.cleanupPending, reconciling, needsCatalog, reconcile, send]);
 
   /** Start a new admitted generation; the initial response contains no session/event payloads. */
   async function start(): Promise<void> {
     const current = ++generation.current;
+    let catalogLoaded = false;
     onStart();
-    setWorking(true); onBusy(true); setError(""); setCatalog(null); setDetails(null); setSession("");
+    setWorking(true); onBusy(true); setError(""); setScan(null); setCatalog(null); setDetails(null); setSession("");
     try {
       const result = await send("/api/scan", scanStatusSchema, { sourceId, relativePath, format: "vscode-otel-jsonl" });
       if (current !== generation.current) return;
       setScan(result);
       if (["complete", "partial"].includes(result.phase)) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.id, cursor: null });
-        if (current === generation.current) setCatalog(page);
+        if (current === generation.current) { setCatalog(page); catalogLoaded = true; }
       }
     } catch (failure) {
       if (current === generation.current) setError(failure instanceof Error ? failure.message : "The source could not be scanned.");
     } finally {
       if (current === generation.current) {
-        setWorking(false);
-        try {
-          const result = await send("/api/scan/status", scanEnvelopeSchema);
-          if (current === generation.current) { setScan(result.scan); onBusy(result.scan?.cleanupPending === true); }
-        } catch (failure) {
-          setError(failure instanceof Error ? failure.message : "The source cleanup state could not be checked.");
-        }
+        setWorking(false); setReconciling(true);
+        await reconcile(current, !catalogLoaded);
       }
     }
   }
@@ -88,6 +109,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       const result = await send("/api/scan/cancel", scanEnvelopeSchema, {});
       generation.current++;
       setWorking(false); setScan(result.scan); setCatalog(null); setDetails(null);
+      setReconciling(result.scan?.cleanupPending === true);
       onBusy(result.scan?.cleanupPending === true);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Scan cancellation could not be confirmed.");
@@ -131,18 +153,28 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         setDetails(null);
         setError(failure instanceof Error ? failure.message : "Original evidence could not be loaded.");
       }
-    } finally { if (current === generation.current) { setWorking(false); onBusy(false); } }
+    } finally {
+      if (current === generation.current) {
+        setWorking(false); setReconciling(true);
+        await reconcile(current, false);
+      }
+    }
   }
 
   /** Retry retained cleanup through the existing barrier, never merely clearing a browser flag. */
   async function retryCleanup(): Promise<void> {
-    setError("");
+    const current = ++generation.current;
+    setError(""); setWorking(true); onBusy(true);
     try {
       await send("/api/cancel", statusSchema, {});
-      const result = await send("/api/scan/status", scanEnvelopeSchema);
-      setScan(result.scan); onBusy(false);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Source cleanup remains unconfirmed.");
+      if (current === generation.current)
+        setError(failure instanceof Error ? failure.message : "Source cleanup remains unconfirmed.");
+    } finally {
+      if (current === generation.current) {
+        setWorking(false); setReconciling(true);
+        await reconcile(current, false);
+      }
     }
   }
 
@@ -150,10 +182,12 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     <h3 id="scan-heading">Bounded JSONL scan</h3>
     <p>Scan the original file in place, including files over 64 MiB. No model is called.
       Only session counts load initially; evidence loads after selection.</p>
-    <button type="button" disabled={disabled || working || scan?.cleanupPending} onClick={() => void start()}>
+    <button type="button" disabled={disabled || locked} onClick={() => void start()}>
       {scan ? "Rescan JSONL source" : "Scan JSONL source"}
     </button>
-    {scan && (working || scan.phase === "scanning") && <button type="button" onClick={() => void cancel()}>Cancel scan</button>}
+    {(scan || reconciling) && (working || reconciling || scan?.phase === "scanning") &&
+      <button type="button" onClick={() => void cancel()}>Cancel scan</button>}
+    {reconciling && <p>Checking source cleanup before accepting new work…</p>}
     {scan?.phase === "cleanup-failed" && <button type="button" onClick={() => void retryCleanup()}>Retry source cleanup</button>}
     {error && <p role="alert">{error}</p>}
     {scan && <div role="status" aria-live="polite">
@@ -179,19 +213,19 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     {catalog && <div>
       <p>Sessions in this page: {catalog.sessions.length}. Unassigned executions: {catalog.unassigned}.</p>
       <label htmlFor="scan-session">Scanned session</label>
-      <select id="scan-session" value={session} disabled={working} onChange={(event) => { setSession(event.target.value); setDetails(null); }}>
+      <select id="scan-session" value={session} disabled={locked} onChange={(event) => { setSession(event.target.value); setDetails(null); }}>
         <option value="">Select a session</option>
         {catalog.sessions.map((entry) => <option key={entry.id} value={entry.id}>
           Session {entry.id.split(":").at(-1)} · {entry.executions} executions
         </option>)}
         {catalog.unassigned > 0 && <option value="unassigned">Unassigned executions</option>}
       </select>
-      <button type="button" disabled={working || !catalog.next} onClick={() => void nextCatalog()}>Next session page</button>
+      <button type="button" disabled={locked || !catalog.next} onClick={() => void nextCatalog()}>Next session page</button>
       <label htmlFor="scan-from">Recorded start from (epoch ms, optional)</label>
-      <input id="scan-from" value={from} disabled={working} onChange={(event) => { setFrom(event.target.value); setDetails(null); }} />
+      <input id="scan-from" value={from} disabled={locked} onChange={(event) => { setFrom(event.target.value); setDetails(null); }} />
       <label htmlFor="scan-to">Recorded start through (epoch ms, optional)</label>
-      <input id="scan-to" value={to} disabled={working} onChange={(event) => { setTo(event.target.value); setDetails(null); }} />
-      <button type="button" disabled={working || !session} onClick={() => void loadDetails()}>Load original evidence</button>
+      <input id="scan-to" value={to} disabled={locked} onChange={(event) => { setTo(event.target.value); setDetails(null); }} />
+      <button type="button" disabled={locked || !session} onClick={() => void loadDetails()}>Load original evidence</button>
       {working && <p>Reading original evidence; prefix verification may rescan the admitted file.</p>}
     </div>}
     {details && <div aria-label="Original evidence page">
@@ -203,7 +237,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         <pre>{JSON.stringify(entry.event, null, 2)}</pre>
       </article>)}
       {!details.contributors.length && <p>No original contributors match this selection. Unknown timestamps are excluded by a time filter.</p>}
-      <button type="button" disabled={working || !details.next} onClick={() => void loadDetails(true)}>Next evidence page</button>
+      <button type="button" disabled={locked || !details.next} onClick={() => void loadDetails(true)}>Next evidence page</button>
     </div>}
   </section>;
 }

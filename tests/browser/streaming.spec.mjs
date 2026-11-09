@@ -141,3 +141,103 @@ test("a delayed initial catalog response cannot resurrect a cancelled generation
     await rm(root, { recursive: true });
   }
 });
+
+for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
+  test(`a lost ${lostRoute} response restores the completed catalog without rescanning`, async ({ page }) => {
+    const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+    const { root, runtime } = await fixture(text);
+    let lost = false;
+    let scans = 0;
+    page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
+    await page.route(`**${lostRoute}`, async (route) => {
+      if (lost) { await route.continue(); return; }
+      lost = true;
+      await route.fetch();
+      await route.abort("failed");
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByLabel("Scanned session")).toBeEnabled();
+      await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+      await panel.getByRole("button", { name: "Load original evidence" }).click();
+      await expect(panel.locator("article")).not.toHaveCount(0);
+      expect(scans).toBe(1);
+      expect(lost).toBe(true);
+    } finally {
+      await runtime.close();
+      await rm(root, { recursive: true });
+    }
+  });
+}
+
+test("unknown initial cleanup keeps reconciling until status transport recovers", async ({ page }) => {
+  const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+  const { root, runtime } = await fixture(text);
+  let recover = false;
+  let polls = 0;
+  await page.route("**/api/scan", async (route) => { await route.fetch(); await route.abort("failed"); });
+  await page.route("**/api/scan/status", async (route) => {
+    polls++;
+    if (recover) await route.continue();
+    else await route.abort("failed");
+  });
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByText("Checking source cleanup before accepting new work…")).toBeVisible();
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeDisabled();
+    recover = true;
+    await expect(panel.getByLabel("Scanned session")).toBeEnabled();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    expect(polls).toBeGreaterThan(1);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
+test("failed detail responses reconcile cleanup before unlocking even when a progress response is delayed", async ({ page }) => {
+  const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+  const { root, runtime } = await fixture(text);
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let statusRequests = 0;
+  let recovered = false;
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    await page.route("**/api/scan/status", async (route) => {
+      const response = await route.fetch();
+      if (++statusRequests === 1) {
+        await held;
+        await route.fulfill({ response });
+      } else {
+        const body = await response.json();
+        if (!recovered) body.scan = { ...body.scan, phase: "cleanup-failed", cleanupPending: true };
+        await route.fulfill({ response, json: body });
+      }
+    });
+    await page.route("**/api/scan/details", async (route) => {
+      await route.fulfill({ status: 503, json: { error: { code: "SOURCE_CLEANUP_FAILED", message: "Fictional detail cleanup failure." } } });
+    });
+    await page.route("**/api/cancel", async (route) => { recovered = true; await route.continue(); });
+    await panel.getByRole("button", { name: "Load original evidence" }).click();
+    await expect(panel.getByRole("button", { name: "Retry source cleanup" })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeDisabled();
+    release();
+    await panel.getByRole("button", { name: "Retry source cleanup" }).click();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    expect(statusRequests).toBeGreaterThan(1);
+  } finally {
+    release();
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});

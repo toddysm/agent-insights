@@ -8,7 +8,7 @@ import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import type { ReadView } from "../evidence/contracts.js";
 import { jsonLines } from "../evidence/readers/jsonl.js";
-import { scanVscodeOtel, vscodeOtelReader } from "../evidence/readers/vscode-otel.js";
+import { scanVscodeOtel, vscodeOtelReader, vscodeOtelRecordKey } from "../evidence/readers/vscode-otel.js";
 import {
   STREAM_LIMITS, ScanBudgetExceeded, catalogPageSchema, detailPageSchema,
   type DetailRequest, type ScanRequest, type ScanStatus, type StreamLimits,
@@ -300,29 +300,20 @@ export class JsonlScan {
     }, { maxRecordBytes: this.limits.recordBytes })) {
       if ("error" in record || record.byteOffset < offset) continue;
       const raw = record.value;
-      const value = typeof raw === "object" && raw !== null && !Array.isArray(raw) ? raw : null;
-      const trace = value && "traceId" in value && typeof value.traceId === "string" ? value.traceId.toLowerCase() : "";
-      const span = value && "spanId" in value && typeof value.spanId === "string" ? value.spanId.toLowerCase() : "";
-      const key = /^[a-f0-9]{32}$/.test(trace) && /[1-9a-f]/.test(trace) && /^[a-f0-9]{16}$/.test(span) && /[1-9a-f]/.test(span)
-        ? `${trace}/${span}` : `line-${record.line}`;
-      const original = selected.get(key);
-      if (!original) continue;
-      if (contributors.length >= this.limits.pageRecords || nextOffset !== null) {
-        nextOffset = lastEnd;
-        continue;
-      }
+      const original = selected.get(vscodeOtelRecordKey(raw, record.line));
+      if (!original || nextOffset !== null) continue;
       const bytes = Buffer.from(JSON.stringify(raw));
-      if (payloadBytes + bytes.length > this.limits.detailBytes) {
-        if (!contributors.length) throw new ScanBudgetExceeded("detail");
-        nextOffset = lastEnd;
-        continue;
-      }
       const detail = await vscodeOtelReader.read({
         readId: request.id, sourceId: status.sourceId, signal,
         bytes: byteChunks(bytes, signal),
       });
       const event = detail.events[0];
-      if (!event) throw new RuntimeError("SOURCE_CHANGED", "An original execution record changed; refresh before retrieving evidence.", 409);
+      if (!event) continue;
+      if (contributors.length >= this.limits.pageRecords || payloadBytes + bytes.length > this.limits.detailBytes) {
+        if (!contributors.length) throw new ScanBudgetExceeded("detail");
+        nextOffset = lastEnd;
+        continue;
+      }
       const references = event.references.map((reference) => ({
         ...reference, recordId: record.recordId,
         location: { ...reference.location, kind: "jsonl" as const, line: record.line,

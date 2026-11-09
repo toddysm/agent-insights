@@ -114,6 +114,10 @@ It clears catalog/detail authority and prevents late publication. New reads rema
 blocked behind the owned cleanup barrier. If the five-second cleanup confirmation
 fails, use **Retry source cleanup**; an acknowledgement alone never asserts that
 the descriptor closed.
+Lost scan/catalog responses are reconciled from status without automatically
+rescanning. If status cannot be reached, controls stay locked while status
+polling retries; they unlock only after cleanup is confirmed. Detail requests
+also reconcile final cleanup, including failed descriptor closure.
 
 | Resource | Current ceiling / behavior |
 | --- | --- |
