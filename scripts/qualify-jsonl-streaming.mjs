@@ -2,6 +2,7 @@
  * Independently generate owned large fixtures, measure fresh-process RSS and
  * verify exact catalog/provenance results. Prints aggregate receipts only; no
  * private capture, model runtime, retained corpus or persistent index is used.
+ * A passed receipt requires a clean working tree and unchanged HEAD throughout.
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -16,6 +17,14 @@ import { productionReaders } from "../.build/src/evidence/readers/index.js";
 
 const MiB = 1024 * 1024;
 const workerSize = Number(process.argv[2] ?? 0);
+
+/** Read provenance from Git; command failures must not produce a successful receipt. */
+function gitOutput(...args) {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.error) throw result.error;
+  assert.equal(result.status, 0, result.stderr);
+  return result.stdout;
+}
 
 /** Generate one exactly 64 KiB terminated execution record with a bounded ignored padding field. */
 function execution(variant = "base") {
@@ -146,6 +155,8 @@ if (workerSize) {
     await rm(root, { recursive: true });
   }
 } else {
+  const revision = gitOutput("rev-parse", "HEAD").trim();
+  assert.equal(gitOutput("status", "--porcelain"), "", "Qualification requires a clean committed working tree");
   const receipts = [];
   for (const size of [64 * MiB + 1, 128 * MiB, 384 * MiB, 1024 * MiB]) {
     const worker = spawnSync(process.execPath, ["--expose-gc", import.meta.filename, String(size)], {
@@ -160,10 +171,9 @@ if (workerSize) {
   assert.ok(large.additionalPeakRss <= 256 * MiB, "1 GiB scan exceeds 256 MiB additional peak RSS");
   const rssGrowth = large.peak.rss - small.peak.rss;
   assert.ok(rssGrowth <= 64 * MiB, "128 MiB to 1 GiB peak RSS growth exceeds 64 MiB");
-  const revision = spawnSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" });
-  assert.equal(revision.status, 0);
-  const dirty = spawnSync("git", ["status", "--porcelain"], { encoding: "utf8" });
-  assert.equal(dirty.status, 0);
-  console.log(JSON.stringify({ revision: revision.stdout.trim(), workingTreeDirty: dirty.stdout.length > 0, receipts, rssGrowth,
+  assert.equal(gitOutput("rev-parse", "HEAD").trim(), revision, "HEAD changed during qualification");
+  const dirty = gitOutput("status", "--porcelain");
+  assert.equal(dirty, "", "The working tree changed during qualification");
+  console.log(JSON.stringify({ revision, workingTreeDirty: dirty.length > 0, receipts, rssGrowth,
     gates: { additionalRssBytes: 256 * MiB, growthBytes: 64 * MiB }, result: "passed" }, null, 2));
 }

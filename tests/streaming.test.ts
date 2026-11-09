@@ -1,6 +1,7 @@
 /** Synthetic bounded-stream, provenance, paging and cleanup regressions; no private capture or model access. */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -67,6 +68,31 @@ function scan(service: RuntimeService) {
 function details(service: RuntimeService, id: string, sessionId: string | null, cursor: string | null = null, fromMs: number | null = null) {
   return service.scanDetails({ id, sessionId, cursor, fromMs, toMs: null }, new AbortController().signal);
 }
+
+test("scale qualification rejects a dirty Git tree without running large workers or issuing a passed receipt", async (t) => {
+  const root = await fs.mkdtemp(path.join(tmpdir(), "agent-insights-stream-provenance-"));
+  t.after(() => fs.rm(root, { recursive: true }));
+  await fs.writeFile(path.join(root, "fictional-uncommitted.txt"), "original fictional");
+  for (const args of [
+    ["init", "--quiet"],
+    ["add", "--force", "fictional-uncommitted.txt"],
+    ["-c", "user.name=Fictional Fixture", "-c", "user.email=fixture@example.invalid",
+      "-c", "commit.gpgsign=false", "-c", `core.hooksPath=${path.join(root, "no-hooks")}`,
+      "commit", "--allow-empty", "--quiet", "-m", "fixture"],
+  ]) {
+    const result = spawnSync("git", args, { cwd: root, encoding: "utf8", timeout: 5000 });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 0, result.stderr);
+  }
+  await fs.writeFile(path.join(root, "fictional-uncommitted.txt"), "fictional");
+  const result = spawnSync(process.execPath, [path.resolve(import.meta.dirname, "../../scripts/qualify-jsonl-streaming.mjs")],
+    { cwd: root, encoding: "utf8", timeout: 5000 });
+  assert.equal(result.error, undefined);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /Qualification requires a clean committed working tree/);
+  assert.equal(result.stdout, "");
+  assert.deepEqual((await fs.readdir(root)).sort(), [".git", "fictional-uncommitted.txt"]);
+});
 
 test("framing preserves UTF-8/CRLF, physical blanks and exact byte coordinates", async () => {
   const text = '\n{"text":"é"}\r\n\n{"ok":true}';

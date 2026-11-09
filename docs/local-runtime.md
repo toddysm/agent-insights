@@ -149,6 +149,8 @@ generation/selection-bound and expire; using them with another scan/source or
 changed time bounds is rejected.
 
 Large synthetic scale qualification is separate from real producer compatibility.
+Run `npm run qualify:streaming` from a clean committed checkout. Passed receipts
+are rejected if the working tree is dirty or HEAD changes during qualification.
 This implementation does not expand the schema mappings described below.
 No new private-source inspection or real-capture qualification is implied.
 
