@@ -127,8 +127,32 @@ export class JsonlScan {
   }
 
   /**
+   * Rehash after an observed change, charging the same generation's work budget.
+   * Reject any further change at the final check rather than publish an unverified
+   * observation or retry indefinitely while a writer continues changing the file.
+   */
+  private async verifyPrefix(source: StreamedSource, signal: AbortSignal, digest: string): Promise<{ appended: boolean }> {
+    const observation = await source.verify();
+    if (observation.changed) {
+      this.check(signal).pass++;
+      const continuity = createHash("sha256");
+      for await (const bytes of this.prefix(source, signal, continuity)) {
+        void bytes;
+      }
+      if (continuity.digest("hex") !== digest)
+        throw new RuntimeError("SOURCE_CHANGED", "The admitted source prefix changed; refresh and retry.", 409);
+    }
+    const final = await source.verify();
+    if (final.changed)
+      throw new RuntimeError("SOURCE_CHANGED", "The source changed at final verification; refresh and retry.", 409);
+    this.check(signal);
+    return final;
+  }
+
+  /**
    * Normalize the admitted source with full-file correlation but bounded, payload-free metadata.
-   * Changed metadata triggers an additional continuity pass; append is not called atomic snapshotting.
+   * Changed metadata triggers continuity checking; a new final-check change rejects.
+   * Append is not called atomic snapshotting.
    */
   async scan(id: string, selection: ScanRequest, source: StreamedSource, signal: AbortSignal): Promise<ReadView> {
     if (this.statusValue?.id !== id) this.prepare(id, selection);
@@ -157,18 +181,7 @@ export class JsonlScan {
       },
     });
     const digest = hash.digest("hex");
-    const observation = await source.verify();
-    if (observation.changed) {
-      status.pass++;
-      const continuity = createHash("sha256");
-      for await (const bytes of this.prefix(source, signal, continuity)) {
-        void bytes;
-      }
-      if (continuity.digest("hex") !== digest)
-        throw new RuntimeError("SOURCE_CHANGED", "The admitted source prefix changed during scanning; refresh and retry.", 409);
-    }
-    const final = await source.verify();
-    this.check(signal);
+    const final = await this.verifyPrefix(source, signal, digest);
     status.appended = final.appended;
     status.reason = null;
     status.inputFinishedAtMs = Date.now();
@@ -269,7 +282,8 @@ export class JsonlScan {
   /**
    * Revalidate the full admitted prefix and return bounded original physical contributors.
    * Correlation is from the whole scan, even for time-window queries; duplicate
-   * records are evidence pages, not additive executions or token metrics.
+   * records are evidence pages, not additive executions or token metrics. Observed
+   * changes require continuity checking; new final-check changes reject the page.
    */
   async details(request: DetailRequest, source: StreamedSource, signal: AbortSignal): Promise<z.infer<typeof detailPageSchema>> {
     const { view, status } = this.current(request.id);
@@ -325,10 +339,11 @@ export class JsonlScan {
       payloadBytes += bytes.length;
       lastEnd = record.byteOffset + record.byteLength + (record.terminated ? 1 : 0);
     }
-    await source.verify();
-    if (hash.digest("hex") !== this.digest)
+    const digest = hash.digest("hex");
+    if (digest !== this.digest)
       throw new RuntimeError("SOURCE_CHANGED", "The admitted source prefix changed; refresh before retrieving evidence.", 409);
-    status.appended ||= source.boundary > status.admittedBytes;
+    const final = await this.verifyPrefix(source, signal, digest);
+    status.appended ||= final.appended || source.boundary > status.admittedBytes;
     this.check(signal);
     const result = detailPageSchema.parse({
       id: request.id, observedAtMs: Date.now(), contributors, scope: "original-contributors-not-additive-metrics",

@@ -108,6 +108,9 @@ Append beyond the boundary can be reported separately after continuity checking;
 **Rescan JSONL source** creates a new generation to include later bytes. Rotation,
 replacement, truncation or changed prefix bytes invalidate evidence. These checks
 are best-effort observations, **not an atomic snapshot of a live file**.
+Both scans and evidence pages rehash after a detected metadata change. A further
+change detected at final verification rejects publication with **source-changed**
+rather than serving unverified evidence or retrying indefinitely against a writer.
 
 **Cancel scan** acknowledges cancellation independently of descriptor cleanup.
 It clears catalog/detail authority and prevents late publication. New reads remain

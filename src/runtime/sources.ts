@@ -43,7 +43,11 @@ export interface StreamedSource {
   readonly startedAtMs: number;
   /** Re-read the admitted prefix in bounded chunks; premature EOF and cancellation reject. */
   chunks(): AsyncIterable<Uint8Array>;
-  /** Revalidate grant/locator/descriptor identity; content continuity still requires a prefix digest. */
+  /**
+   * Revalidate grant/locator/descriptor identity. `changed` compares admission or
+   * the previous successful verification; call serially. `appended` compares the
+   * admitted boundary. Metadata stability does not replace a prefix digest.
+   */
   verify(): Promise<{ changed: boolean; appended: boolean }>;
 }
 
@@ -537,6 +541,7 @@ export class SourceAccess {
           throw new RuntimeError("SOURCE_CHANGED", "The source changed while opening; refresh and retry.", 409);
         if (signal.aborted) throw cancelledRead(signal);
         const boundary = Number(before.size);
+        let lastVerified = before;
         const source: StreamedSource = {
           identity: fileState(before), boundary, startedAtMs,
           async *chunks() {
@@ -558,7 +563,9 @@ export class SourceAccess {
             if (after.size < before.size || !(await pointsToOpenedFile(candidate, canonical, before)))
               throw new RuntimeError("SOURCE_CHANGED", "The source identity or admitted prefix changed; refresh and retry.", 409);
             if (signal.aborted) throw cancelledRead(signal);
-            return { changed: !sameFileState(before, after), appended: after.size > before.size };
+            const changed = !sameFileState(lastVerified, after);
+            lastVerified = after;
+            return { changed, appended: after.size > before.size };
           },
         };
         return await borrow(source);

@@ -444,6 +444,67 @@ test("prefix changes between continuity passes cannot publish an apparently comp
   assert.throws(() => scanner.catalog("changed-generation", null), RuntimeError);
 });
 
+for (const continuity of [false, true]) {
+  test(`scan rejects a final-verification mutation ${continuity ? "after continuity checking" : "after an unchanged first observation"}`, async (t) => {
+    const text = JSON.stringify(span(1, { "gen_ai.input.messages": "first" })) + "\n";
+    const { sources, file } = await fixture(t, text);
+    const scanner = new JsonlScan();
+    await assert.rejects(sources.withStream("source-1", "", new AbortController().signal, async (source) => {
+      if (continuity) await fs.appendFile(file, "\n");
+      let checks = 0;
+      return scanner.scan("late-change", { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" }, {
+        ...source,
+        verify: async () => {
+          if (checks++ === 1) await fs.writeFile(file, text.replace("first", "other") + (continuity ? "\n" : ""));
+          return source.verify();
+        },
+      }, new AbortController().signal);
+    }), (error) => error instanceof RuntimeError && error.code === "SOURCE_CHANGED");
+    assert.throws(() => scanner.catalog("late-change", null), RuntimeError);
+    assert.equal(scanner.status?.inputFinishedAtMs, null);
+  });
+
+  test(`detail rejects a post-read prefix mutation ${continuity ? "after continuity checking" : "at its first verification"}`, async (t) => {
+    const text = JSON.stringify(span(1, { "gen_ai.input.messages": "first" })) + "\n";
+    const { service, sources, file } = await fixture(t, text);
+    const status = await scan(service);
+    const sessionId = service.scanCatalog.catalog(status.id, null).sessions[0]!.id;
+    await assert.rejects(sources.withStream("source-1", "", new AbortController().signal, (source) => {
+      let checks = 0;
+      return service.scanCatalog.details({ id: status.id, sessionId, cursor: null, fromMs: null, toMs: null }, {
+        ...source,
+        verify: async () => {
+          if (checks++ === (continuity ? 1 : 0)) await fs.writeFile(file, text.replace("first", "other") + (continuity ? "\n" : ""));
+          else if (continuity && checks === 1) await fs.appendFile(file, "\n");
+          return source.verify();
+        },
+      }, new AbortController().signal);
+    }), (error) => error instanceof RuntimeError && error.code === "SOURCE_CHANGED");
+  });
+}
+
+test("detail continuity checking accepts append-only changes without including the new suffix", async (t) => {
+  const text = JSON.stringify(span()) + "\n";
+  const { service, sources, file } = await fixture(t, text);
+  const status = await scan(service);
+  const sessionId = service.scanCatalog.catalog(status.id, null).sessions[0]!.id;
+  const page = await sources.withStream("source-1", "", new AbortController().signal, (source) => {
+    let checks = 0;
+    return service.scanCatalog.details({ id: status.id, sessionId, cursor: null, fromMs: null, toMs: null }, {
+      ...source,
+      verify: async () => {
+        if (checks++ === 0) await fs.appendFile(file, JSON.stringify(span(2)) + "\n");
+        return source.verify();
+      },
+    }, new AbortController().signal);
+  });
+  assert.equal(page.contributors.length, 1);
+  assert.equal(page.contributors[0]?.fingerprint, createHash("sha256").update(text.slice(0, -1)).digest("hex"));
+  assert.equal(service.scanCatalog.status?.appended, true);
+  assert.equal(service.scanCatalog.status?.pass, 3);
+  assert.equal(service.scanCatalog.status?.counts.executionRecords, 1);
+});
+
 test("filesystem open/read failures are controlled, descriptor-owned and recoverable without exposing raw errors", async (t) => {
   t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const { service } = await fixture(t, JSON.stringify(span()));
