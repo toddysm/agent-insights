@@ -58,6 +58,7 @@ const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
 /** One current generation's status; null totals mean unavailable, never measured zero. */
 export const scanStatusSchema = z.strictObject({
   id: z.string(),
+  requestId: z.string().uuid().nullable(),
   sourceId: z.string(),
   phase: z.enum(["scanning", "complete", "partial", "budget-exceeded", "cancelled", "source-changed", "format-unsupported", "cleanup-failed", "failed"]),
   reason: z.string().nullable(),
@@ -90,6 +91,7 @@ export const scanEnvelopeSchema = z.strictObject({ scan: scanStatusSchema.nullab
 
 /** Only explicit grants and the installed format may start a scan; paths remain runtime-authorized. */
 export const scanRequestSchema = z.strictObject({
+  requestId: z.string().uuid().optional(),
   sourceId: z.string().min(1).max(64),
   relativePath: z.string().max(4096).refine((value) => !value.includes("\0")),
   format: z.literal("vscode-otel-jsonl"),

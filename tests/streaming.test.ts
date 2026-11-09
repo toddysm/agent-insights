@@ -489,12 +489,15 @@ test("failed descriptor closure overrides a successful catalog and blocks every 
 
 test("scan and detail controls are frozen before asynchronous admission", async (t) => {
   const { service } = await fixture(t, JSON.stringify(span()));
-  const selection: ScanRequest = { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" };
+  const selection: ScanRequest = { requestId: "11111111-1111-4111-8111-111111111111",
+    sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" };
   const pending = service.scan(selection, new AbortController().signal);
   selection.sourceId = "unapproved";
   selection.relativePath = "../unapproved";
+  selection.requestId = "22222222-2222-4222-8222-222222222222";
   const result = await pending;
   assert.equal(result.sourceId, "source-1");
+  assert.equal(result.requestId, "11111111-1111-4111-8111-111111111111");
   const controls: DetailRequest = { id: result.id, sessionId: service.scanCatalog.catalog(result.id, null).sessions[0]!.id,
     cursor: null, fromMs: null, toMs: null };
   const page = service.scanDetails(controls, new AbortController().signal);

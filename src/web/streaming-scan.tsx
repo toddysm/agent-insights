@@ -32,6 +32,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const generation = useRef(0);
+  const requestIdentity = useRef<string | null>(null);
   const needsCatalog = catalog === null;
   const locked = working || reconciling || scan?.cleanupPending === true;
 
@@ -40,9 +41,14 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     try {
       const result = await send("/api/scan/status", scanEnvelopeSchema);
       if (current !== generation.current) return;
-      setScan(result.scan);
-      if (restoreCatalog && result.scan && ["complete", "partial"].includes(result.scan.phase)) {
-        const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.scan.id, cursor: null });
+      const snapshot = result.scan?.requestId === requestIdentity.current ? result.scan : null;
+      setScan(snapshot);
+      if (result.scan && !snapshot) {
+        setCatalog(null); setDetails(null); setSession("");
+        setError("The scan was not accepted or was superseded. Start a new scan explicitly.");
+      }
+      if (restoreCatalog && snapshot && ["complete", "partial"].includes(snapshot.phase)) {
+        const page = await send("/api/scan/catalog", catalogPageSchema, { id: snapshot.id, cursor: null });
         if (current !== generation.current) return;
         setCatalog(page);
       }
@@ -68,7 +74,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         else {
           const result = await send("/api/scan/status", scanEnvelopeSchema);
           if (stopped || current !== generation.current) return;
-          if (result.scan) setScan(result.scan);
+          if (result.scan?.requestId === requestIdentity.current) setScan(result.scan);
         }
       } catch (failure) {
         if (!stopped) setError(failure instanceof Error ? failure.message : "Scan progress could not be checked.");
@@ -82,12 +88,15 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   /** Start a new admitted generation; the initial response contains no session/event payloads. */
   async function start(): Promise<void> {
     const current = ++generation.current;
+    const requestId = crypto.randomUUID();
+    requestIdentity.current = requestId;
     let catalogLoaded = false;
     onStart();
     setWorking(true); onBusy(true); setError(""); setScan(null); setCatalog(null); setDetails(null); setSession("");
     try {
-      const result = await send("/api/scan", scanStatusSchema, { sourceId, relativePath, format: "vscode-otel-jsonl" });
+      const result = await send("/api/scan", scanStatusSchema, { requestId, sourceId, relativePath, format: "vscode-otel-jsonl" });
       if (current !== generation.current) return;
+      if (result.requestId !== requestId) throw new Error("The scan response did not match the current request.");
       setScan(result);
       if (["complete", "partial"].includes(result.phase)) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.id, cursor: null });

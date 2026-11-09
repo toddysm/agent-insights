@@ -109,8 +109,10 @@ their existing output and reference behavior.
 The authenticated controls are `POST /api/scan`, `POST /api/scan/catalog`,
 `POST /api/scan/details`, `POST /api/scan/cancel` and `GET /api/scan/status`.
 They share launch-token, origin, control-body, grant containment and regular-file
-checks with the existing runtime. The scan input names only a grant, relative
-path and installed format. Pages accept a current generation, server-issued
+checks with the existing runtime. The scan input names a grant, relative path,
+installed format and optional opaque client `requestId`. Status echoes that ID
+so lost-start reconciliation cannot adopt an older or unrelated scan. It is not
+page authority. Pages accept a current server-issued generation, server-issued
 cursor and session/time selection, never an arbitrary path, schema or SQL query.
 Invalid/expired or selection-mismatched cursors are controlled failures.
 

@@ -46,7 +46,7 @@ export class JsonlScan {
     this.view = null;
     this.selectionValue = { ...selection };
     this.statusValue = {
-      id, sourceId: selection.sourceId, phase: "scanning", reason: "Opening the authorized original source.",
+      id, requestId: selection.requestId ?? null, sourceId: selection.sourceId, phase: "scanning", reason: "Opening the authorized original source.",
       startedAtMs: Date.now(), finishedAtMs: null, inputStartedAtMs: null, inputFinishedAtMs: null,
       sourceBytes: 0, admittedBytes: 0, scannedBytes: 0,
       workBytes: 0, pass: 0, passScannedBytes: 0, appended: false, cleanupPending: true,
@@ -134,7 +134,7 @@ export class JsonlScan {
     if (this.statusValue?.id !== id) this.prepare(id, selection);
     this.identity = source.identity;
     this.statusValue = {
-      id, sourceId: selection.sourceId, phase: "scanning", reason: null,
+      id, requestId: selection.requestId ?? null, sourceId: selection.sourceId, phase: "scanning", reason: null,
       startedAtMs: source.startedAtMs, finishedAtMs: null, inputStartedAtMs: source.startedAtMs, inputFinishedAtMs: null,
       sourceBytes: source.boundary, admittedBytes: source.boundary, scannedBytes: 0,
       workBytes: 0, pass: 1, passScannedBytes: 0, appended: false, cleanupPending: true,

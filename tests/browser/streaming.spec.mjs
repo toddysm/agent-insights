@@ -142,6 +142,27 @@ test("a delayed initial catalog response cannot resurrect a cancelled generation
   }
 });
 
+test("a start request lost before admission cannot restore the previous scan catalog", async ({ page }) => {
+  const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+  const { root, runtime } = await fixture(text);
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    const previous = runtime.service.scanCatalog.status.id;
+    await page.route("**/api/scan", (route) => route.abort("failed"));
+    await panel.getByRole("button", { name: "Rescan JSONL source" }).click();
+    await expect(panel.getByRole("alert")).toHaveText(/not accepted or was superseded/);
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+    expect(runtime.service.scanCatalog.status.id).toBe(previous);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
   test(`a lost ${lostRoute} response restores the completed catalog without rescanning`, async ({ page }) => {
     const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
