@@ -260,6 +260,45 @@ test("unknown initial cleanup keeps reconciling until status transport recovers"
   }
 });
 
+test("expired catalog pagination clears cached sessions and evidence before allowing a rescan", async ({ page }) => {
+  const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+  const text = Array.from({ length: 22 }, (_, index) => JSON.stringify({ ...raw,
+    spanId: (index + 1).toString(16).padStart(16, "0"),
+    attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-expiry-${index}` } })).join("\n") + "\n";
+  const { root, runtime } = await fixture(text);
+  let expired = false;
+  await page.route("**/api/scan/catalog", async (route) => {
+    if (expired) await route.fulfill({ status: 409, json: { error: { code: "SCAN_EXPIRED", message: "The scan expired; refresh." } } });
+    else await route.continue();
+  });
+  await page.route("**/api/scan/status", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    if (expired) body.scan = { ...body.scan, phase: "budget-exceeded", reason: "The scan exceeded its lifetime budget.",
+      sessions: null, unassigned: null, classification: null, cleanupPending: false };
+    await route.fulfill({ response, json: body });
+  });
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Next session page" })).toBeEnabled();
+    await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    await panel.getByRole("button", { name: "Load original evidence" }).click();
+    await expect(panel.getByLabel("Original evidence page")).toBeVisible();
+    expired = true;
+    await panel.getByRole("button", { name: "Next session page" }).click();
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByLabel("Original evidence page")).toHaveCount(0);
+    await expect(panel.getByText("budget-exceeded", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 test("an expired status after a lost scan response does not restore a catalog or lock the rescan control", async ({ page }) => {
   const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
   const { root, runtime } = await fixture(text);

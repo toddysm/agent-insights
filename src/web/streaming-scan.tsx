@@ -133,7 +133,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     }
   }
 
-  /** Fetch a server-issued catalog page, discarding the previous browser page and selection. */
+  /** Replace the catalog page and selection; reconcile authority after success or failure. */
   async function nextCatalog(): Promise<void> {
     if (!scan || !catalog?.next) return;
     const current = ++generation.current;
@@ -144,7 +144,12 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       setCatalog(page); setSession(""); setDetails(null);
     } catch (failure) {
       if (current === generation.current) setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
-    } finally { if (current === generation.current) { setWorking(false); onBusy(false); } }
+    } finally {
+      if (current === generation.current) {
+        setWorking(false); setReconciling(true);
+        await reconcile(current, false);
+      }
+    }
   }
 
   /** Request a bounded original-contributor page, with optional inclusive recorded-start-time bounds. */

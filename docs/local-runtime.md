@@ -115,6 +115,8 @@ If an evidence read invalidates its scan, the old session catalog, selection and
 evidence page are cleared; rescan the source before retrieving evidence again.
 Expired completed scans report **budget-exceeded** instead of remaining
 publishable. Expiration never claims that an owned detail descriptor was closed.
+Catalog pagination also reconciles current authority, so an expired page request
+clears cached sessions/evidence and leaves an explicit rescan available.
 
 **Cancel scan** acknowledges cancellation independently of descriptor cleanup.
 It clears catalog/detail authority and prevents late publication. New reads remain
