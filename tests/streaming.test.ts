@@ -444,6 +444,7 @@ test("prefix changes between continuity passes cannot publish an apparently comp
   assert.throws(() => scanner.catalog("changed-generation", null), RuntimeError);
 });
 
+// Grow on mutation so open-descriptor timestamp caching cannot hide the metadata change under test.
 for (const continuity of [false, true]) {
   test(`scan rejects a final-verification mutation ${continuity ? "after continuity checking" : "after an unchanged first observation"}`, async (t) => {
     const text = JSON.stringify(span(1, { "gen_ai.input.messages": "first" })) + "\n";
@@ -455,7 +456,7 @@ for (const continuity of [false, true]) {
       return scanner.scan("late-change", { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" }, {
         ...source,
         verify: async () => {
-          if (checks++ === 1) await fs.writeFile(file, text.replace("first", "other") + (continuity ? "\n" : ""));
+          if (checks++ === 1) await fs.writeFile(file, text.replace("first", "other") + (continuity ? "\n\n" : "\n"));
           return source.verify();
         },
       }, new AbortController().signal);
@@ -474,7 +475,7 @@ for (const continuity of [false, true]) {
       return service.scanCatalog.details({ id: status.id, sessionId, cursor: null, fromMs: null, toMs: null }, {
         ...source,
         verify: async () => {
-          if (checks++ === (continuity ? 1 : 0)) await fs.writeFile(file, text.replace("first", "other") + (continuity ? "\n" : ""));
+          if (checks++ === (continuity ? 1 : 0)) await fs.writeFile(file, text.replace("first", "other") + (continuity ? "\n\n" : "\n"));
           else if (continuity && checks === 1) await fs.appendFile(file, "\n");
           return source.verify();
         },
