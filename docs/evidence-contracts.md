@@ -96,6 +96,39 @@ platform certification.
 
 ### Execution reader behavior
 
+The [bounded scan contracts](../src/evidence/streaming.ts) and
+[scan coordinator](../src/runtime/jsonl-scan.ts) reuse this adapter's operation,
+deduplication and correlation rules. A compact scan compares full normalized
+facts before dropping prompt/tool/hook payloads, retains first contributor anchors
+and counts physical duplicate executions. It does not publish an all-event
+`ReadView` through `/api/view` or make its catalog an analysis input.
+Selected original contributors are loaded through bounded pages; enumerating
+duplicate records is not repeated metric contribution. Small-capture reads retain
+their existing output and reference behavior.
+
+The authenticated controls are `POST /api/scan`, `POST /api/scan/catalog`,
+`POST /api/scan/details`, `POST /api/scan/cancel` and `GET /api/scan/status`.
+They share launch-token, origin, control-body, grant containment and regular-file
+checks with the existing runtime. The scan input names only a grant, relative
+path and installed format. Pages accept a current generation, server-issued
+cursor and session/time selection, never an arbitrary path, schema or SQL query.
+Invalid/expired or selection-mismatched cursors are controlled failures.
+
+JSONL references may additionally carry original `byteOffset` and `byteLength`.
+Fingerprints cover the original record bytes, excluding LF and including CR.
+Before a detail response publishes, the original identity and full admitted-prefix
+digest must match. Scan status separates input observation (`inputStartedAtMs`,
+`inputFinishedAtMs`) from post-cleanup completion (`finishedAtMs`); event producer
+timestamps remain independent. Detail pages carry their own `observedAtMs`.
+`records` includes physical blanks; blank/malformed/incomplete/oversized/unknown,
+physical execution/unclassified records and physical `metrics`/`logs`/`contentEvents`
+counts account for the observed prefix. These physical counters remain available
+during scanning and after a budget stop makes trusted totals unavailable.
+Deduplicated trusted classification,
+conflicts and unassigned executions are separate quantities.
+
+See [resource limits, partial results and rescan costs](local-runtime.md#scan-large-jsonl-captures-in-place).
+
 The [execution adapter](../src/evidence/readers/vscode-otel.ts) is installed by the
 normal command-line application. Its supported operations are `chat` and
 `embeddings` (distinct operation values within model calls), `execute_tool`

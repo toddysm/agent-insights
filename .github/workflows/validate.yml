@@ -10,6 +10,7 @@ name: Application validation
       - "native/sqlite-guard/tests/fixtures/**"
       - "eslint.config.js"
       - "scripts/prepare-copilot-qualification.mjs"
+      - "scripts/qualify-jsonl-streaming.mjs"
       - "scripts/*native*"
       - "package*.json"
       - ".npmrc"
@@ -29,6 +30,7 @@ name: Application validation
       - "native/sqlite-guard/tests/fixtures/**"
       - "eslint.config.js"
       - "scripts/prepare-copilot-qualification.mjs"
+      - "scripts/qualify-jsonl-streaming.mjs"
       - "scripts/*native*"
       - "package*.json"
       - ".npmrc"
@@ -49,6 +51,26 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  streaming:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      # actions/checkout v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # actions/setup-node v7.1.0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Qualify large-source counts, references and RSS gates
+        run: npm run qualify:streaming
   checks:
     strategy:
       fail-fast: false

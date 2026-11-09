@@ -286,6 +286,27 @@ dd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+.streaming-scan {
+  margin-top: 24px;
+  padding-top: 20px;
+  border-top: 1px solid var(--line);
+}
+.streaming-scan pre {
+  max-height: 24rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.streaming-scan button {
+  margin: 8px 8px 8px 0;
+}
+.streaming-scan progress {
+  width: 100%;
+  accent-color: var(--teal);
+}
+.streaming-scan label {
+  display: block;
+}
 @media (max-width: 760px) {
   .sidebar {
     position: static;

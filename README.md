@@ -23,6 +23,12 @@ memory-only model execution. The first production reader handles VS Code's
 OpenTelemetry extension file export in place. Conversation readers, report views
 and interpretation definitions remain pending; unavailable capabilities do not
 show example data as real results.
+The [bounded JSONL scan](docs/local-runtime.md#scan-large-jsonl-captures-in-place)
+reads large extension exports in place, discovers sessions without returning
+payloads, and retrieves bounded original-evidence pages after selection.
+Metadata/work limits produce explicit coverage outcomes; no copied corpus or
+disk-backed index is used. Synthetic scale qualification does not establish
+real-producer compatibility.
 Visual Studio Code Copilot Chat remains the first capture source. Copilot CLI is
 the analysis executor, not the first history source being imported; see the
 [source/executor distinction](docs/copilot-analysis.md#vs-code-evidence-and-the-analysis-executor-are-different).
@@ -54,6 +60,19 @@ ESLint uses [flat configuration](eslint.config.js), recommended JavaScript rules
 type-aware TypeScript rules for the compiler project, and recommended React
 Hooks rules. Generated build, native target and browser-report files are ignored.
 Application continuous integration runs lint with zero warnings allowed.
+
+The large-file qualification generates owned synthetic inputs through 1 GiB,
+checks exact counts and original references, and gates peak resident-memory growth:
+
+```bash
+npm run qualify:streaming
+```
+
+It reports the Node/platform, tested commit, dirty state, elapsed times, resident
+memory and external/array-buffer allocations. Dedicated hosted jobs run it on
+Node.js 24 for Linux, Windows and macOS; a local run on another runtime is not
+certification of those jobs. Functional/browser regression coverage uses
+`npm run test:browser` with an installed Playwright Chromium.
 
 The initial lint findings were corrected rather than stored in a debt baseline.
 Documented exceptions preserve intentional contracts: synchronous test doubles

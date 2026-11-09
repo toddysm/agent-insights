@@ -27,7 +27,9 @@ import type {
   ReadTiming,
   RuntimeStatus,
 } from "./protocol.js";
-import { SourceAccess, byteChunks } from "./sources.js";
+import { SourceAccess, byteChunks, type StreamedSource } from "./sources.js";
+import { JsonlScan } from "./jsonl-scan.js";
+import { STREAM_LIMITS, ScanBudgetExceeded, type ScanRequest, type ScanStatus, type DetailRequest } from "../evidence/streaming.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
 import { SourceReadSet } from "./source-read.js";
 import {
@@ -140,6 +142,7 @@ function observedView(result: ReadResult): ReadView {
  * Analysis lifetime is delegated to the optional AnalysisRunner, not to a source parser.
  */
 export class RuntimeService {
+  readonly scanCatalog = new JsonlScan();
   private readonly readers = new Map<SourceFormat, EvidenceReader>();
   private readonly multiReaders = new Map<string, MultiSourceReader>();
   private readonly readSets = new Set<SourceReadSet>();
@@ -283,6 +286,93 @@ export class RuntimeService {
     this.current = null;
     this.currentSelection = null;
     this.currentTiming = null;
+    this.scanCatalog.invalidate();
+  }
+
+  /** Own acquisition, borrowed iteration and real descriptor closure, including late acquisition after cancellation. */
+  private async borrowStream<T>(
+    request: ScanRequest,
+    signal: AbortSignal,
+    borrow: (source: StreamedSource) => Promise<T>,
+  ): Promise<T> {
+    const operation = this.sources.withStream(request.sourceId, request.relativePath, signal, borrow);
+    const settled = operation.then(() => undefined, () => undefined);
+    this.fileCaptures.add(settled);
+    try {
+      return await abortable(operation, signal);
+    } finally {
+      await this.finishCapture(settled);
+    }
+  }
+
+  /** Scan the installed JSONL format without publishing a whole-event view or starting model analysis. */
+  async scan(selection: ScanRequest, externalSignal: AbortSignal): Promise<ScanStatus> {
+    const request = Object.freeze({ ...selection });
+    if (!this.readers.has(request.format))
+      throw new RuntimeError("READER_UNAVAILABLE", "The selected scan format is not installed.", 501);
+    let generation: string | null = null;
+    try {
+      const view = await this.runRead(request, externalSignal,
+        async (id, signal, ensureCurrent) => {
+          generation = id;
+          this.scanCatalog.prepare(id, request);
+          let startedAtMs = Date.now();
+          const view = await this.borrowStream(request, signal, async (source) => {
+            startedAtMs = source.startedAtMs;
+            return this.scanCatalog.scan(id, request, source, signal);
+          });
+          ensureCurrent();
+          return {
+            view, observations: [{ sourceId: request.sourceId, kind: "file", available: true,
+              startedAtMs, finishedAtMs: Date.now(), changed: false }],
+            unavailable: [], composite: false,
+          };
+        }, false, STREAM_LIMITS.lifetimeMs);
+      return this.scanCatalog.publish(view);
+    } catch (error) {
+      if (this.scanCatalog.status?.id === generation) this.scanCatalog.fail(error);
+      if (error instanceof ScanBudgetExceeded && this.scanCatalog.status) return this.scanCatalog.status;
+      throw error;
+    }
+  }
+
+  /** Retrieve one original-evidence page under the same ownership/cleanup gate as scans and small reads. */
+  async scanDetails(controls: DetailRequest, externalSignal: AbortSignal): Promise<Awaited<ReturnType<JsonlScan["details"]>>> {
+    const request = Object.freeze({ ...controls });
+    if (this.cleanupFailed)
+      throw new RuntimeError("SOURCE_CLEANUP_FAILED", "Retry source cleanup before reading again.", 503);
+    if (this.active) throw new RuntimeError("READ_BUSY", "A source operation is still owned; cancel or wait for cleanup.", 409);
+    const selection = this.scanCatalog.selection(request.id);
+    const controller = new AbortController();
+    const abort = () => controller.abort(cancelledRead());
+    externalSignal.addEventListener("abort", abort, { once: true });
+    if (externalSignal.aborted) abort();
+    const timer = setTimeout(() => controller.abort(new RuntimeError("READ_TIMEOUT", "The detail read exceeded its lifetime.", 408)), STREAM_LIMITS.lifetimeMs);
+    timer.unref();
+    this.active = { id: request.id, controller };
+    try {
+      this.scanCatalog.pending(request.id);
+      return await this.enqueue(async () => {
+        const page = await this.borrowStream(selection, controller.signal,
+          (source) => this.scanCatalog.details(request, source, controller.signal));
+        if (controller.signal.aborted) throw cancelledRead(controller.signal);
+        this.scanCatalog.selection(request.id);
+        this.scanCatalog.cleanupConfirmed(request.id);
+        return page;
+      });
+    } catch (error) {
+      if (error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED") this.cleanupFailed = true;
+      if (!(error instanceof RuntimeError) || !["SCAN_CURSOR", "SCAN_SELECTION", "SCAN_STALE", "SCAN_EXPIRED"].includes(error.code))
+        this.scanCatalog.fail(error);
+      else this.scanCatalog.cleanupConfirmed(request.id);
+      if (error instanceof ScanBudgetExceeded)
+        throw new RuntimeError("SCAN_BUDGET", error.message, 413);
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      externalSignal.removeEventListener("abort", abort);
+      if (this.active?.controller === controller) this.active = null;
+    }
   }
 
   /**
@@ -502,6 +592,8 @@ export class RuntimeService {
       signal: AbortSignal,
       ensureCurrent: () => void,
     ) => Promise<ReadResult>,
+    publishView = true,
+    timeoutMs = this.timeoutMs,
   ): Promise<ReadView> {
     if (this.cleanupFailed)
       throw new RuntimeError(
@@ -512,7 +604,7 @@ export class RuntimeService {
     this.invalidate();
     const id = randomUUID();
     const controller = new AbortController();
-    const deadline = performance.now() + this.timeoutMs;
+    const deadline = performance.now() + timeoutMs;
     const timeoutError = new RuntimeError(
       "READ_TIMEOUT",
       "The read exceeded its time limit.",
@@ -525,7 +617,7 @@ export class RuntimeService {
     if (externalSignal.aborted) controller.abort();
     const timeout = setTimeout(
       () => controller.abort(timeoutError),
-      this.timeoutMs,
+      timeoutMs,
     );
     /** A blocked event loop cannot deliver the timer; check elapsed time before publishing too. */
     const ensureCurrent = () => {
@@ -561,17 +653,22 @@ export class RuntimeService {
             409,
           );
         }
-        this.current = Object.freeze({ ...normalized, finishedAtMs });
-        this.currentSelection = request;
-        this.currentTiming = Object.freeze({
-          readId: id,
-          inputStartedAtMs: normalized.startedAtMs,
-          inputFinishedAtMs: normalized.finishedAtMs,
-          finishedAtMs,
-          ...(result.composite ? { sources: result.observations } : {}),
-        });
-        return this.current;
+        const published = Object.freeze({ ...normalized, finishedAtMs });
+        if (publishView) {
+          this.current = published;
+          this.currentSelection = request;
+          this.currentTiming = Object.freeze({
+            readId: id,
+            inputStartedAtMs: normalized.startedAtMs,
+            inputFinishedAtMs: normalized.finishedAtMs,
+            finishedAtMs,
+            ...(result.composite ? { sources: result.observations } : {}),
+          });
+        }
+        return published;
       } catch (error) {
+        if (error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED")
+          this.cleanupFailed = true;
         if (this.cleanupFailed)
           throw new RuntimeError(
             "SOURCE_CLEANUP_FAILED",
@@ -615,6 +712,7 @@ export class RuntimeService {
           "Source cleanup did not complete; retry shutdown.",
           500,
         );
+      this.scanCatalog.cleanupConfirmed();
     });
   }
 }

@@ -33,6 +33,7 @@ import {
 } from "../analysis/contracts.js";
 import { AnalysisRunner } from "../analysis/runner.js";
 import { CopilotAnalysisProvider } from "../analysis/copilot.js";
+import { scanRequestSchema, scanPageRequestSchema, detailRequestSchema } from "../evidence/streaming.js";
 
 /**
  * Payload-free request diagnostic sent to the embedding application's observer.
@@ -314,6 +315,8 @@ export async function startRuntime(
       );
     if (request.method === "GET" && url.pathname === "/api/status") {
       json(response, 200, await service.status());
+    } else if (request.method === "GET" && url.pathname === "/api/scan/status") {
+      json(response, 200, { scan: service.scanCatalog.status });
     } else if (request.method === "GET" && url.pathname === "/api/view") {
       if (service.view === null)
         throw new RuntimeError(
@@ -329,6 +332,10 @@ export async function startRuntime(
         "/api/cancel",
         "/api/read",
         "/api/read-set",
+        "/api/scan",
+        "/api/scan/catalog",
+        "/api/scan/details",
+        "/api/scan/cancel",
         "/api/analysis/start",
         "/api/analysis/cancel",
       ].includes(url.pathname)
@@ -340,6 +347,38 @@ export async function startRuntime(
           403,
         );
       const body = await controlBody(request);
+      if (url.pathname === "/api/scan" || url.pathname.startsWith("/api/scan/")) {
+        if (url.pathname === "/api/scan/cancel") {
+          if (!z.strictObject({}).safeParse(body).success)
+            throw new RuntimeError("INVALID_CONTROL", "Cancellation accepts an empty control object only.", 400);
+          service.invalidate();
+          json(response, 202, { scan: service.scanCatalog.status });
+          return;
+        }
+        if (url.pathname === "/api/scan/catalog") {
+          const input = scanPageRequestSchema.safeParse(body);
+          if (!input.success)
+            throw new RuntimeError("INVALID_SELECTION", "Select the current scan and its server-issued cursor.", 400);
+          json(response, 200, service.scanCatalog.catalog(input.data.id, input.data.cursor));
+          return;
+        }
+        const scan = url.pathname === "/api/scan" ? scanRequestSchema.safeParse(body) : null;
+        const detail = url.pathname === "/api/scan/details" ? detailRequestSchema.safeParse(body) : null;
+        if ((scan && !scan.success) || (detail && !detail.success))
+          throw new RuntimeError("INVALID_SELECTION", "Select an authorized source or the current scan session/page.", 400);
+        const controller = new AbortController();
+        /** Disconnection invalidates this operation, not a later response's successful publication. */
+        const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", disconnect);
+        if (response.destroyed) controller.abort();
+        try {
+          if (scan?.success) json(response, 200, await service.scan(scan.data, controller.signal));
+          else if (detail?.success) json(response, 200, await service.scanDetails(detail.data, controller.signal));
+        } finally {
+          response.removeListener("close", disconnect);
+        }
+        return;
+      }
       if (url.pathname.startsWith("/api/analysis/")) {
         if (response.destroyed)
           throw new RuntimeError(
