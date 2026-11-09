@@ -111,6 +111,8 @@ are best-effort observations, **not an atomic snapshot of a live file**.
 Both scans and evidence pages rehash after a detected metadata change. A further
 change detected at final verification rejects publication with **source-changed**
 rather than serving unverified evidence or retrying indefinitely against a writer.
+If an evidence read invalidates its scan, the old session catalog, selection and
+evidence page are cleared; rescan the source before retrieving evidence again.
 
 **Cancel scan** acknowledges cancellation independently of descriptor cleanup.
 It clears catalog/detail authority and prevents late publication. New reads remain

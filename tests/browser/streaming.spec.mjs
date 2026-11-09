@@ -260,6 +260,33 @@ test("unknown initial cleanup keeps reconciling until status transport recovers"
   }
 });
 
+test("a source-changed detail failure clears the invalidated catalog and evidence before allowing a rescan", async ({ page }) => {
+  const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+  const { root, file, runtime } = await fixture(text);
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    await panel.getByRole("button", { name: "Load original evidence" }).click();
+    await expect(panel.getByLabel("Original evidence page")).toBeVisible();
+    await writeFile(file, '{"scopeMetrics":[]}\n');
+    await panel.getByRole("button", { name: "Load original evidence" }).click();
+    await expect(panel.getByText("source-changed", { exact: true })).toBeVisible();
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByLabel("Original evidence page")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Load original evidence" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+    await panel.getByRole("button", { name: "Rescan JSONL source" }).click();
+    await expect(panel.getByText("partial", { exact: true })).toBeVisible();
+    await expect(panel.getByLabel("Scanned session")).toHaveValue("");
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 test("failed detail responses reconcile cleanup before unlocking even when a progress response is delayed", async ({ page }) => {
   const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
   const { root, runtime } = await fixture(text);
@@ -290,6 +317,7 @@ test("failed detail responses reconcile cleanup before unlocking even when a pro
     await page.route("**/api/cancel", async (route) => { recovered = true; await route.continue(); });
     await panel.getByRole("button", { name: "Load original evidence" }).click();
     await expect(panel.getByRole("button", { name: "Retry source cleanup" })).toBeVisible();
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
     await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeDisabled();
     release();

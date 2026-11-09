@@ -38,18 +38,21 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
 
   useEffect(() => () => { generation.current++; }, []);
 
-  /** Reconcile lost responses without resubmitting work; keep ownership locked until status is confirmed. */
+  /** Reconcile without resubmitting work; discard invalidated catalogs and retain the lock until status is confirmed. */
   const reconcile = useCallback(async (current: number, restoreCatalog: boolean): Promise<void> => {
     try {
       const result = await send("/api/scan/status", scanEnvelopeSchema);
       if (current !== generation.current) return;
       const snapshot = result.scan?.requestId === requestIdentity.current ? result.scan : null;
+      const publishable = snapshot !== null && ["complete", "partial"].includes(snapshot.phase);
       setScan(snapshot);
-      if (result.scan && !snapshot) {
+      if (!publishable) {
         setCatalog(null); setDetails(null); setSession("");
+      }
+      if (result.scan && !snapshot) {
         setError("The scan was not accepted or was superseded. Start a new scan explicitly.");
       }
-      if (restoreCatalog && snapshot && ["complete", "partial"].includes(snapshot.phase)) {
+      if (restoreCatalog && snapshot && publishable) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: snapshot.id, cursor: null });
         if (current !== generation.current) return;
         setCatalog(page);
