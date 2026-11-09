@@ -307,11 +307,55 @@ test("monotonic generation lifetime rejects expired catalogs without accepting o
   const { scanner } = await catalogFor(JSON.stringify(span()), { ...STREAM_LIMITS, lifetimeMs: 1000 });
   now = 999;
   scanner.catalog("synthetic-generation", null);
+  assert.equal(scanner.status?.phase, "complete");
   now = 1000;
+  assert.equal(scanner.status?.phase, "budget-exceeded");
+  assert.match(scanner.status?.reason ?? "", /lifetime/);
+  assert.equal(scanner.status?.sessions, null);
+  assert.equal(scanner.status?.classification, null);
+  assert.equal(scanner.status?.cleanupPending, false);
   assert.throws(() => scanner.catalog("synthetic-generation", null),
     (error) => error instanceof RuntimeError && error.code === "SCAN_EXPIRED");
   now = 1001;
   assert.throws(() => scanner.catalog("synthetic-generation", null), RuntimeError);
+});
+
+test("expired status drops catalog authority without claiming an owned detail descriptor was closed", async (t) => {
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const { scanner } = await catalogFor(JSON.stringify(span()), { ...STREAM_LIMITS, lifetimeMs: 1000 });
+  scanner.pending("synthetic-generation");
+  now = 1000;
+  assert.equal(scanner.status?.phase, "budget-exceeded");
+  assert.equal(scanner.status?.cleanupPending, true);
+  assert.equal(scanner.status?.unassigned, null);
+  scanner.cleanupConfirmed("synthetic-generation");
+  assert.equal(scanner.status?.cleanupPending, false);
+  assert.equal(scanner.status?.phase, "budget-exceeded");
+});
+
+test("selected detail bytes charge original whitespace and CR at exact physical-record boundaries", async () => {
+  const compact = JSON.stringify(span());
+  const length = STREAM_LIMITS.recordBytes;
+  const record = compact + " ".repeat(length - Buffer.byteLength(compact) - 1) + "\r";
+  const text = `${record}\n`.repeat(3);
+  const { scanner, source } = await catalogFor(text);
+  const sessionId = scanner.catalog("synthetic-generation", null).sessions[0]!.id;
+  const request = { id: "synthetic-generation", sessionId, cursor: null, fromMs: null, toMs: null };
+  const page = await scanner.details(request, source, new AbortController().signal);
+  assert.equal(page.contributors.length, 2);
+  assert.equal(page.contributors.reduce((sum, entry) => sum + entry.byteLength, 0), STREAM_LIMITS.detailBytes);
+  assert.equal(page.contributors[0]?.fingerprint, createHash("sha256").update(record).digest("hex"));
+  assert.ok(page.next);
+  const next = await scanner.details({ ...request, cursor: page.next }, source, new AbortController().signal);
+  assert.equal(next.contributors.length, 1);
+  assert.equal(next.contributors[0]?.byteOffset, 2 * (length + 1));
+  assert.equal(next.next, null);
+  const single = await catalogFor(text, { ...STREAM_LIMITS, detailBytes: length });
+  assert.equal((await single.scanner.details(request, single.source, new AbortController().signal)).contributors.length, 1);
+  const over = await catalogFor(text, { ...STREAM_LIMITS, detailBytes: length - 1 });
+  await assert.rejects(over.scanner.details(request, over.source, new AbortController().signal),
+    (error) => error instanceof ScanBudgetExceeded && error.budget === "detail");
 });
 
 test("both many sessions and one giant session return explicit production-budget outcomes", async (t) => {

@@ -113,6 +113,8 @@ change detected at final verification rejects publication with **source-changed*
 rather than serving unverified evidence or retrying indefinitely against a writer.
 If an evidence read invalidates its scan, the old session catalog, selection and
 evidence page are cleared; rescan the source before retrieving evidence again.
+Expired completed scans report **budget-exceeded** instead of remaining
+publishable. Expiration never claims that an owned detail descriptor was closed.
 
 **Cancel scan** acknowledges cancellation independently of descriptor cleanup.
 It clears catalog/detail authority and prevents late publication. New reads remain
@@ -132,7 +134,7 @@ also reconcile final cleanup, including failed descriptor closure.
 | Native identities | 8,192; exceeding a ceiling returns unavailable totals, never silent eviction |
 | Retained references | 32,768; compact metadata retains first anchors, with contributor pages rescanned from the original |
 | Catalog/evidence page | At most 20 entries |
-| Selected raw detail budget | 512 KiB per page; a record that cannot fit is an explicit budget error |
+| Selected raw detail budget | 512 KiB of original record bytes per page, including whitespace/CR but excluding LF; a record that cannot fit is an explicit budget error |
 | Serialized detail response | 1 MiB maximum |
 | Cumulative physical-read work | 8 GiB per generation, including continuity/detail passes |
 | Generation lifetime | 15 minutes, checked monotonically; expiration requires an explicit rescan |

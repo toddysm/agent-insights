@@ -55,8 +55,14 @@ export class JsonlScan {
     };
   }
 
-  /** Return a detached payload-free progress snapshot, not mutable scan state. */
+  /** Return detached progress; expire completed catalogs without claiming an owned descriptor was closed. */
   get status(): ScanStatus | null {
+    if (this.statusValue && ["complete", "partial"].includes(this.statusValue.phase) &&
+      performance.now() - this.started >= this.limits.lifetimeMs) {
+      const cleanupPending = this.statusValue.cleanupPending;
+      this.fail(new ScanBudgetExceeded("lifetime"));
+      this.statusValue.cleanupPending = cleanupPending;
+    }
     return this.statusValue ? { ...this.statusValue, counts: { ...this.statusValue.counts } } : null;
   }
 
@@ -284,6 +290,7 @@ export class JsonlScan {
    * Correlation is from the whole scan, even for time-window queries; duplicate
    * records are evidence pages, not additive executions or token metrics. Observed
    * changes require continuity checking; new final-check changes reject the page.
+   * Selected-byte charging uses original record lengths, including whitespace/CR but excluding LF.
    */
   async details(request: DetailRequest, source: StreamedSource, signal: AbortSignal): Promise<z.infer<typeof detailPageSchema>> {
     const { view, status } = this.current(request.id);
@@ -307,7 +314,7 @@ export class JsonlScan {
     status.pass++;
     const contributors: z.infer<typeof detailPageSchema>["contributors"] = [];
     let nextOffset: number | null = null;
-    let payloadBytes = 0;
+    let selectedBytes = 0;
     let lastEnd = offset;
     for await (const record of jsonLines({
       readId: request.id, sourceId: status.sourceId, signal, bytes: this.prefix(source, signal, hash),
@@ -323,7 +330,7 @@ export class JsonlScan {
       });
       const event = detail.events[0];
       if (!event) continue;
-      if (contributors.length >= this.limits.pageRecords || payloadBytes + bytes.length > this.limits.detailBytes) {
+      if (contributors.length >= this.limits.pageRecords || selectedBytes + record.byteLength > this.limits.detailBytes) {
         if (!contributors.length) throw new ScanBudgetExceeded("detail");
         nextOffset = lastEnd;
         continue;
@@ -336,7 +343,7 @@ export class JsonlScan {
       contributors.push({ event: { ...event, id: original.id, sessionId: original.sessionId, references },
         byteOffset: record.byteOffset, byteLength: record.byteLength, line: record.line,
         fingerprint: record.recordId.slice("sha256:".length) });
-      payloadBytes += bytes.length;
+      selectedBytes += record.byteLength;
       lastEnd = record.byteOffset + record.byteLength + (record.terminated ? 1 : 0);
     }
     const digest = hash.digest("hex");

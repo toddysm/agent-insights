@@ -260,6 +260,34 @@ test("unknown initial cleanup keeps reconciling until status transport recovers"
   }
 });
 
+test("an expired status after a lost scan response does not restore a catalog or lock the rescan control", async ({ page }) => {
+  const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+  const { root, runtime } = await fixture(text);
+  let catalogRequests = 0;
+  await page.route("**/api/scan", async (route) => { await route.fetch(); await route.abort("failed"); });
+  await page.route("**/api/scan/status", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.scan = { ...body.scan, phase: "budget-exceeded", reason: "The scan exceeded its lifetime budget.",
+      sessions: null, unassigned: null, classification: null, cleanupPending: false };
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/scan/catalog", async (route) => { catalogRequests++; await route.continue(); });
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByText("budget-exceeded", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+    expect(catalogRequests).toBe(0);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 test("a source-changed detail failure clears the invalidated catalog and evidence before allowing a rescan", async ({ page }) => {
   const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
   const { root, file, runtime } = await fixture(text);
