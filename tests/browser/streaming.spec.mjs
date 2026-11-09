@@ -142,6 +142,46 @@ test("a delayed initial catalog response cannot resurrect a cancelled generation
   }
 });
 
+test("late reconciliation from an unmounted panel cannot relock its parent", async ({ page }) => {
+  const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+  const { root, runtime } = await fixture(text);
+  let holding = true;
+  const pending = [];
+  await page.route("**/api/scan/status", async (route) => {
+    if (!holding) { await route.continue(); return; }
+    const response = await route.fetch();
+    let finish;
+    const choice = new Promise((resolve) => { finish = resolve; });
+    pending.push(finish);
+    if (await choice) await route.abort("failed");
+    else await route.fulfill({ response });
+  });
+  try {
+    await page.goto(runtime.launchUrl);
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect.poll(() => pending.length).toBeGreaterThanOrEqual(3);
+    holding = false;
+    pending.forEach((finish, index) => { if (index !== 1) finish(false); });
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+    const failed = page.waitForEvent("requestfailed", {
+      predicate: (request) => request.url().endsWith("/api/scan/status"),
+    });
+    pending[1](true);
+    await failed;
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+    await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+  } finally {
+    holding = false;
+    pending.forEach((finish) => finish(false));
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 test("a start request lost before admission cannot restore the previous scan catalog", async ({ page }) => {
   const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
   const { root, runtime } = await fixture(text);

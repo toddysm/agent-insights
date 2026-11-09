@@ -36,6 +36,8 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const needsCatalog = catalog === null;
   const locked = working || reconciling || scan?.cleanupPending === true;
 
+  useEffect(() => () => { generation.current++; }, []);
+
   /** Reconcile lost responses without resubmitting work; keep ownership locked until status is confirmed. */
   const reconcile = useCallback(async (current: number, restoreCatalog: boolean): Promise<void> => {
     try {
@@ -114,14 +116,17 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
 
   /** Acknowledge cancellation immediately; keep controls locked while the backend still owns cleanup. */
   async function cancel(): Promise<void> {
+    const current = generation.current;
     try {
       const result = await send("/api/scan/cancel", scanEnvelopeSchema, {});
+      if (current !== generation.current) return;
       generation.current++;
       setWorking(false); setScan(result.scan); setCatalog(null); setDetails(null);
       setReconciling(result.scan?.cleanupPending === true);
       onBusy(result.scan?.cleanupPending === true);
     } catch (failure) {
-      setError(failure instanceof Error ? failure.message : "Scan cancellation could not be confirmed.");
+      if (current === generation.current)
+        setError(failure instanceof Error ? failure.message : "Scan cancellation could not be confirmed.");
     }
   }
 
