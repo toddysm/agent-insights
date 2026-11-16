@@ -264,6 +264,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       malformed = true;
       return null;
     };
+    const hasChunkMetadata = Object.hasOwn(d, "chunkIndex") || Object.hasOwn(d, "chunkCount");
     const native: NativeMessage = {
       eventIds: nativeIds,
       messageId: nativeId(d, "messageId"),
@@ -298,7 +299,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       issue(history.sourceId, "unsupported-schema", "A captured message has malformed attribution, identity, flag or content fields.", references);
     if (content === null)
       issue(history.sourceId, "missing-field", "Captured message content is absent or unsupported; null is not an empty submission.", references);
-    if (native.chunkIndex !== null || native.chunkCount !== null) {
+    if (hasChunkMetadata) {
       if (!native.apiCallId || native.chunkIndex === null || native.chunkCount === null || native.chunkIndex >= native.chunkCount)
         issue(history.sourceId, "unsupported-schema", "Assistant response chunk identity is incomplete or conflicting.", references);
     }
@@ -327,7 +328,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
         ...native,
         attribution,
         completeness: content === null ? "missing-content"
-          : native.chunkIndex !== null || native.chunkCount !== null ? "response-part" : "captured-message",
+          : hasChunkMetadata ? "response-part" : "captured-message",
       },
     });
     if (event.type === "assistant.message" && native.messageId)
@@ -346,7 +347,10 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     const count = parts[0]?.nativeMessage?.chunkCount;
     const indices = new Set(parts.map((part) => part.nativeMessage?.chunkIndex));
     if (count === null || count === undefined || parts.length !== count || indices.size !== count ||
-        parts.some((part) => part.nativeMessage?.chunkCount !== count))
+        parts.some((part) => {
+          const native = part.nativeMessage;
+          return !native || native.chunkCount !== count || native.chunkIndex === null || native.chunkIndex >= count;
+        }))
       issue(history.sourceId, "truncated-record", "Assistant response parts are missing or conflicting; no complete utterance was assembled.", parts.flatMap((part) => part.references));
   }
   for (const [key, references] of deltas) {

@@ -389,6 +389,10 @@ controls. Prepare a verified native helper through the documented
 [artifact workflow](../native/sqlite-guard/ARTIFACTS.md); the runtime never builds,
 downloads or substitutes an unguarded database reader during a read.
 Public native artifact distribution remains separately gated by #39.
+Catalog ownership needs a connection-scoped snapshot (the shared boundary's WAL
+mode with existing readable sidecars). Per-request/rollback-mode catalogs are
+reported unavailable; do not change producer journal settings or create sidecars
+to make a read succeed.
 
 Authenticated `/api/status` advertises `agent-host-conversations` in
 `multiSourceReaders`. Send an authenticated `POST /api/read-set` using the existing

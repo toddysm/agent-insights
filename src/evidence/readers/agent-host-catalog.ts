@@ -1,6 +1,6 @@
 /**
  * Resolve one native SDK backing against the pinned Agent Host catalog.
- * Only normalized, current schema-22 ownership is admitted. Compatibility
+ * Only normalized, current schema-22 ownership in one connection snapshot is admitted. Compatibility
  * mirrors are never combined with authoritative rows or migrated here.
  */
 import type { ReadView, EvidenceReference } from "../contracts.js";
@@ -108,6 +108,7 @@ function integer(value: unknown, expected: number): boolean {
 
 /**
  * Verify an exact SDK backing against current normalized ownership and recorded identity translations.
+ * A connection-scoped catalog snapshot is required before any ownership query.
  * Unsupported legacy authority, deleted/hidden owners, stale projections, conflicting mappings and
  * multiple current owners fail closed. Bounded query/schema/access failures reject to the runtime.
  */
@@ -125,6 +126,8 @@ export async function resolveAgentHostOwnership(
   const fail = (reason: string): OwnershipResult => ({ ok: false, reason, references: refs });
   if (catalog.userVersion !== 22) return fail("Unsupported Agent Host catalog schema.");
   signal.throwIfAborted();
+  if (catalog.snapshotScope !== "connection")
+    return fail("Agent Host ownership requires a connection-scoped catalog snapshot; per-request snapshots cannot establish consistent ownership.");
   const explicit = await catalog.query("sdk_chats", { sdk: sdkSessionId });
   // The pinned producer mints this canonical session-storage URI for unreserved raw SDK IDs.
   const sessionStorage = /^[A-Za-z0-9._-]+$/.test(sdkSessionId) ? `copilotcli:/${sdkSessionId}` : null;
@@ -229,7 +232,7 @@ export async function resolveAgentHostOwnership(
         { namespace: "agent-host-session", value: runtimeOwner },
         { namespace: "agent-host-chat", value: runtimeChat },
         { namespace: "agent-host-storage-session", value: ownerId },
-        { namespace: "agent-host-storage-chat", value: typeof chat.storage_resource === "string" ? chat.storage_resource : chatId },
+        { namespace: "agent-host-storage-chat", value: chatId },
       ],
       references: refs,
       nativeSession: {

@@ -187,11 +187,17 @@ Support is intentionally limited to the qualified baseline:
   provider overrides, provisional/hidden/deleted owners and malformed identity
   mappings are unavailable, not guessed or repaired. Archived retained chats
   remain readable and retain their archive flag.
+- Ownership requires the shared boundary's `connection` snapshot scope across
+  all catalog queries. Per-request/rollback-mode snapshots are unavailable:
+  combining their rows could qualify ownership that never existed in one commit.
+  The reader does not alter journal mode or create missing WAL/SHM sidecars.
 - `sessions_v2`, `session_chat_catalogs`, `chats_v2` and bounded `metadata`
   projections establish identity. The metadata projection has mixed scalar/JSON
   values; it is not queried with indiscriminate JSON extraction. Explicit
   `sessionStorageIdentity:`/`chatStorageIdentity:` mappings preserve runtime and
-  storage namespaces. Compatibility mirrors are not unioned as additional chats.
+  storage namespaces. The stored chat identity is `chats_v2.chat_uri`, not its
+  `storage_resource` backing (which may identify an SDK session).
+  Compatibility mirrors are not unioned as additional chats.
   Schema/access/query failures remain controlled runtime failures.
 
 `message.text` preserves native `user.message.data.content` verbatim, including an
@@ -221,7 +227,8 @@ Authoritative `assistant.message` records supersede ephemeral starts/deltas.
 Interrupted streams without a final message are anchored limitations, never
 invented completed responses. Split responses retain `apiCallId`, `chunkIndex`
 and `chunkCount` as `response-part` records; they are not independent whole
-utterances or model calls. Missing/conflicting chunks are explicit. This reader
+utterances or model calls. Even malformed captured ordinals remain response parts,
+not whole messages. Missing/conflicting chunks are explicit. This reader
 does not sum output tokens or reconstruct missing per-call input usage.
 
 Each fact retains original JSONL line/byte coordinates and a parseable record's SHA-256, or

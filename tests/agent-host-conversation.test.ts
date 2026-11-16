@@ -160,7 +160,13 @@ test("native submissions preserve displayed/transformed text, stable identities,
     parentChatId: "ahp-chat:/parent", originSessionId: "copilotcli:/origin",
     archived: true, historyScope: "retained-native-log",
   });
-  assert.ok(view.sessions[0]?.nativeIdentities?.some((identity) => identity.namespace === "agent-host-session" && identity.value === "ahp-session:/runtime"));
+  assert.deepEqual(view.sessions[0]?.nativeIdentities, [
+    { namespace: "copilot-sdk-session", value: "sdk-fictional" },
+    { namespace: "agent-host-session", value: "ahp-session:/runtime" },
+    { namespace: "agent-host-chat", value: "ahp-chat:/runtime" },
+    { namespace: "agent-host-storage-session", value: "copilotcli:/stored" },
+    { namespace: "agent-host-storage-chat", value: "copilotcli:/stored/chat" },
+  ]);
   assert.ok(view.sessions[0]?.references.some((ref) => ref.location.kind === "sqlite" && ref.location.table === "chats_v2" && ref.location.key[0]?.value === "copilotcli:/stored/chat"));
   assert.equal(view.sources[0]?.coverage.messages.status, "partial");
   assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
@@ -291,6 +297,27 @@ test("missing response chunks and malformed optional identities never claim a co
   assert.equal(view.events[1]?.kind === "message" ? view.events[1].nativeMessage?.attribution : "wrong", "unknown");
 });
 
+test("malformed captured chunk ordinals remain response parts even when no ordinal survives validation", async () => {
+  const chunks: readonly Record<string, unknown>[] = [
+    { chunkIndex: -1 },
+    { chunkCount: 0 },
+    { chunkIndex: null },
+    { chunkIndex: -1, chunkCount: 0 },
+    { chunkIndex: "0", chunkCount: "1" },
+    { chunkIndex: 0.5, chunkCount: 1 },
+  ];
+  const view = await agentHostConversationReader.read(input([
+    start(),
+    ...chunks.map((fields, index) => event("assistant.message", `part-${index}`, {
+      content: "damaged response part", apiCallId: `call-${index}`, ...fields,
+    })),
+  ]));
+  assert.equal(view.events.length, chunks.length);
+  assert.ok(view.events.every((item) => item.kind === "message" && item.nativeMessage?.completeness === "response-part"));
+  assert.equal(view.issues.filter((item) => item.message.includes("response chunk identity is incomplete")).length, chunks.length);
+  assert.equal(view.issues.filter((item) => item.message.includes("response parts are missing")).length, chunks.length);
+});
+
 test("unsupported native identities/versions and missing inputs never become successful empty sessions", async () => {
   for (const changed of [
     { version: 2 }, { producer: "foreign" }, { copilotVersion: "new-unqualified" },
@@ -337,6 +364,41 @@ test("ambiguous/deleted/wrong-provider/legacy/stale catalog ownership fails clos
   }
 });
 
+test("request-scoped catalog snapshots cannot qualify ownership by mixing interleaved commits", async () => {
+  const rows = catalogRows();
+  const chat = rows.sdk_chats?.[0];
+  const authority = rows.authority?.[0];
+  assert.ok(chat && authority);
+  rows.authority = [row("session_chat_catalogs", { ...authority.values, projected_revision: 2n })];
+  const source = input([start(), event("user.message", "u", { content: "unqualified" })], { rows });
+  let queries = 0;
+  const changing: MultiSourceInput = {
+    ...source,
+    get(key) {
+      const selected = source.get(key);
+      if (!selected.available || selected.kind !== "sqlite") return selected;
+      return {
+        ...selected, snapshotScope: "request",
+        async query(queryId, bindings) {
+          queries++;
+          const result = await selected.query(queryId, bindings);
+          if (queryId === "sdk_chats") {
+            rows.sdk_chats = [row("chats_v2", { ...chat.values, tombstoned: 1n })];
+            rows.authority = [authority];
+          }
+          return result;
+        },
+      };
+    },
+  };
+  const view = await agentHostConversationReader.read(changing);
+  assert.equal(view.sessions.length, 0);
+  assert.equal(view.events.length, 0);
+  assert.ok(view.sources.every((source) => source.coverage.messages.status === "unavailable"));
+  assert.ok(view.issues.some((issue) => issue.message.includes("connection-scoped catalog snapshot")));
+  assert.equal(queries, 0);
+});
+
 test("recorded session-backed chats without provider data resolve by storage, never chat names or guessed owners", async () => {
   const rows = catalogRows();
   const stored = row("chats_v2", {
@@ -351,7 +413,7 @@ test("recorded session-backed chats without provider data resolve by storage, ne
   ], { rows }));
   assert.equal(view.events.length, 1);
   assert.equal(view.sessions[0]?.nativeId, "sdk-fictional");
-  assert.ok(view.sessions[0]?.nativeIdentities?.some((identity) => identity.namespace === "agent-host-storage-chat" && identity.value === "copilotcli:/sdk-fictional"));
+  assert.ok(view.sessions[0]?.nativeIdentities?.some((identity) => identity.namespace === "agent-host-storage-chat" && identity.value === "copilotcli:/stored/chat"));
   rows.sdk_chats = catalogRows().sdk_chats ?? [];
   const ambiguous = await agentHostConversationReader.read(input([start()], { rows: {
     ...rows,
@@ -381,34 +443,36 @@ test("production reader uses guarded original rows, preserves source bytes, and 
   skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-insights-native-chat-"));
-  t.after(() => rm(root, { recursive: true, force: true }));
   const database = path.join(root, "catalog.db");
   const file = path.join(root, "events.jsonl");
   const writer = new DatabaseSync(database);
-  try {
-    writer.exec(`
+  const service = new RuntimeService(
+    await SourceAccess.create([root]),
+    { sources: [root], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") },
+    [], 30000, null, productionMultiSourceReaders, testNativeHelper,
+  );
+  t.after(async () => {
+    await service.close();
+    writer.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  writer.exec(`
+      PRAGMA journal_mode=WAL;
       PRAGMA user_version=22;
       CREATE TABLE chats_v2(chat_uri TEXT PRIMARY KEY NOT NULL, owner_session_uri TEXT, storage_resource TEXT, parent_chat TEXT, provider_data TEXT, tombstoned INTEGER, archived INTEGER, origin_session_uri TEXT);
       CREATE TABLE sessions_v2(session_uri TEXT PRIMARY KEY NOT NULL, provider TEXT, session_generation TEXT, verified INTEGER, is_chat_backing INTEGER);
       CREATE TABLE session_chat_catalogs(session_uri TEXT PRIMARY KEY NOT NULL, authority_version INTEGER, session_generation TEXT, revision INTEGER, projected_revision INTEGER);
       CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT);
     `);
-    for (const rows of Object.values(catalogRows()))
-      for (const original of rows) {
-        const names = Object.keys(original.values);
-        writer.prepare(`INSERT INTO ${original.table} (${names.join(",")}) VALUES (${names.map(() => "?").join(",")})`)
-          .run(...Object.values(original.values));
-      }
-  } finally { writer.close(); }
+  for (const rows of Object.values(catalogRows()))
+    for (const original of rows) {
+      const names = Object.keys(original.values);
+      writer.prepare(`INSERT INTO ${original.table} (${names.join(",")}) VALUES (${names.map(() => "?").join(",")})`)
+        .run(...Object.values(original.values));
+    }
   await writeFile(file, [start(), event("user.message", "u", { messageId: "logical", content: "synthetic only" })].map((value) => JSON.stringify(value)).join("\n"));
-  const beforeDatabase = await readFile(database);
-  const beforeHistory = await readFile(file);
-  const service = new RuntimeService(
-    await SourceAccess.create([root]),
-    { sources: [root], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") },
-    [], 30000, null, productionMultiSourceReaders, testNativeHelper,
-  );
-  t.after(() => service.close());
+  const beforeFiles = (await readdir(root)).sort();
+  const beforeBytes = await Promise.all(beforeFiles.map((name) => readFile(path.join(root, name))));
   const selection = {
     readerId: "agent-host-conversations",
     sources: [
@@ -419,9 +483,8 @@ test("production reader uses guarded original rows, preserves source bytes, and 
   const first = await service.readSet(selection, new AbortController().signal);
   assert.equal(first.events.length, 1);
   assert.ok(first.sessions[0]?.references.some((ref) => ref.location.kind === "sqlite" && ref.location.fingerprint.length === 64));
-  assert.deepEqual(await readFile(database), beforeDatabase);
-  assert.deepEqual(await readFile(file), beforeHistory);
-  assert.deepEqual((await readdir(root)).sort(), ["catalog.db", "events.jsonl"]);
+  assert.deepEqual((await readdir(root)).sort(), beforeFiles);
+  assert.deepEqual(await Promise.all(beforeFiles.map((name) => readFile(path.join(root, name)))), beforeBytes);
   const refreshed = await service.readSet(selection, new AbortController().signal);
   assert.notEqual(refreshed.id, first.id);
   assert.equal(service.view?.id, refreshed.id);
