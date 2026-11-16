@@ -116,7 +116,7 @@ separate authorization; no new dependency is added to the Agent Host readers.
 | Local, read-only analysis of Visual Studio Code Copilot Chat sessions: timing, tools, tokens, tasks/outcomes, steering, artifacts and prompt coaching with source evidence | vscode-session-analysis | [#2](https://github.com/toddysm/agent-insights/issues/2)                                                              | [Issue-backed design](https://github.com/toddysm/agent-insights/issues/2) | Capture prerequisites [#1](https://github.com/toddysm/agent-insights/issues/1) and final usage guide [#21](https://github.com/toddysm/agent-insights/issues/21) remain incomplete |
 | Extension-export reader foundation and qualification                                                                                                                       | vscode-session-analysis | [#10](https://github.com/toddysm/agent-insights/issues/10) / [#29](https://github.com/toddysm/agent-insights/pull/29) | Approved refinement revision 14 in #2                                     | Format reader and CLI integration present; live compatibility remains partial. Follow-up classification/coverage fixes are not claimed implemented.                               |
 | Bounded streaming of large JSONL exports and original-evidence pages | vscode-session-analysis | [#45](https://github.com/toddysm/agent-insights/issues/45) | Approved streaming scope and thresholds, revision 15 in #2 | [Scan limits and usage](local-runtime.md#scan-large-jsonl-captures-in-place), [contracts](evidence-contracts.md#execution-reader-behavior); implementation/qualification In progress, private-capture qualification separately gated |
-| Qualified Agent Host conversation backend reader | vscode-session-analysis | [#31](https://github.com/toddysm/agent-insights/issues/31) | Separately authorized 2026-11-16 build on the unchanged revision-15 design | [Native conversation contracts](evidence-contracts.md#agent-host-conversation-reader) and [explicit selection](local-runtime.md#read-a-qualified-native-conversation); synthetic validation, no private-source or full-workflow qualification |
+| Qualified Agent Host conversation backend reader | vscode-session-analysis | [#31](https://github.com/toddysm/agent-insights/issues/31) | Separately authorized 2026-11-16 build on the unchanged revision-15 design | [Native conversation contracts](evidence-contracts.md#agent-host-conversation-reader) and [explicit selection](local-runtime.md#read-a-qualified-native-conversation); production registration gated pending a compatible, separately qualified helper release; synthetic validation, no private-source or full-workflow qualification |
 
 At #35 head `7ef06a70cd1884e3a050f3aba2eef834a93955de`, 91 local
 unit/integration/startup tests, six Chromium cases and all four hosted checks
@@ -198,6 +198,11 @@ The user subsequently authorized #31's isolated implementation, tracking and one
 PR with hosted CI/reviews, without merge, private-capture access or model calls.
 Its backend implementation is listed In progress above; source discovery,
 execution accounting, report UI and integrated delivery remain separate work.
+After reviewing #54, the user authorized addressing its threads and normal merge
+after hosted gates pass, explicitly choosing to keep production registration
+disabled until a compatible native-helper release is separately qualified.
+The existing `native-helper-v0.1.0` pin lacks this reader's required guarded JSON
+and literal-prefix predicates; a prepared development candidate does not enable it.
 
 Harness identity is separate from Ask/Agent mode, local execution location and
 the Copilot CLI analysis executor. Do not require switching to Local or bypassing
