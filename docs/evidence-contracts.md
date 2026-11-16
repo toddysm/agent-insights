@@ -198,8 +198,8 @@ Support is intentionally limited to the qualified baseline:
 empty submission. Optional `transformedContent` remains separate; no scaffold
 stripping is presented as proof of the user's exact keystrokes. Missing/invalid
 content or timestamps remain null with diagnostics. `nativeMessage` retains
-reported message, interaction, originating-message, turn, API-call, chunk and
-agent/tool-parent identities, `source`, `delivery`, `agentMode`, autopilot and
+reported message, interaction, originating-message, request/client-request/service-request,
+turn, API-call, chunk and agent/tool/task-parent identities, `source`, `delivery`, `agentMode`, autopilot and
 ephemeral flags. Omission stays null, not false.
 
 Human attribution follows the pinned submitted-message semantics, not message

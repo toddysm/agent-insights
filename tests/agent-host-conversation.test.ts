@@ -128,6 +128,7 @@ test("native submissions preserve displayed/transformed text, stable identities,
     content: "Fictional caf\u00e9 <script>not executable</script>",
     transformedContent: "<prompt>Different model-facing text</prompt>",
     source: "user", delivery: "queued", turnId: "turn-1",
+    parentAgentTaskId: "parent-task-native",
   });
   const records = [start(), submission, event("user.message", "u2", { content: submission.data.content })];
   const view = await agentHostConversationReader.read(input(records));
@@ -138,6 +139,7 @@ test("native submissions preserve displayed/transformed text, stable identities,
   assert.equal(first.nativeMessage?.transformedContent, submission.data.transformedContent);
   assert.equal(first.nativeMessage?.delivery, "queued");
   assert.equal(first.nativeMessage?.attribution, "human");
+  assert.equal(first.nativeMessage?.parentAgentTaskId, "parent-task-native");
   assert.equal(first.nativeId, "u1");
   assert.equal(first.parentNativeId, "start");
   assert.equal(first.timestampMs, 1793700000001);
@@ -233,7 +235,11 @@ test("authoritative assistant messages supersede deltas without joining split re
   const view = await agentHostConversationReader.read(input([
     start(),
     event("assistant.message_delta", "delta", { messageId: "response", deltaContent: "par" }, { ephemeral: true }),
-    event("assistant.message", "answer", { messageId: "response", content: "part one", apiCallId: "call", chunkIndex: 0, chunkCount: 2 }),
+    event("assistant.message", "answer", {
+      messageId: "response", content: "part one", apiCallId: "call", chunkIndex: 0, chunkCount: 2,
+      requestId: "github-request", clientRequestId: "client-request", serviceRequestId: "service-request",
+      originatingMessageId: "original-user", parentToolCallId: "parent-tool",
+    }),
     event("assistant.message", "answer2", { messageId: "response2", content: "part two", apiCallId: "call", chunkIndex: 1, chunkCount: 2 }),
     event("assistant.message_delta", "interrupted", { messageId: "unfinished", deltaContent: "not complete" }, { ephemeral: true }),
   ]));
@@ -241,6 +247,12 @@ test("authoritative assistant messages supersede deltas without joining split re
   assert.ok(view.events.every((item) => item.kind === "message" && item.instructionId === null && item.nativeMessage?.completeness === "response-part"));
   assert.equal(view.issues.filter((item) => item.message.includes("Interrupted assistant")).length, 1);
   assert.equal(view.events[0]?.kind === "message" ? view.events[0].nativeMessage?.apiCallId : null, "call");
+  const native = view.events[0]?.kind === "message" ? view.events[0].nativeMessage : null;
+  assert.equal(native?.requestId, "github-request");
+  assert.equal(native?.clientRequestId, "client-request");
+  assert.equal(native?.serviceRequestId, "service-request");
+  assert.equal(native?.originatingMessageId, "original-user");
+  assert.equal(native?.parentToolCallId, "parent-tool");
 });
 
 test("missing timing/content, compaction, unknown records and damaged tails remain explicit", async () => {
