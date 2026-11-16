@@ -94,6 +94,69 @@ an unknown schema. The [normalized fixture](../tests/fixtures/read-view.ts) and
 complementary-source views. Structural fixture checks are not live-producer or
 platform certification.
 
+### Agent Host native evidence handoff
+
+[#30](https://github.com/toddysm/agent-insights/issues/30) records the source
+qualification and pinned producer evidence. Its native-history-first design
+feeds execution [#32](https://github.com/toddysm/agent-insights/issues/32) and
+conversation [#31](https://github.com/toddysm/agent-insights/issues/31); neither
+adapter is installed or authorized for implementation by this handoff.
+The merged [shared access boundary](local-runtime.md#shared-file-and-sqlite-access)
+supplies guards, bounded queries and provenance, not these domain mappings.
+
+| Declared input identifier | Qualified baseline / reader obligation |
+| --- | --- |
+| `copilot-sdk-events-jsonl` | Observed format 1; retain event `id`, `parentId`, timestamp, type/data and applicable `agentId`. Require the actual session-start identity/version/producer, not a directory-name guess. Shared SDK history alone does not identify an Agent Host session. |
+| `vscode-agenthost-catalog-sqlite` | Observed schema 22; resolve current authoritative `sessions_v2`/`chats_v2` ownership, provider backing, runtime/storage mappings and tombstones. Do not union compatibility mirrors as additional chats. |
+| `vscode-agenthost-session-sqlite` | Observed schema 18; use the verified storage identity and exact `turns.id`/`event_id` bridge for retained `turn_usage`. A stored report is not an append-only per-call ledger. |
+
+The [version pins and controlled verification procedure](local-runtime.md#agent-host-qualification-handoff)
+describe one selected source on the inspected VS Code build. They are required
+version/structure guard and regression-fixture inputs for future readers, not
+blanket support for all records with those version numbers. Unsupported or
+conflicting schema/identity evidence must be explicit, not sent to the
+Local/extension parser as a fallback.
+
+| Evidence | Coverage and accounting boundary |
+| --- | --- |
+| Retained native messages | Preserve submitted content, event/chunk identity and original anchors. User-message records may be automatic, subagent or scaffolded traffic; captured flags and qualified mappings, not repeated text, determine classification. Model-submitted content is not necessarily exact typed text. |
+| Native tool/turn events | Pair tools only by qualified native call identity within scope; missing starts/completions stay incomplete. Event `parentId` is a graph edge, not a task, and an assistant turn is not a model call. |
+| Assistant `outputTokens` | Optional output-only observations require `apiCallId`/chunk-aware handling. They do not reconstruct missing input consumption or establish a complete call ledger. |
+| Retained host turn usage | Replacement semantics retain the latest report. `_meta.turnTokenTotals` includes descendants/compaction; `directTurnTokenTotals` excludes descendants. These overlap and must not be added together. Top-level `inputTokens` may describe the latest call/context, not total consumption. |
+| Native shutdown usage | A session aggregate snapshot, not another additive set of per-call contributions. Missing shutdown is unavailable, not zero. |
+| Per-model-call timing and complete input/output usage | Not established by native history: inspected `assistant.usage` and `model.call_*` records are ephemeral. Prospective trace formats/routing remain unqualified in [#34](https://github.com/toddysm/agent-insights/issues/34). |
+
+The host skips child-chat usage persistence because parent costs already
+include descendants. Preserve accounting scope and reported/absent status;
+do not sum overlapping parent/child, whole/direct-turn or shutdown observations.
+Compaction/context-truncation notifications alone do not prove physical log
+deletion. Preserve missing content/timestamps, interrupted history, unresolved
+parents and ambiguities without inventing a complete transcript.
+
+Every normalized fact needs the original JSONL line/pointer or SQLite
+table/key/column/JSON-pointer/projection fingerprint, retaining multiple anchors
+when a fact joins sources. Host session/chat addresses, storage identities,
+native SDK conversations, events, calls and subagents are distinct namespaces;
+do not flatten them or infer matches from text, timing or filenames.
+
+Optional `vscode-agenthost-otel-sqlite` and native/host trace JSONL adapters are
+not shipped or qualified. The inspected host completed-span forwarder uses
+millisecond scalar timestamps and `parentSpanId`; the extension exporter uses
+second/nanosecond tuples and `parentSpanContext`. Pass-through native output can
+differ again. Do not reuse a wire parser on the assumption of a shared SDK.
+Agent Debug adapter [#27](https://github.com/toddysm/agent-insights/issues/27)
+remains deferred, not a required source for the selected native-first baseline.
+Local saved-chat [#11](https://github.com/toddysm/agent-insights/issues/11) remains
+supplemental; the now-merged extension reader does not establish native support.
+
+Validation in #30 was 18 historical static assertions and one explicitly
+authorized no-tools native-source inspection, not product-reader tests.
+Future adapters require independently authored synthetic fixtures for the
+qualified mappings, unsupported/conflicting/missing input, chunk/replay identity,
+accounting overlap, original anchors and cancellation/source changes.
+[#20](https://github.com/toddysm/agent-insights/issues/20) still owns integrated
+producer-generated verification; optional telemetry is not a native prerequisite.
+
 ### Execution reader behavior
 
 The [bounded scan contracts](../src/evidence/streaming.ts) and
