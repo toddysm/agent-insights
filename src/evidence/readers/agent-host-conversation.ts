@@ -72,6 +72,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
   const catalog = input.get("catalog");
   const issues: ReadView["issues"][number][] = [];
   const records = new Map<string, NativeEvent>();
+  const malformedIds = new Map<string, EvidenceReference[]>();
   const conflictingMessages = new Set<string>();
   const events: Message[] = [];
   const sessions: ReadView["sessions"][number][] = [];
@@ -141,6 +142,19 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     }
     const value = line.value;
     if (!object(value) || !identifier(value.id) || !identifier(value.type) || !object(value.data)) {
+      const id = object(value) ? identifier(value.id) : null;
+      if (id !== null) {
+        const previous = records.get(id);
+        if (previous) {
+          previous.conflict = true;
+          previous.references.push(reference);
+          conflictingMessages.add(messageKey(previous));
+        } else {
+          const references = malformedIds.get(id) ?? [];
+          references.push(reference);
+          malformedIds.set(id, references);
+        }
+      }
       issue(history.sourceId, "unsupported-schema", "Native event envelope is unsupported.", [reference]);
       continue;
     }
@@ -155,7 +169,16 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
           value, id, type: String(value.type), data: value.data, references: [reference], conflict: true,
         }));
       }
-    } else records.set(id, { value, id, type: String(value.type), data: value.data, references: [reference], conflict: false });
+    } else {
+      const malformed = malformedIds.get(id) ?? [];
+      const event: NativeEvent = {
+        value, id, type: String(value.type), data: value.data,
+        references: [...malformed, reference], conflict: malformed.length > 0,
+      };
+      records.set(id, event);
+      if (event.conflict) conflictingMessages.add(messageKey(event));
+      malformedIds.delete(id);
+    }
   }
   const starts = [...records.values()].filter((event) => event.type === "session.start");
   const start = starts[0];
@@ -182,10 +205,13 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
   }
   qualified = true;
   const sessionId = `${input.readId}:sdk-session`;
+  const parentNativeId = identifier(start.data.detachedFromSpawningParentSessionId);
+  if (start.data.detachedFromSpawningParentSessionId !== undefined && parentNativeId === null)
+    issue(history.sourceId, "unsupported-schema", "Captured detached-session parent identity is malformed; no parent was inferred.", start.references);
   sessions.push({
     id: sessionId,
     nativeId: sdkSessionId,
-    parentNativeId: identifier(start.data.detachedFromSpawningParentSessionId),
+    parentNativeId,
     nativeSession: ownership.value.nativeSession,
     nativeIdentities: [{ namespace: "copilot-sdk-session", value: sdkSessionId }, ...ownership.value.identities],
     sourceIds: [history.sourceId, catalog.sourceId],

@@ -255,7 +255,10 @@ are excluded rather than selecting the first captured value. Malformed agent
 identities cannot create separate deduplication namespaces for the same message.
 Repeated text with different identities
 remains distinct. Conflicting identities are excluded with anchored diagnostics,
-not repaired into multiple human instructions. Captured physical order is retained;
+not repaired into multiple human instructions. A malformed envelope sharing a
+valid event ID invalidates that identity in either ordering, including logical
+replays under another envelope ID.
+Captured physical order is retained;
 timestamps never reorder submissions.
 
 Authoritative `assistant.message` records supersede ephemeral starts/deltas.
@@ -273,6 +276,8 @@ SQLite table, typed primary key and projection fingerprint through the shared
 reference helper. Session provenance also retains the catalog rows establishing
 ownership. Host runtime/chat/storage and SDK session namespaces remain distinct.
 Malformed lines retain their physical coordinates without inventing a parsed-record hash.
+Malformed reported detached-session parent IDs remain null with an anchored
+diagnostic rather than silently becoming omitted parents.
 Reported detached-session parents, host parent chats, origin owners and agent IDs
 are preserved without inventing parent sessions, flattening subagents or joining
 execution evidence by equal text, filenames or timing.

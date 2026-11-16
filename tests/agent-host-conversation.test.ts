@@ -238,6 +238,36 @@ test("conflicting native or logical identities remain diagnosed instead of inven
   }
 });
 
+test("malformed envelopes invalidate a shared native identity and cannot be rescued by logical replay", async () => {
+  for (const type of ["user.message", "assistant.message"]) {
+    for (const fields of [{ type: "" }, { type: 7 }, { data: null }, { data: [] }]) {
+      for (const malformedFirst of [false, true]) {
+        const original = event(type, "shared", { messageId: "stable", content: "same" });
+        const malformed = { ...original, ...fields };
+        const view = await agentHostConversationReader.read(input([
+          start(), ...(malformedFirst ? [malformed, original] : [original, malformed]),
+          { ...original, id: "logical-replay" },
+        ]));
+        assert.equal(view.events.length, 0);
+        const lines = view.issues.filter((issue) => issue.code === "ambiguous-session")
+          .flatMap((issue) => issue.references ?? [])
+          .map((reference) => reference.location.kind === "jsonl" ? reference.location.line : null);
+        assert.deepEqual([...new Set(lines)].sort(), [2, 3, 4]);
+      }
+    }
+  }
+  const original = start();
+  for (const malformedFirst of [false, true]) {
+    const malformed = { ...original, data: null };
+    const view = await agentHostConversationReader.read(input(
+      malformedFirst ? [malformed, original] : [original, malformed],
+    ));
+    assert.equal(view.sessions.length, 0);
+    assert.ok(view.issues.some((issue) => issue.code === "unsupported-schema"
+      && issue.references?.length === 2));
+  }
+});
+
 test("logical replay conflicts in captured envelope facts exclude both user and assistant messages", async () => {
   for (const type of ["user.message", "assistant.message"]) {
     for (const fields of [
@@ -450,6 +480,23 @@ test("unsupported native identities/versions and missing inputs never become suc
   }
   const noStart = await agentHostConversationReader.read(input([event("user.message", "u", { content: "orphan" })]));
   assert.equal(noStart.sessions.length, 0);
+});
+
+test("malformed detached-session parents remain null with anchored diagnostics, not silent omission", async () => {
+  for (const parent of [undefined, "valid-parent", "", null, 7, {}, []]) {
+    const original = start();
+    const view = await agentHostConversationReader.read(input([
+      { ...original, data: { ...original.data, detachedFromSpawningParentSessionId: parent } },
+    ]));
+    const valid = typeof parent === "string" && parent.length > 0;
+    assert.equal(view.sessions.length, 1);
+    assert.equal(view.sessions[0]?.parentNativeId, valid ? parent : null);
+    const diagnostics = view.issues.filter((issue) => issue.message.includes("detached-session parent identity"));
+    assert.equal(diagnostics.length, parent === undefined || valid ? 0 : 1);
+    if (diagnostics.length)
+      assert.ok(diagnostics[0]?.references?.some((reference) =>
+        reference.location.kind === "jsonl" && reference.location.line === 1));
+  }
 });
 
 test("ambiguous/deleted/wrong-provider/legacy/stale catalog ownership fails closed", async () => {
