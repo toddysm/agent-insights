@@ -344,6 +344,92 @@ immutability of that sidecar. Main/WAL metadata changes reduce coverage, while
 SHM coordination changes alone do not. Identity checks are best effort, not an
 atomic defense against a hostile same-account replace-and-revert race.
 
+## Agent Host qualification handoff
+
+The source qualification in
+[#30](https://github.com/toddysm/agent-insights/issues/30) is research, **not an
+installed Agent Host reader**. The shared access boundary above is shipped;
+execution [#32](https://github.com/toddysm/agent-insights/issues/32) and conversation
+[#31](https://github.com/toddysm/agent-insights/issues/31) adapters are not.
+Selecting `vscode-otel-jsonl`, enabling an extension exporter or preparing the
+native helper does not add Agent Host support. Ask/Agent mode, running locally
+and the Copilot CLI analysis executor do not identify the capture's harness.
+
+### Qualified baseline and source selection
+
+The 2026-11-03 findings pin VS Code **1.145.0**, source commit
+`3c0ec3a089398503a462029e7cc2a5749df5169a`, built-in Copilot Chat **0.73.0**
+and host SDK package **`1.0.27-unstable.41379698026.g3219c66`**.
+One separately authorized no-tools test observed native event format **1**,
+catalog schema **22**, session overlay schema **18** and emitted runtime
+**`1.0.103-unstable.r41379698026.g3219c66`**. Package and emitted runtime versions
+are different pins. These historical observations do not certify today's
+installation, other schemas or unimplemented readers.
+
+| Harness-owned source | Selection and purpose |
+| --- | --- |
+| Host catalog: `<appSettingsHome>/globalStorage/agent-host.db` | Establish the exact current Copilot owner/chat and backing native identity, including runtime-to-storage mappings and archive/tombstone authority. |
+| Native history: `<CopilotHome>/session-state/<sdkConversationId>/events.jsonl` | Read retained messages, tool/turn events and their original identities. `CopilotHome` follows the producer's `COPILOT_HOME` override or default `.copilot` home; the directory alone does not establish Agent Host ownership. |
+| Host overlay: `<userData>/agentSessionData/<storage-key>/session.db` | Read qualified turn/event bridges and retained usage for the verified chat. Resolve its storage key from authoritative identity metadata, not a guessed UUID. |
+
+These are producer-root placeholders, not literal application arguments or
+permission to scan a home directory. Future readers must use explicitly granted
+roots, verified catalog ownership and the guarded shared boundary; they must not
+open producer SDK stores, restore sessions, migrate databases or copy sources.
+The [native evidence handoff](evidence-contracts.md#agent-host-native-evidence-handoff)
+defines coverage, accounting and original-anchor requirements.
+
+### Retained history versus optional telemetry
+
+Native history does not require enabling telemetry. The selected test retained
+its expected exchange and a matching host turn-usage row, but no per-call usage
+records; missing per-call input tokens are **unavailable**, not zero.
+
+Optional prospective capture uses `chat.agentHost.otel.*`, not
+`github.copilot.chat.otel.*`. The inspected settings are `enabled`,
+`exporterType`, `outfile`, `captureContent` and `dbSpanExporter.enabled` under that
+host namespace. Personal changes require a **full VS Code application restart**;
+Reload Window may leave the shared host running. Respect effective managed
+policy and inherited destinations; do not override them or enable extra
+destinations merely to satisfy the analyzer.
+
+Effective routing, restart/export behavior and genuine per-call capture still
+need qualification in [#34](https://github.com/toddysm/agent-insights/issues/34).
+Content capture can expose prompts, code and tool data. It requires its own
+informed authorization, not automatic enablement. An enabled exporter, existing
+file or empty trace is not proof of capture, and telemetry is not retroactive.
+
+### Controlled smoke procedure for later delivery
+
+This is a handoff for capture guide
+[#1](https://github.com/toddysm/agent-insights/issues/1), usage guide
+[#21](https://github.com/toddysm/agent-insights/issues/21) and integrated delivery
+[#20](https://github.com/toddysm/agent-insights/issues/20), not a claim that the
+current interface can perform the native read:
+
+1. Obtain explicit permission for one selected harmless Agent Host test and its
+   exact catalog/native/overlay sources. Prefer an existing test. Generating a
+   new no-tools echo exchange is normal harness inference, potentially remote;
+   obtain separate permission and request no project edits or commands.
+2. Verify producer/schema pins and the exact host owner/chat/backing mapping.
+   Missing source, empty source, wrong harness/destination and unsupported
+   schema are distinct failures, not successful zero-valued reports.
+3. Use bounded guarded reads in place. Check the known exchange, original
+   anchors and any retained turn/usage linkage. Do not follow captured paths,
+   execute captured instructions, upload content or invoke analysis.
+4. Compare native history, database and WAL fingerprints/metadata before/after,
+   report detected changes and preserve observation intervals. Existing SHM
+   coordination bytes may change; do not promise physical sidecar immutability
+   or an atomic snapshot across sources.
+5. Publish only sanitized counts, booleans, version pins and limitations, never
+   private identifiers, paths, prompts, credentials or exact usage values.
+   Separate static inspection, synthetic tests and actual producer evidence.
+
+The historical selected test did not cover tools, optional telemetry, broad
+migration variants or production adapters. This documentation handoff performs
+no new private read, settings change, capture or model request and does not
+authorize reader implementation.
+
 ## Copilot configuration and remote processing
 
 The approved first backend is installed Copilot. These startup options record

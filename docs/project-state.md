@@ -1,7 +1,8 @@
 # Project state
 
-Capability inventory as of 2026-11-09. This records project delivery status,
-not session data or analysis results.
+Capability inventory as of 2026-11-09, with the #30 qualification handoff updated
+on 2026-11-16. This records project delivery status, not session data or analysis
+results; unrelated rows are not re-audited by the handoff.
 
 The merged baseline is main at `5adb0e2984ed62584502a5ca001d372c5e3e037c`.
 The approved architecture and explicit execution breakdown are recorded as
@@ -147,7 +148,7 @@ required recovery, while preserving WAL snapshots.
 
 | Capability                                                                 | Feature slug            | Tracking issue                                                                                                                                                                                                                                    | PRD doc                                                                               | Documentation status                                                                                                                                                                               |
 | -------------------------------------------------------------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Native design preserved; #33 is merged, #30 handoff and reader implementation remain  | Extend required capture guide [#1](https://github.com/toddysm/agent-insights/issues/1) and usage guide [#21](https://github.com/toddysm/agent-insights/issues/21); no duplicate documentation item |
+| Copilot Agent Host execution/conversation readers over the shared boundary | vscode-session-analysis | [#30](https://github.com/toddysm/agent-insights/issues/30), [#32](https://github.com/toddysm/agent-insights/issues/32), [#31](https://github.com/toddysm/agent-insights/issues/31) under [#2](https://github.com/toddysm/agent-insights/issues/2) | Native design preserved; #33 merged; #30 qualification documented, readers unimplemented and build-gated | [Pinned sources/setup handoff](local-runtime.md#agent-host-qualification-handoff) and [mapping/coverage handoff](evidence-contracts.md#agent-host-native-evidence-handoff) feed required guides [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21); neither guide is complete |
 | Publish qualified native artifacts                                         | vscode-session-analysis | [#39](https://github.com/toddysm/agent-insights/issues/39)                                                                                                                                                                                        | Follows #38 and #33; separately gated on release approval                             | Real end-user installation verification; required before complete delivery #20                                                                                                                     |
 | Explicit hook and unclassified-operation handling                          | vscode-session-analysis | [#46](https://github.com/toddysm/agent-insights/issues/46)                                                                                                                                                                                        | Depends on #10; own event kind and contract/consumer updates                          | Synthetic mapping/accounting regressions and related format docs                                                                                                                                   |
 | Optional tool-ID semantics                                                 | vscode-session-analysis | [#47](https://github.com/toddysm/agent-insights/issues/47)                                                                                                                                                                                        | Depends on #10; independent of #46                                                    | Empty/absent versus malformed tests and diagnostic docs                                                                                                                                            |
@@ -180,6 +181,17 @@ not a blocker of the native baseline. #30's planning handoff precedes the
 new execution/conversation readers and final capture instructions. Existing
 discovery #12 and reporting #14 now require both Agent Host readers; delivery #20
 must verify the actual Agent Host path with producer-generated evidence.
+
+On 2026-11-16 the user authorized a new owner and separate worktree to finish
+#30's qualification/documentation handoff with normal hosted CI/reviews. The
+[source/setup findings](local-runtime.md#agent-host-qualification-handoff) and
+[native mapping boundaries](evidence-contracts.md#agent-host-native-evidence-handoff)
+are now recorded in the existing developer documentation. The approved parent
+revision-15 design digest and #30's marked source design are unchanged.
+This is not reader implementation, final capture/usage documentation, new
+private-source or telemetry qualification, or merge authorization. Merging this
+handoff completes qualification only; #31/#32 still need their own authorized
+builds, and #1/#21 still need their final documentation.
 
 Harness identity is separate from Ask/Agent mode, local execution location and
 the Copilot CLI analysis executor. Do not require switching to Local or bypassing
