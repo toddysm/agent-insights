@@ -192,13 +192,13 @@ export async function resolveAgentHostOwnership(
       }
     translations.push({ runtime: value.runtime, storage: value.storage, row, session, provider: typeof value.provider === "string" ? value.provider : null });
   }
-  /** Resolve only explicit identity mappings; absent mappings mean the catalog already uses that identity. */
+  /** Retain all matching mapping witnesses, including ambiguity; absent mappings use the stored identity. */
   const translate = (stored: string, session: boolean): string | null => {
     const found = translations.filter((entry) => entry.session === session && entry.storage === stored);
+    observe(found.map((entry) => entry.row));
     if (found.length > 1) return null;
     const entry = found[0];
     if (entry) {
-      observe([entry.row]);
       if (session && entry.provider !== "copilotcli") return null;
       return entry.runtime;
     }

@@ -228,7 +228,9 @@ Interrupted streams without a final message are anchored limitations, never
 invented completed responses. Split responses retain `apiCallId`, `chunkIndex`
 and `chunkCount` as `response-part` records; they are not independent whole
 utterances or model calls. Even malformed captured ordinals remain response parts,
-not whole messages. Missing/conflicting chunks are explicit. This reader
+not whole messages. Unexpected assistant chunk fields on user submissions are
+diagnosed without changing human attribution or whole-submission status.
+Missing/conflicting chunks are explicit. This reader
 does not sum output tokens or reconstruct missing per-call input usage.
 
 Each fact retains original JSONL line/byte coordinates and a parseable record's SHA-256, or

@@ -318,6 +318,31 @@ test("malformed captured chunk ordinals remain response parts even when no ordin
   assert.equal(view.issues.filter((item) => item.message.includes("response parts are missing")).length, chunks.length);
 });
 
+test("unexpected assistant chunk fields never reclassify user submissions or their human attribution", async () => {
+  const chunks: readonly Record<string, unknown>[] = [
+    { chunkIndex: 0, chunkCount: 1 },
+    { chunkIndex: -1 },
+    { chunkCount: 0 },
+    { chunkIndex: null, chunkCount: "damaged" },
+  ];
+  const view = await agentHostConversationReader.read(input([
+    start(),
+    ...chunks.map((fields, index) => event("user.message", `user-${index}`, {
+      content: "submitted instruction", source: "user", ...fields,
+    })),
+  ]));
+  assert.equal(view.events.length, chunks.length);
+  for (const message of view.events) {
+    assert.ok(message.kind === "message");
+    assert.equal(message.nativeMessage?.attribution, "human");
+    assert.equal(message.nativeMessage?.completeness, "captured-message");
+    assert.equal(message.nativeMessage?.chunkIndex, null);
+    assert.equal(message.nativeMessage?.chunkCount, null);
+    assert.ok(message.instructionId);
+  }
+  assert.equal(view.issues.filter((item) => item.message.includes("Unexpected assistant chunk metadata")).length, chunks.length);
+});
+
 test("unsupported native identities/versions and missing inputs never become successful empty sessions", async () => {
   for (const changed of [
     { version: 2 }, { producer: "foreign" }, { copilotVersion: "new-unqualified" },
@@ -397,6 +422,31 @@ test("request-scoped catalog snapshots cannot qualify ownership by mixing interl
   assert.ok(view.sources.every((source) => source.coverage.messages.status === "unavailable"));
   assert.ok(view.issues.some((issue) => issue.message.includes("connection-scoped catalog snapshot")));
   assert.equal(queries, 0);
+});
+
+test("ambiguous session and chat mappings retain both original metadata witnesses", async () => {
+  for (const mapping of [
+    { prefix: "session", original: "ahp-session:/runtime", other: "ahp-session:/other", storage: "copilotcli:/stored" },
+    { prefix: "chat", original: "ahp-chat:/runtime", other: "ahp-chat:/other", storage: "copilotcli:/stored/chat" },
+  ]) {
+    const rows = catalogRows();
+    const originalKey = `${mapping.prefix}StorageIdentity:${mapping.original}`;
+    const original = rows.identity_metadata?.find((item) => item.values.key === originalKey);
+    assert.ok(original);
+    const conflicting = row("metadata", {
+      key: `${mapping.prefix}StorageIdentity:${mapping.other}`,
+      value: JSON.stringify({ runtime: mapping.other, storage: mapping.storage, provider: "copilotcli" }),
+    });
+    rows.identity_metadata?.push(conflicting);
+    const view = await agentHostConversationReader.read(input([start()], { rows }));
+    assert.equal(view.sessions.length, 0);
+    const problem = view.issues.find((item) => item.code === "ambiguous-session");
+    for (const witness of [original, conflicting])
+      assert.ok(problem?.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.table === "metadata"
+        && reference.location.key[0]?.value === witness.values.key
+        && reference.location.fingerprint === witness.fingerprint));
+  }
 });
 
 test("recorded session-backed chats without provider data resolve by storage, never chat names or guessed owners", async () => {

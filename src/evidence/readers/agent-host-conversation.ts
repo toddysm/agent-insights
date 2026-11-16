@@ -265,6 +265,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       return null;
     };
     const hasChunkMetadata = Object.hasOwn(d, "chunkIndex") || Object.hasOwn(d, "chunkCount");
+    const hasResponseChunks = event.type === "assistant.message" && hasChunkMetadata;
     const native: NativeMessage = {
       eventIds: nativeIds,
       messageId: nativeId(d, "messageId"),
@@ -284,8 +285,8 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       ephemeral: flag(event.value, "ephemeral"),
       transformedContent: text(d, "transformedContent"),
       apiCallId: nativeId(d, "apiCallId"),
-      chunkIndex: ordinal("chunkIndex", 0),
-      chunkCount: ordinal("chunkCount", 1),
+      chunkIndex: hasResponseChunks ? ordinal("chunkIndex", 0) : null,
+      chunkCount: hasResponseChunks ? ordinal("chunkCount", 1) : null,
       attribution: "unknown",
       completeness: "captured-message",
     };
@@ -299,7 +300,9 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       issue(history.sourceId, "unsupported-schema", "A captured message has malformed attribution, identity, flag or content fields.", references);
     if (content === null)
       issue(history.sourceId, "missing-field", "Captured message content is absent or unsupported; null is not an empty submission.", references);
-    if (hasChunkMetadata) {
+    if (hasChunkMetadata && !hasResponseChunks)
+      issue(history.sourceId, "unsupported-schema", "Unexpected assistant chunk metadata on a user submission does not establish response parts or change instruction attribution.", references);
+    if (hasResponseChunks) {
       if (!native.apiCallId || native.chunkIndex === null || native.chunkCount === null || native.chunkIndex >= native.chunkCount)
         issue(history.sourceId, "unsupported-schema", "Assistant response chunk identity is incomplete or conflicting.", references);
     }
@@ -328,7 +331,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
         ...native,
         attribution,
         completeness: content === null ? "missing-content"
-          : hasChunkMetadata ? "response-part" : "captured-message",
+          : hasResponseChunks ? "response-part" : "captured-message",
       },
     });
     if (event.type === "assistant.message" && native.messageId)
