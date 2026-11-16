@@ -81,6 +81,7 @@ function input(
     historyMissing?: boolean;
     signal?: AbortSignal;
     userVersion?: number;
+    metadataNoCase?: boolean;
   } = {},
 ): MultiSourceInput {
   const readId = options.readId ?? "test-read";
@@ -115,7 +116,10 @@ function input(
           else {
             assert.ok(queryId === "storage_identity" || queryId === "metadata_key");
             return Promise.resolve((rows.identity_metadata ?? []).filter((item) => {
-              if (queryId === "metadata_key") return item.values.key === bindings.key;
+              if (queryId === "metadata_key")
+                return item.values.key === bindings.key || (options.metadataNoCase
+                  && typeof item.values.key === "string" && typeof bindings.key === "string"
+                  && item.values.key.toLowerCase() === bindings.key.toLowerCase());
               let value: unknown;
               try {
                 value = JSON.parse(String(item.values.value));
@@ -666,6 +670,24 @@ test("stored identity fallback allows absent mappings and valid explicit self ma
   }
 });
 
+test("metadata key collations cannot substitute differently spelled mappings or provider overrides", async () => {
+  const rows = catalogRows();
+  rows.identity_metadata = [
+    row("metadata", { key: "SessionStorageIdentity:copilotcli:/stored", value: '{"runtime":"copilotcli:/stored","storage":"copilotcli:/other","provider":"copilotcli"}' }),
+    row("metadata", { key: "ChatStorageIdentity:copilotcli:/stored/chat", value: "{malformed-json" }),
+    row("metadata", { key: "ChatAgentProvider:copilotcli:/stored/chat", value: "different-provider" }),
+    row("metadata", { key: "SessionTombstone:copilotcli:/stored", value: "malformed-boolean" }),
+  ];
+  const view = await agentHostConversationReader.read(input([start()], { rows, metadataNoCase: true }));
+  assert.equal(view.sessions.length, 1, JSON.stringify(view.issues));
+  assert.ok(view.sessions[0]?.nativeIdentities?.some((identity) =>
+    identity.namespace === "agent-host-session" && identity.value === "copilotcli:/stored"));
+  assert.ok(view.sessions[0]?.nativeIdentities?.some((identity) =>
+    identity.namespace === "agent-host-chat" && identity.value === "copilotcli:/stored/chat"));
+  assert.ok(view.sessions[0]?.references.every((reference) => reference.location.kind !== "sqlite"
+    || reference.location.table !== "metadata"));
+});
+
 test("recorded session-backed chats without provider data resolve by storage, never chat names or guessed owners", async () => {
   const rows = catalogRows();
   const stored = row("chats_v2", {
@@ -757,7 +779,7 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
       CREATE TABLE chats_v2(chat_uri TEXT PRIMARY KEY NOT NULL, owner_session_uri TEXT, storage_resource TEXT, parent_chat TEXT, provider_data TEXT, tombstoned, archived, origin_session_uri TEXT);
       CREATE TABLE sessions_v2(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, provider TEXT, session_generation TEXT, verified, is_chat_backing);
       CREATE TABLE session_chat_catalogs(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, authority_version, session_generation TEXT, revision, projected_revision);
-      CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT);
+      CREATE TABLE metadata(key TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, value TEXT);
     `);
   for (const rows of Object.values(catalogRows()))
     for (const original of rows) {
@@ -847,6 +869,22 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   }
   writer.prepare("DELETE FROM metadata WHERE key IN (?, ?)")
     .run("sessionStorageIdentity:ahp-session:/runtime", "chatStorageIdentity:ahp-chat:/runtime");
+  const aliases = [
+    { key: "SessionStorageIdentity:copilotcli:/stored", value: '{"runtime":"copilotcli:/stored","storage":"copilotcli:/other","provider":"copilotcli"}' },
+    { key: "ChatStorageIdentity:copilotcli:/stored/chat", value: "{malformed-json" },
+    { key: "ChatAgentProvider:copilotcli:/stored/chat", value: "different-provider" },
+    { key: "SessionTombstone:copilotcli:/stored", value: "malformed-boolean" },
+  ];
+  for (const { key, value } of aliases) insertMetadata.run(key, value);
+  const exactKeys = await service.readSet(selection, new AbortController().signal);
+  assert.equal(exactKeys.sessions.length, 1, JSON.stringify(exactKeys.issues));
+  assert.ok(exactKeys.sessions[0]?.nativeIdentities?.some((identity) =>
+    identity.namespace === "agent-host-session" && identity.value === "copilotcli:/stored"));
+  assert.ok(exactKeys.sessions[0]?.nativeIdentities?.some((identity) =>
+    identity.namespace === "agent-host-chat" && identity.value === "copilotcli:/stored/chat"));
+  assert.ok(exactKeys.sessions[0]?.references.every((reference) => reference.location.kind !== "sqlite"
+    || reference.location.table !== "metadata"));
+  for (const { key } of aliases) writer.prepare("DELETE FROM metadata WHERE key = ?").run(key);
   for (const { key, value } of [
     { key: "sessionStorageIdentity:copilotcli:/stored", value: "{malformed-json" },
     { key: "chatStorageIdentity:copilotcli:/stored/chat", value: '{"runtime":"copilotcli:/stored/chat","storage":"copilotcli:/other"}' },

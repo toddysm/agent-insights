@@ -214,6 +214,9 @@ export async function resolveAgentHostOwnership(
       }
     translations.push({ runtime: value.runtime, storage: value.storage, row, session, provider: typeof value.provider === "string" ? value.provider : null });
   }
+  /** SQLite schema collations cannot substitute differently spelled mapping, status or provider keys. */
+  const exactMetadata = async (key: string): Promise<readonly SqliteRow[]> =>
+    (await catalog.query("metadata_key", { key })).filter((row) => row.values.key === key);
   /** Retain mapping witnesses; use a stored identity only when both reverse and exact forward keys are absent. */
   const translate = async (stored: string, session: boolean): Promise<string | null> => {
     const found = translations.filter((entry) => entry.session === session && entry.storage === stored);
@@ -224,9 +227,7 @@ export async function resolveAgentHostOwnership(
       if (session && entry.provider !== "copilotcli") return null;
       return entry.runtime;
     }
-    const forward = await catalog.query("metadata_key", {
-      key: `${session ? "session" : "chat"}StorageIdentity:${stored}`,
-    });
+    const forward = await exactMetadata(`${session ? "session" : "chat"}StorageIdentity:${stored}`);
     observe(forward);
     return forward.length === 0 ? stored : null;
   };
@@ -237,7 +238,7 @@ export async function resolveAgentHostOwnership(
   const status: SqliteRow[] = [];
   for (const identity of new Set([ownerId, runtimeOwner]))
     for (const prefix of ["sessionTombstone:", "sessionHidden:", "sessionsV2Excluded:copilotcli:", "sessionProvisional:"])
-      status.push(...await catalog.query("metadata_key", { key: `${prefix}${identity}` }));
+      status.push(...await exactMetadata(`${prefix}${identity}`));
   observe(status);
   if (status.some((row) =>
     [ownerId, runtimeOwner].some((identity) =>
@@ -253,7 +254,7 @@ export async function resolveAgentHostOwnership(
   if (suppressed.length) return fail("Agent Host owner is deleted, hidden or provisional.");
   const providerOverrides: SqliteRow[] = [];
   for (const identity of new Set([chatId, runtimeChat]))
-    providerOverrides.push(...await catalog.query("metadata_key", { key: `chatAgentProvider:${identity}` }));
+    providerOverrides.push(...await exactMetadata(`chatAgentProvider:${identity}`));
   observe(providerOverrides);
   if (providerOverrides.some((row) => row.values.value !== "copilotcli"))
     return fail("Agent Host chat reports a different provider.");

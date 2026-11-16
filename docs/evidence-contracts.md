@@ -207,7 +207,9 @@ Support is intentionally limited to the qualified baseline:
   projections establish identity. Reverse identity lookups filter both the
   session/chat mapping-key namespace and JSON `storage` by the selected owner/chat;
   suppression and provider overrides use exact
-  metadata keys for stored and runtime identities. Unrelated metadata is not
+  metadata keys for stored and runtime identities. Returned metadata keys are
+  checked exactly even when schema collations permit case-insensitive matches.
+  Unrelated metadata is not
   returned or charged against result budgets. Guarded JSON predicates treat
   malformed JSON as nonmatching, never a null match or a query-wide parse error.
   Explicit
