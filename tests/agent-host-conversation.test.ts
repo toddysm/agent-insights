@@ -11,7 +11,7 @@ import { mkdtemp, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { agentHostConversationReader } from "../src/evidence/readers/agent-host-conversation.js";
-import { productionMultiSourceReaders } from "../src/evidence/readers/index.js";
+import { productionReaders, productionMultiSourceReaders } from "../src/evidence/readers/index.js";
 import type { MultiSourceInput, SqliteRow } from "../src/evidence/source-access.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { SourceAccess } from "../src/runtime/sources.js";
@@ -509,6 +509,54 @@ test("ambiguous session and chat mappings retain both original metadata witnesse
   }
 });
 
+test("stored identity fallback rejects explicit malformed or conflicting forward keys with original witnesses", async () => {
+  for (const [prefix, stored] of [
+    ["session", "copilotcli:/stored"],
+    ["chat", "copilotcli:/stored/chat"],
+  ]) {
+    for (const value of [
+      "{malformed-json", "null", "[]",
+      JSON.stringify({ runtime: stored, storage: "copilotcli:/another-resource", provider: "copilotcli" }),
+      JSON.stringify({ runtime: "different-runtime", storage: "copilotcli:/another-resource", provider: "copilotcli" }),
+    ]) {
+      const rows = catalogRows();
+      const forward = row("metadata", { key: `${prefix}StorageIdentity:${stored}`, value });
+      rows.identity_metadata = [forward];
+      const view = await agentHostConversationReader.read(input([start()], { rows }));
+      assert.equal(view.sessions.length, 0);
+      assert.ok(view.sources.every((source) => source.coverage.messages.status === "unavailable"));
+      assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session"
+        && issue.references?.some((reference) => reference.location.kind === "sqlite"
+          && reference.location.key[0]?.value === forward.values.key
+          && reference.location.fingerprint === forward.fingerprint)));
+    }
+  }
+});
+
+test("stored identity fallback allows absent mappings and valid explicit self mappings", async () => {
+  for (const selfMappings of [false, true]) {
+    const rows = catalogRows();
+    rows.identity_metadata = selfMappings ? [
+      row("metadata", {
+        key: "sessionStorageIdentity:copilotcli:/stored",
+        value: '{"runtime":"copilotcli:/stored","storage":"copilotcli:/stored","provider":"copilotcli"}',
+      }),
+      row("metadata", {
+        key: "chatStorageIdentity:copilotcli:/stored/chat",
+        value: '{"runtime":"copilotcli:/stored/chat","storage":"copilotcli:/stored/chat"}',
+      }),
+    ] : [];
+    const view = await agentHostConversationReader.read(input([start()], { rows }));
+    assert.equal(view.sessions.length, 1, JSON.stringify(view.issues));
+    for (const [namespace, value] of [
+      ["agent-host-session", "copilotcli:/stored"],
+      ["agent-host-chat", "copilotcli:/stored/chat"],
+    ])
+      assert.ok(view.sessions[0]?.nativeIdentities?.some((identity) =>
+        identity.namespace === namespace && identity.value === value));
+  }
+});
+
 test("recorded session-backed chats without provider data resolve by storage, never chat names or guessed owners", async () => {
   const rows = catalogRows();
   const stored = row("chats_v2", {
@@ -549,6 +597,34 @@ test("native reads honor cancellation and reject underlying query failures rathe
   await assert.rejects(agentHostConversationReader.read(broken), /synthetic-query-failure/);
 });
 
+test("production registration gates native conversations without a candidate resolver fallback", async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-insights-native-gate-"));
+  const file = path.join(root, "events.jsonl");
+  await writeFile(file, JSON.stringify(start()));
+  const before = await readFile(file);
+  const service = new RuntimeService(
+    await SourceAccess.create([root]),
+    { sources: [root], port: 0, harness: "copilot", model: null, copilotPath: null },
+    productionReaders, 30000, null, productionMultiSourceReaders,
+  );
+  t.after(async () => {
+    await service.close();
+    await rm(root, { recursive: true, force: true });
+  });
+  const status = await service.status();
+  assert.ok(!status.multiSourceReaders.some((reader) => reader.id === "agent-host-conversations"));
+  await assert.rejects(service.readSet({
+    readerId: "agent-host-conversations",
+    sources: [
+      { key: "history", sourceId: "source-1", relativePath: "events.jsonl" },
+      { key: "catalog", sourceId: "source-1", relativePath: "unopened.db" },
+    ],
+  }, new AbortController().signal), { code: "READER_UNAVAILABLE" });
+  assert.equal(service.view, null);
+  assert.deepEqual(await readdir(root), ["events.jsonl"]);
+  assert.deepEqual(await readFile(file), before);
+});
+
 test("native catalog isolates malformed JSON and large unrelated metadata while enforcing relevant-row limits", {
   skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT,
 }, async (t) => {
@@ -559,7 +635,7 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   const service = new RuntimeService(
     await SourceAccess.create([root]),
     { sources: [root], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") },
-    [], 30000, null, productionMultiSourceReaders, testNativeHelper,
+    [], 30000, null, [agentHostConversationReader], testNativeHelper,
   );
   t.after(async () => {
     await service.close();
@@ -615,6 +691,20 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   assert.equal(service.view?.id, refreshed.id);
   assert.equal(first.events[0]?.kind === "message" ? first.events[0].instructionId : null,
     refreshed.events[0]?.kind === "message" ? refreshed.events[0].instructionId : null);
+  writer.prepare("DELETE FROM metadata WHERE key IN (?, ?)")
+    .run("sessionStorageIdentity:ahp-session:/runtime", "chatStorageIdentity:ahp-chat:/runtime");
+  for (const { key, value } of [
+    { key: "sessionStorageIdentity:copilotcli:/stored", value: "{malformed-json" },
+    { key: "chatStorageIdentity:copilotcli:/stored/chat", value: '{"runtime":"copilotcli:/stored/chat","storage":"copilotcli:/other"}' },
+  ]) {
+    insertMetadata.run(key, value);
+    const rejected = await service.readSet(selection, new AbortController().signal);
+    assert.equal(rejected.sessions.length, 0);
+    assert.ok(rejected.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.key[0]?.value === key)));
+    writer.prepare("DELETE FROM metadata WHERE key = ?").run(key);
+  }
   writer.exec("BEGIN");
   for (let index = 0; index < 10_001; index++)
     insertMetadata.run(`sessionStorageIdentity:conflict:${index}`, JSON.stringify({

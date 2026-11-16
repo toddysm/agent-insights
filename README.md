@@ -19,7 +19,8 @@ Its shared access layer can coordinate explicitly authorized files and existing
 harness-owned SQLite databases without creating an application session store.
 The [Agent Host conversation reader](docs/evidence-contracts.md#agent-host-conversation-reader)
 uses this boundary for explicitly selected native history and its authoritative
-host catalog; a prepared native guard is required.
+host catalog. It remains gated out of production pending a separately qualified
+compatible native-helper release; a development candidate does not enable it.
 The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
 memory-only model execution. The first production reader handles VS Code's
 OpenTelemetry extension file export in place. Local saved-chat conversation readers,

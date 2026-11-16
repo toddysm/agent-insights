@@ -214,8 +214,8 @@ export async function resolveAgentHostOwnership(
       }
     translations.push({ runtime: value.runtime, storage: value.storage, row, session, provider: typeof value.provider === "string" ? value.provider : null });
   }
-  /** Retain all matching mapping witnesses, including ambiguity; absent mappings use the stored identity. */
-  const translate = (stored: string, session: boolean): string | null => {
+  /** Retain mapping witnesses; use a stored identity only when both reverse and exact forward keys are absent. */
+  const translate = async (stored: string, session: boolean): Promise<string | null> => {
     const found = translations.filter((entry) => entry.session === session && entry.storage === stored);
     observe(found.map((entry) => entry.row));
     if (found.length > 1) return null;
@@ -224,12 +224,16 @@ export async function resolveAgentHostOwnership(
       if (session && entry.provider !== "copilotcli") return null;
       return entry.runtime;
     }
-    return stored;
+    const forward = await catalog.query("metadata_key", {
+      key: `${session ? "session" : "chat"}StorageIdentity:${stored}`,
+    });
+    observe(forward);
+    return forward.length === 0 ? stored : null;
   };
-  const runtimeOwner = translate(ownerId, true);
-  const runtimeChat = translate(chatId, false);
+  const runtimeOwner = await translate(ownerId, true);
+  const runtimeChat = await translate(chatId, false);
   if (!runtimeOwner || !runtimeChat)
-    return fail("Agent Host storage identity is ambiguous or reports a conflicting provider.");
+    return fail("Agent Host storage identity is ambiguous, malformed or conflicting.");
   const status: SqliteRow[] = [];
   for (const identity of new Set([ownerId, runtimeOwner]))
     for (const prefix of ["sessionTombstone:", "sessionHidden:", "sessionsV2Excluded:copilotcli:", "sessionProvisional:"])

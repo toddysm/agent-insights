@@ -161,7 +161,13 @@ producer-generated verification; optional telemetry is not a native prerequisite
 
 ### Agent Host conversation reader
 
-The production composite registry installs `agent-host-conversations`. It borrows
+The implemented `agent-host-conversations` reader is **gated out of the production
+registry**: the pinned `native-helper-v0.1.0` lacks the guarded JSON and
+literal-prefix predicates it requires. A separately authorized, qualified helper
+release and reviewed production registration change are required to enable it.
+Preparing a development candidate does not enable the production reader.
+Qualification tests explicitly register the reader with a verified candidate.
+The reader borrows
 two explicitly authorized inputs through #33: `history` (`copilot-sdk-events-jsonl`)
 and `catalog` (`vscode-agenthost-catalog-sqlite`). It never opens a path from
 captured content, invokes producer restoration/migration APIs, calls a model or
@@ -202,6 +208,9 @@ Support is intentionally limited to the qualified baseline:
   `sessionStorageIdentity:`/`chatStorageIdentity:` mappings preserve runtime and
   storage namespaces. The stored chat identity is `chats_v2.chat_uri`, not its
   `storage_resource` backing (which may identify an SDK session).
+  Stored-identity fallback requires both an absent reverse mapping and an absent
+  exact forward mapping key; malformed or conflicting forward mappings remain
+  unavailable with their original row witnesses.
   Compatibility mirrors are not unioned as additional chats.
   Schema/access/query failures remain controlled runtime failures.
   Matching rows still share the boundary's 10,000-row/8-MiB result budgets;

@@ -383,18 +383,30 @@ defines coverage, accounting and original-anchor requirements.
 
 ### Read a qualified native conversation
 
+**Production availability:** this backend reader is implemented but gated out of
+the executable's registry. The selected `native-helper-v0.1.0` does not support
+the required guarded JSON and literal-prefix predicates. Until a separately
+authorized, qualified helper release and reviewed registration update land,
+`/api/status` does not advertise `agent-host-conversations` and `/api/read-set`
+rejects that selection with `READER_UNAVAILABLE`. Preparing a development candidate
+does not enable it or replace the production resolver.
+
+The following contract applies to trusted embeddings and qualification tests
+that explicitly register the reader with a verified compatible helper:
+
 Start with explicit grants to the selected native-history and catalog files (or
 their authorized containing directories), following the existing `--source`
 controls. Prepare a verified native helper through the documented
 [artifact workflow](../native/sqlite-guard/ARTIFACTS.md); the runtime never builds,
 downloads or substitutes an unguarded database reader during a read.
-Public native artifact distribution remains separately gated by #39.
+Native artifact publication requires separate release authorization, as in #39;
+that completed release does not provide this reader's required predicates.
 Catalog ownership needs a connection-scoped snapshot (the shared boundary's WAL
 mode with existing readable sidecars). Per-request/rollback-mode catalogs are
 reported unavailable; do not change producer journal settings or create sidecars
 to make a read succeed.
 
-Authenticated `/api/status` advertises `agent-host-conversations` in
+With that explicit registration, authenticated `/api/status` advertises `agent-host-conversations` in
 `multiSourceReaders`. Send an authenticated `POST /api/read-set` using the existing
 launch-token and origin controls, with this shape (grant IDs come from status,
 not from captured paths):
@@ -416,7 +428,7 @@ reported as a successful empty transcript. Unsupported schemas/pins, denied
 access and missing native preparation remain explicit errors or limitations.
 The read does not require the session overlay, optional telemetry or a model.
 
-This installs the backend reader, not automatic native-source discovery or a
+The backend implementation does not add automatic native-source discovery or a
 new report UI. The current single-file extension/scan controls are not native
 conversation selectors. #12 owns source discovery/correlation, #14 owns report
 drill-down and #20 owns integrated producer verification. Use original anchors
