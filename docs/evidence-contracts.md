@@ -203,8 +203,10 @@ Support is intentionally limited to the qualified baseline:
 `message.text` preserves native `user.message.data.content` verbatim, including an
 empty submission. Optional `transformedContent` remains separate; no scaffold
 stripping is presented as proof of the user's exact keystrokes. Missing/invalid
-content or timestamps remain null with diagnostics. `nativeMessage` retains
-reported message, interaction, originating-message, request/client-request/service-request,
+content or timestamps remain null with diagnostics. Calendar-invalid dates are
+not normalized into another day; valid ISO fractions and explicit timezone offsets
+retain millisecond timestamps. `nativeMessage` retains reported message, interaction,
+originating-message, request/client-request/service-request,
 turn, API-call, chunk and agent/tool/task-parent identities, `source`, `delivery`, `agentMode`, autopilot and
 ephemeral flags. Omission stays null, not false.
 

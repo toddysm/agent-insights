@@ -285,6 +285,31 @@ test("missing timing/content, compaction, unknown records and damaged tails rema
   assert.equal(location.byteOffset, Buffer.byteLength(records.map((value) => JSON.stringify(value)).join("\n") + "\n"));
 });
 
+test("calendar-invalid timestamps remain null while leap days, fractions and offsets retain exact milliseconds", async () => {
+  for (const sample of [
+    { timestamp: "2026-02-30T10:00:00Z", expected: null },
+    { timestamp: "2025-02-29T10:00:00Z", expected: null },
+    { timestamp: "2100-02-29T10:00:00Z", expected: null },
+    { timestamp: "2026-04-31T10:00:00Z", expected: null },
+    { timestamp: "2026-02-28T24:00:00Z", expected: null },
+    { timestamp: "2026-02-28T10:00:60Z", expected: null },
+    { timestamp: "2026-02-28Tnot-a-timeZ", expected: null },
+    { timestamp: "2026-02-28T10:00:00", expected: null },
+    { timestamp: "2024-02-29T10:00:00Z", expected: 1709200800000 },
+    { timestamp: "2024-02-29T10:00:00.123456Z", expected: 1709200800123 },
+    { timestamp: "2024-02-29T12:30:00+02:30", expected: 1709200800000 },
+    { timestamp: "2024-02-29T03:00:00-07:00", expected: 1709200800000 },
+  ]) {
+    const view = await agentHostConversationReader.read(input([
+      start(), event("user.message", "u", { content: "dated submission" }, { timestamp: sample.timestamp }),
+    ]));
+    const message = view.events[0];
+    assert.ok(message?.kind === "message");
+    assert.equal(message.timestampMs, sample.expected, sample.timestamp);
+    assert.equal(view.issues.some((issue) => issue.message.includes("Message timestamp")), sample.expected === null);
+  }
+});
+
 test("missing response chunks and malformed optional identities never claim a complete response or human instruction", async () => {
   const view = await agentHostConversationReader.read(input([
     start(),

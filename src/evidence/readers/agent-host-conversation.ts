@@ -4,6 +4,7 @@
  * No SDK restoration, source discovery, persistence, execution accounting or model call occurs.
  */
 import { isDeepStrictEqual } from "node:util";
+import { z } from "zod";
 import { parseReadView, type ReadView, type EvidenceReference } from "../contracts.js";
 import type { MultiSourceInput, MultiSourceReader } from "../source-access.js";
 import { jsonLines } from "./jsonl.js";
@@ -22,6 +23,9 @@ interface NativeEvent {
 /** Mutable message assembly is confined to this generation; validation freezes published facts. */
 type Message = Extract<ReadView["events"][number], { kind: "message" }>;
 type NativeMessage = NonNullable<Message["nativeMessage"]>;
+
+/** Reject impossible calendar dates before Date.parse can normalize them to another day. */
+const nativeTimestamp = z.iso.datetime({ offset: true });
 
 /** Types that cannot themselves establish a submitted instruction or complete response. */
 const nonMessageEvents = new Set([
@@ -306,8 +310,8 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       if (!native.apiCallId || native.chunkIndex === null || native.chunkCount === null || native.chunkIndex >= native.chunkCount)
         issue(history.sourceId, "unsupported-schema", "Assistant response chunk identity is incomplete or conflicting.", references);
     }
-    const timestamp = event.value.timestamp;
-    const parsedTime = typeof timestamp === "string" && /^\d{4}-\d\d-\d\dT.*(?:Z|[+-]\d\d:\d\d)$/.test(timestamp) ? Date.parse(timestamp) : NaN;
+    const timestamp = nativeTimestamp.safeParse(event.value.timestamp);
+    const parsedTime = timestamp.success ? Date.parse(timestamp.data) : NaN;
     const timestampMs = Number.isSafeInteger(parsedTime) && parsedTime >= 0 ? parsedTime : null;
     if (timestampMs === null)
       issue(history.sourceId, "missing-field", "Message timestamp is absent or unsupported; no timing was inferred.", references);
