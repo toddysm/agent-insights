@@ -82,8 +82,9 @@ can extend the format identifiers without introducing a copied dataset.
 
 The shared access foundation additionally declares `copilot-sdk-events-jsonl`,
 `vscode-agenthost-catalog-sqlite` and `vscode-agenthost-session-sqlite`.
-These identify planned native inputs, **not shipped adapters or qualification of
-all producer versions**. Native qualification is tracked in
+The conversation adapter below uses the first two; session-overlay execution
+accounting remains pending in [#32](https://github.com/toddysm/agent-insights/issues/32).
+Declaring an identifier does not qualify all producer versions. Native qualification is tracked in
 [#30](https://github.com/toddysm/agent-insights/issues/30); it is distinct from the
 Local/extension targets above.
 
@@ -99,8 +100,9 @@ platform certification.
 [#30](https://github.com/toddysm/agent-insights/issues/30) records the source
 qualification and pinned producer evidence. Its native-history-first design
 feeds execution [#32](https://github.com/toddysm/agent-insights/issues/32) and
-conversation [#31](https://github.com/toddysm/agent-insights/issues/31); neither
-adapter is installed or authorized for implementation by this handoff.
+conversation [#31](https://github.com/toddysm/agent-insights/issues/31).
+The conversation adapter is now installed as a separately authorized build;
+the qualification handoff itself did not authorize implementation. Execution #32 remains pending.
 The merged [shared access boundary](local-runtime.md#shared-file-and-sqlite-access)
 supplies guards, bounded queries and provenance, not these domain mappings.
 
@@ -156,6 +158,96 @@ qualified mappings, unsupported/conflicting/missing input, chunk/replay identity
 accounting overlap, original anchors and cancellation/source changes.
 [#20](https://github.com/toddysm/agent-insights/issues/20) still owns integrated
 producer-generated verification; optional telemetry is not a native prerequisite.
+
+### Agent Host conversation reader
+
+The production composite registry installs `agent-host-conversations`. It borrows
+two explicitly authorized inputs through #33: `history` (`copilot-sdk-events-jsonl`)
+and `catalog` (`vscode-agenthost-catalog-sqlite`). It never opens a path from
+captured content, invokes producer restoration/migration APIs, calls a model or
+persists a transcript. Local saved-chat #11 remains a separate, unmodified contract.
+Native execution accounting and session overlay usage remain #32's responsibility.
+
+Support is intentionally limited to the qualified baseline:
+
+- One retained format-1 `session.start`, first among valid native envelopes,
+  producer `copilot-agent`, emitted runtime
+  `1.0.103-unstable.r41379698026.g3219c66` and a reported SDK session ID.
+  Other runtimes require qualification, even when they reuse format number 1.
+  The event fields were checked against the public SDK package
+  `1.0.27-unstable.41379698026.g3219c66`, whose archive integrity matched its
+  published SHA-512. This is schema inspection, not a new live-source test.
+- Catalog schema 22, one live `chats_v2` row with the exact
+  `provider_data.sdkSessionId`, or an absent backing blob with an explicit
+  session-backed `storage_resource` matching the pinned canonical session URI.
+  The latter mapping supports unreserved raw SDK IDs, not inferred filename IDs
+  or a role guessed from the chat URI. Both paths require a verified `copilotcli` owner, normalized
+  authority 2, matching owner/catalog generations, and equal catalog/projected
+  revisions. Legacy authority, stale projections, conflicting live owners,
+  provider overrides, provisional/hidden/deleted owners and malformed identity
+  mappings are unavailable, not guessed or repaired. Archived retained chats
+  remain readable and retain their archive flag.
+- `sessions_v2`, `session_chat_catalogs`, `chats_v2` and bounded `metadata`
+  projections establish identity. The metadata projection has mixed scalar/JSON
+  values; it is not queried with indiscriminate JSON extraction. Explicit
+  `sessionStorageIdentity:`/`chatStorageIdentity:` mappings preserve runtime and
+  storage namespaces. Compatibility mirrors are not unioned as additional chats.
+  Schema/access/query failures remain controlled runtime failures.
+
+`message.text` preserves native `user.message.data.content` verbatim, including an
+empty submission. Optional `transformedContent` remains separate; no scaffold
+stripping is presented as proof of the user's exact keystrokes. Missing/invalid
+content or timestamps remain null with diagnostics. `nativeMessage` retains
+reported message, interaction, originating-message, turn, API-call, chunk and
+agent/tool-parent identities, `source`, `delivery`, `agentMode`, autopilot and
+ephemeral flags. Omission stays null, not false.
+
+Human attribution follows the pinned submitted-message semantics, not message
+text, timing or task inference. Automatic/source-injected and autopilot traffic,
+subagent activity and malformed attribution receive no `instructionId`. A
+`user.message` with `delivery: queued` is already consumed/submitted; a
+`pending_messages.modified` snapshot or draft is not a new instruction.
+Tool results, system/internal messages and lifecycle events are not human messages.
+Captured steering delivery is retained without inferring task purpose.
+
+Original instruction IDs are SDK-session scoped and distinguish logical
+`messageId` from a fallback envelope ID. Exact event/logical-message replays retain
+all original anchors but contribute once; repeated text with different identities
+remains distinct. Conflicting identities are excluded with anchored diagnostics,
+not repaired into multiple human instructions. Captured physical order is retained;
+timestamps never reorder submissions.
+
+Authoritative `assistant.message` records supersede ephemeral starts/deltas.
+Interrupted streams without a final message are anchored limitations, never
+invented completed responses. Split responses retain `apiCallId`, `chunkIndex`
+and `chunkCount` as `response-part` records; they are not independent whole
+utterances or model calls. Missing/conflicting chunks are explicit. This reader
+does not sum output tokens or reconstruct missing per-call input usage.
+
+Each fact retains original JSONL line/byte coordinates and a parseable record's SHA-256, or
+SQLite table, typed primary key and projection fingerprint through the shared
+reference helper. Session provenance also retains the catalog rows establishing
+ownership. Host runtime/chat/storage and SDK session namespaces remain distinct.
+Malformed lines retain their physical coordinates without inventing a parsed-record hash.
+Reported detached-session parents, host parent chats, origin owners and agent IDs
+are preserved without inventing parent sessions, flattening subagents or joining
+execution evidence by equal text, filenames or timing.
+
+Message coverage is always **partial, retained native log only**: current model
+context and lost historical branches cannot be established from the file.
+Compaction/context-truncation/rewind notices do not prove physical log deletion
+or recover deleted records. Missing start, unsupported source, missing catalog
+or ambiguous ownership means unavailable conversation coverage and no normalized
+session. Timing/tool/token coverage is unavailable for this conversation adapter.
+
+Synthetic tests cover replay/conflict, original anchors, flags, pending versus
+submitted messages, split/interrupted responses, missing fields, unsupported
+schemas, cancellation and ownership. The native qualification job additionally
+uses the real guard on owned synthetic databases, verifies source bytes/no new
+files and refresh invalidation. An ordinary run without a prepared candidate
+explicitly skips that integration case; it is not a native qualification pass.
+Producer-generated end-to-end verification remains #20, not a claim made by
+these synthetic tests.
 
 ### Execution reader behavior
 

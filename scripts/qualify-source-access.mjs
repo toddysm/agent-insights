@@ -23,6 +23,7 @@ qualification(
     "--test",
     ".build/tests/source-access.test.js",
     ".build/tests/sqlite-transport.test.js",
+    ".build/tests/agent-host-conversation.test.js",
   ],
   env,
 );

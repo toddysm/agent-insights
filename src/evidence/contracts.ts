@@ -160,7 +160,15 @@ const eventFields = {
 /** Reported identity namespaces are not interchangeable, even when their values match. */
 export const nativeIdentitySchema = z
   .strictObject({
-    namespace: z.enum(["vscode-chat", "gen-ai-conversation"]),
+    namespace: z.enum([
+      "vscode-chat",
+      "gen-ai-conversation",
+      "copilot-sdk-session",
+      "agent-host-session",
+      "agent-host-chat",
+      "agent-host-storage-session",
+      "agent-host-storage-chat",
+    ]),
     value: id,
   })
   .readonly();
@@ -185,6 +193,30 @@ export const eventSchema = z.discriminatedUnion("kind", [
       instructionId: id.nullable(),
       text: z.string().nullable(),
       timestampMs: milliseconds.nullable(),
+      /** Native submissions/response parts, not inferred steering, tasks or reconstructed model context. */
+      nativeMessage: z
+        .strictObject({
+          eventIds: z.array(id).min(1).readonly(),
+          messageId: id.nullable(),
+          interactionId: id.nullable(),
+          originatingMessageId: id.nullable(),
+          turnId: id.nullable(),
+          agentId: id.nullable(),
+          parentToolCallId: id.nullable(),
+          source: z.string().nullable(),
+          delivery: z.string().nullable(),
+          agentMode: z.string().nullable(),
+          isAutopilotContinuation: z.boolean().nullable(),
+          ephemeral: z.boolean().nullable(),
+          transformedContent: z.string().nullable(),
+          apiCallId: id.nullable(),
+          chunkIndex: tokens.nullable(),
+          chunkCount: tokens.positive().nullable(),
+          attribution: z.enum(["human", "system", "subagent", "assistant", "unknown"]),
+          completeness: z.enum(["captured-message", "response-part", "missing-content"]),
+        })
+        .readonly()
+        .optional(),
     })
     .readonly(),
   z
@@ -249,6 +281,18 @@ export const readViewSchema = z
           .strictObject({
             id,
             nativeId: id.nullable(),
+            /** A reported detached-session parent, not an inferred task or flattened session. */
+            parentNativeId: id.nullable().optional(),
+            /** Host relationships remain distinct from SDK event/agent identities and are not flattened. */
+            nativeSession: z
+              .strictObject({
+                parentChatId: id.nullable(),
+                originSessionId: id.nullable(),
+                archived: z.boolean(),
+                historyScope: z.literal("retained-native-log"),
+              })
+              .readonly()
+              .optional(),
             nativeIdentities: z
               .array(nativeIdentitySchema)
               .readonly()

@@ -17,11 +17,14 @@ interface and read-only access boundary, built on the
 [in-memory evidence contract](docs/evidence-contracts.md).
 Its shared access layer can coordinate explicitly authorized files and existing
 harness-owned SQLite databases without creating an application session store.
-This is infrastructure for the Agent Host readers, not installed reader support.
+The [Agent Host conversation reader](docs/evidence-contracts.md#agent-host-conversation-reader)
+uses this boundary for explicitly selected native history and its authoritative
+host catalog; a prepared native guard is required.
 The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
 memory-only model execution. The first production reader handles VS Code's
-OpenTelemetry extension file export in place. Conversation readers, report views
-and interpretation definitions remain pending; unavailable capabilities do not
+OpenTelemetry extension file export in place. Local saved-chat conversation readers,
+Agent Host execution accounting, report views and interpretation definitions
+remain pending; unavailable capabilities do not
 show example data as real results.
 The [bounded JSONL scan](docs/local-runtime.md#scan-large-jsonl-captures-in-place)
 reads large extension exports in place, discovers sessions without returning
