@@ -238,13 +238,18 @@ export async function resolveAgentHostOwnership(
   for (const identity of new Set([ownerId, runtimeOwner]))
     for (const prefix of ["sessionTombstone:", "sessionHidden:", "sessionsV2Excluded:copilotcli:", "sessionProvisional:"])
       status.push(...await catalog.query("metadata_key", { key: `${prefix}${identity}` }));
+  observe(status);
+  if (status.some((row) =>
+    [ownerId, runtimeOwner].some((identity) =>
+      row.values.key === `sessionTombstone:${identity}` || row.values.key === `sessionProvisional:${identity}`)
+    && row.values.value !== "true" && row.values.value !== "false"))
+    return fail("Agent Host owner deletion or provisional state is malformed.");
   const suppressed = status.filter((row) =>
     [ownerId, runtimeOwner].some((identity) =>
       (row.values.key === `sessionTombstone:${identity}` && row.values.value === "true") ||
       row.values.key === `sessionHidden:${identity}` ||
       row.values.key === `sessionsV2Excluded:copilotcli:${identity}` ||
       (row.values.key === `sessionProvisional:${identity}` && row.values.value === "true")));
-  observe(suppressed);
   if (suppressed.length) return fail("Agent Host owner is deleted, hidden or provisional.");
   const providerOverrides: SqliteRow[] = [];
   for (const identity of new Set([chatId, runtimeChat]))

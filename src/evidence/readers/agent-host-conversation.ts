@@ -51,11 +51,11 @@ function identifier(value: unknown): string | null {
   return typeof value === "string" && value.length > 0 ? value : null;
 }
 
-/** Logical message IDs and fallback envelope IDs occupy different producer namespaces. */
+/** Valid agent identity scopes logical messages; malformed agent variants cannot split a replay key. */
 function messageKey(event: NativeEvent): string {
   const messageId = identifier(event.data.messageId);
   return JSON.stringify([
-    event.type, event.value.agentId ?? null,
+    event.type, identifier(event.value.agentId),
     messageId === null ? "event-id" : "message-id", messageId ?? event.id,
   ]);
 }

@@ -197,6 +197,8 @@ Support is intentionally limited to the qualified baseline:
   provider overrides, malformed deletion flags, provisional/hidden/deleted owners and malformed identity
   mappings are unavailable, not guessed or repaired. Archived retained chats
   remain readable and retain their archive flag.
+  Deletion/provisional metadata must contain canonical `true`/`false` text when
+  present; malformed status is indeterminate, not an inactive flag.
 - Ownership requires the shared boundary's `connection` snapshot scope across
   all catalog queries. Per-request/rollback-mode snapshots are unavailable:
   combining their rows could qualify ownership that never existed in one commit.
@@ -244,7 +246,8 @@ Original instruction IDs are SDK-session scoped and distinguish logical
 `messageId` from a fallback envelope ID. Exact event/logical-message replays retain
 all original anchors but contribute once. Logical replays may differ only in
 envelope event ID; conflicting timestamps, predecessors or other envelope facts
-are excluded rather than selecting the first captured value.
+are excluded rather than selecting the first captured value. Malformed agent
+identities cannot create separate deduplication namespaces for the same message.
 Repeated text with different identities
 remains distinct. Conflicting identities are excluded with anchored diagnostics,
 not repaired into multiple human instructions. Captured physical order is retained;
@@ -497,7 +500,8 @@ JSON-path equality filters guard extraction with `json_valid`; malformed JSON
 does not match, including when the bound comparison value is null. Readers must
 validate matched objects and cannot treat nonmatching rows as qualified evidence.
 Code-owned `prefix: true` filters instead require text bindings and compare a
-literal, case-sensitive prefix (no SQL wildcard interpretation); prefix and JSON
+literal, case-sensitive prefix over text cells, including embedded NULs and
+Unicode (no SQL wildcard interpretation). Binary cells do not match; prefix and JSON
 path modes cannot be combined in one filter.
 
 Optional missing/incompatible inputs are typed unavailable values with controlled

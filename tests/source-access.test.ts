@@ -444,15 +444,23 @@ test("query parameters must match the declared filter names exactly", async (t) 
   }
 });
 
-test("literal text-prefix projections treat SQL wildcards as ordinary characters and reject non-text bindings", async (t) => {
+test("literal text prefixes preserve wildcards, Unicode and NULs without matching binary cells", async (t) => {
   const data = await fixture(t);
   data.writer.prepare("INSERT INTO items VALUES(?,?,?)").run("row%_literal", "{}", 1);
   data.writer.prepare("INSERT INTO items VALUES(?,?,?)").run("rowXXliteral", "{}", 2);
+  for (const id of ["nul\0one", "nul\0two", "\u00e9\0tail", Buffer.from("nul\0blob")])
+    data.writer.prepare("INSERT INTO items VALUES(?,?,?)").run(id, "{}", 3);
   const set = await openSet(data);
   const database = databaseInput(set);
   const rows = await database.query("by_prefix", { prefix: "row%_" });
   assert.deepEqual(rows.map((item) => item.values.id), ["row%_literal"]);
   assert.deepEqual(await database.query("by_prefix", { prefix: "ROW%_" }), []);
+  assert.deepEqual((await database.query("by_prefix", { prefix: "nul\0" })).map((item) => item.values.id),
+    ["nul\0one", "nul\0two"]);
+  assert.deepEqual((await database.query("by_prefix", { prefix: "nul\0o" })).map((item) => item.values.id),
+    ["nul\0one"]);
+  assert.deepEqual((await database.query("by_prefix", { prefix: "\u00e9\0" })).map((item) => item.values.id),
+    ["\u00e9\0tail"]);
   await assert.rejects(database.query("by_prefix", { prefix: 7 }), code("SQLITE_BINDINGS"));
 });
 

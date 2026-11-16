@@ -229,7 +229,7 @@ fn binding_bytes(bindings: &BTreeMap<String, Cell>) -> Result<usize, Failure> {
     Ok(size)
 }
 
-/// Build bounded projections; malformed JSON never matches a JSON-path predicate, even a null binding.
+/// Build bounded projections with guarded JSON and NUL-safe, byte-exact prefixes over text cells.
 fn compile(
     query: &Query,
     table: &Table,
@@ -255,7 +255,9 @@ fn compile(
             if !matches!(value, Cell::Text(_)) {
                 return Err(Failure::Bindings);
             }
-            predicate = format!("substr({column}, 1, length(?)) COLLATE BINARY IS ?");
+            predicate = format!(
+                "typeof({column}) = 'text' AND substr(CAST({column} AS BLOB), 1, length(CAST(? AS BLOB))) IS CAST(? AS BLOB)"
+            );
             values.push(value.clone());
         } else if let Some(parts) = &filter.json_path {
             let mut path = String::from("$");

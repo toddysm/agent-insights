@@ -258,6 +258,26 @@ test("logical replay conflicts in captured envelope facts exclude both user and 
   }
 });
 
+test("malformed agent variants cannot split logical replays into duplicate normalized messages", async () => {
+  for (const type of ["user.message", "assistant.message"]) {
+    for (const [first, second] of [[1, 2], ["", null], [{ bad: 1 }, { bad: 2 }]]) {
+      const view = await agentHostConversationReader.read(input([
+        start(),
+        event(type, "one", { messageId: "stable", content: "same" }, { agentId: first }),
+        event(type, "two", { messageId: "stable", content: "same" }, { agentId: second }),
+      ]));
+      assert.equal(view.events.length, 0);
+      assert.equal(view.issues.find((issue) => issue.code === "ambiguous-session")?.references?.length, 2);
+    }
+    const distinct = await agentHostConversationReader.read(input([
+      start(),
+      event(type, "one", { messageId: "stable", content: "same" }, { agentId: "agent-one" }),
+      event(type, "two", { messageId: "stable", content: "same" }, { agentId: "agent-two" }),
+    ]));
+    assert.equal(distinct.events.length, 2);
+  }
+});
+
 test("logical IDs cannot alias fallback event IDs or rescue a conflicting envelope", async () => {
   const distinct = await agentHostConversationReader.read(input([
     start(),
@@ -519,6 +539,25 @@ test("exact-valued REAL catalog flags and revisions cannot establish integer aut
   }
 });
 
+test("deletion and provisional metadata require canonical booleans for stored and runtime owners", async () => {
+  for (const prefix of ["sessionTombstone:", "sessionProvisional:"]) {
+    for (const owner of ["copilotcli:/stored", "ahp-session:/runtime"]) {
+      for (const value of [null, 1n, "TRUE", "false ", "null", "true", "false"]) {
+        const rows = catalogRows();
+        const status = row("metadata", { key: `${prefix}${owner}`, value });
+        rows.identity_metadata?.push(status);
+        const view = await agentHostConversationReader.read(input([start()], { rows }));
+        assert.equal(view.sessions.length, value === "false" ? 1 : 0);
+        const references = value === "false" ? view.sessions[0]?.references
+          : view.issues.find((issue) => issue.code === "ambiguous-session")?.references;
+        assert.ok(references?.some((reference) => reference.location.kind === "sqlite"
+          && reference.location.key[0]?.value === status.values.key
+          && reference.location.fingerprint === status.fingerprint));
+      }
+    }
+  }
+});
+
 test("request-scoped catalog snapshots cannot qualify ownership by mixing interleaved commits", async () => {
   const rows = catalogRows();
   const chat = rows.sdk_chats?.[0];
@@ -761,6 +800,21 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   assert.equal(service.view?.id, refreshed.id);
   assert.equal(first.events[0]?.kind === "message" ? first.events[0].instructionId : null,
     refreshed.events[0]?.kind === "message" ? refreshed.events[0].instructionId : null);
+  for (const { key, value } of [
+    { key: "sessionTombstone:copilotcli:/stored", value: null },
+    { key: "sessionProvisional:ahp-session:/runtime", value: 1n },
+  ]) {
+    insertMetadata.run(key, value);
+    const rejected = await service.readSet(selection, new AbortController().signal);
+    assert.equal(rejected.sessions.length, 0);
+    assert.ok(rejected.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.key[0]?.value === key)));
+    writer.prepare("UPDATE metadata SET value = ? WHERE key = ?").run("false", key);
+    const inactive = await service.readSet(selection, new AbortController().signal);
+    assert.equal(inactive.sessions.length, 1, JSON.stringify(inactive.issues));
+    writer.prepare("DELETE FROM metadata WHERE key = ?").run(key);
+  }
   for (const table of ["sessions_v2", "session_chat_catalogs"]) {
     writer.prepare(`UPDATE ${table} SET session_uri = ?`).run("COPILOTCLI:/STORED");
     const rejected = await service.readSet(selection, new AbortController().signal);
