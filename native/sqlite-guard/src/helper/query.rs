@@ -101,7 +101,10 @@ impl Definition {
                 return Err(Failure::Schema);
             }
             for filter in &query.filters {
-                if !table.columns.contains(&filter.column) || !identifier(&filter.parameter) {
+                if !table.columns.contains(&filter.column)
+                    || !identifier(&filter.parameter)
+                    || (filter.prefix && filter.json_path.is_some())
+                {
                     return Err(Failure::Schema);
                 }
                 if let Some(path) = &filter.json_path
@@ -226,7 +229,7 @@ fn binding_bytes(bindings: &BTreeMap<String, Cell>) -> Result<usize, Failure> {
     Ok(size)
 }
 
-/// Build a SELECT with placeholders, deterministic primary-key ordering and one-over row detection.
+/// Build bounded projections with guarded JSON and NUL-safe, byte-exact prefixes over text cells.
 fn compile(
     query: &Query,
     table: &Table,
@@ -245,8 +248,18 @@ fn compile(
     let mut values = Vec::new();
     let mut predicates = Vec::new();
     for filter in &query.filters {
-        let mut column = quoted(&filter.column);
-        if let Some(parts) = &filter.json_path {
+        let column = quoted(&filter.column);
+        let predicate;
+        if filter.prefix {
+            let value = bindings.get(&filter.parameter).ok_or(Failure::Bindings)?;
+            if !matches!(value, Cell::Text(_)) {
+                return Err(Failure::Bindings);
+            }
+            predicate = format!(
+                "typeof({column}) = 'text' AND substr(CAST({column} AS BLOB), 1, length(CAST(? AS BLOB))) IS CAST(? AS BLOB)"
+            );
+            values.push(value.clone());
+        } else if let Some(parts) = &filter.json_path {
             let mut path = String::from("$");
             for part in parts {
                 match part {
@@ -257,8 +270,12 @@ fn compile(
                     PathPart::Index(index) => path.push_str(&format!("[{index}]")),
                 }
             }
-            column = format!("json_extract({column}, ?)");
+            predicate = format!(
+                "CASE WHEN json_valid({column}) THEN json_extract({column}, ?) IS ? ELSE 0 END"
+            );
             values.push(Cell::Text(path));
+        } else {
+            predicate = format!("{column} IS ?");
         }
         values.push(
             bindings
@@ -266,7 +283,7 @@ fn compile(
                 .ok_or(Failure::Bindings)?
                 .clone(),
         );
-        predicates.push(format!("{column} IS ?"));
+        predicates.push(predicate);
     }
     let mut sql = format!(
         "SELECT {} FROM main.{}",

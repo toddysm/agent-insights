@@ -50,11 +50,12 @@ const tableSchema = z
   })
   .readonly();
 
-/** Equality filters use placeholders; optional JSON paths contain identifiers/indices, never SQL. */
+/** Placeholder-bound equality or literal text-prefix filters; JSON paths cannot be combined with prefixes. */
 const filterSchema = z
   .strictObject({
     column: identifier,
     parameter: identifier,
+    prefix: z.boolean().optional(),
     jsonPath: z
       .array(z.union([identifier, z.number().int().nonnegative().max(10000)]))
       .min(1)
@@ -62,6 +63,7 @@ const filterSchema = z
       .readonly()
       .optional(),
   })
+  .refine((filter) => !filter.prefix || filter.jsonPath === undefined)
   .readonly();
 
 /** Named SELECT projections over declared tables, with no arbitrary SQL or caller-provided identifiers. */

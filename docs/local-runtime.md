@@ -245,9 +245,9 @@ The shared foundation for
 [#33](https://github.com/toddysm/agent-insights/issues/33) reads **existing
 harness-owned databases in place**. It does not create an Agent Insights database,
 replica, archive, synchronization process or saved analysis history. Native Agent
-Host conversation/execution readers remain separate work in
-[#31](https://github.com/toddysm/agent-insights/issues/31) and
-[#32](https://github.com/toddysm/agent-insights/issues/32); this build registers none.
+Host conversation reading now uses this boundary through
+[#31](https://github.com/toddysm/agent-insights/issues/31); native execution
+accounting remains separate work in [#32](https://github.com/toddysm/agent-insights/issues/32).
 
 Trusted embedding code can register `multiSourceReaders`. The authenticated
 `POST /api/read-set` control selects a registered `readerId` and one
@@ -347,10 +347,11 @@ atomic defense against a hostile same-account replace-and-revert race.
 ## Agent Host qualification handoff
 
 The source qualification in
-[#30](https://github.com/toddysm/agent-insights/issues/30) is research, **not an
-installed Agent Host reader**. The shared access boundary above is shipped;
-execution [#32](https://github.com/toddysm/agent-insights/issues/32) and conversation
-[#31](https://github.com/toddysm/agent-insights/issues/31) adapters are not.
+[#30](https://github.com/toddysm/agent-insights/issues/30) supplied the pinned
+handoff. The separately authorized
+[conversation reader](evidence-contracts.md#agent-host-conversation-reader) now
+registers through the shared access boundary; native execution accounting
+[#32](https://github.com/toddysm/agent-insights/issues/32) remains pending.
 Selecting `vscode-otel-jsonl`, enabling an extension exporter or preparing the
 native helper does not add Agent Host support. Ask/Agent mode, running locally
 and the Copilot CLI analysis executor do not identify the capture's harness.
@@ -364,7 +365,8 @@ One separately authorized no-tools test observed native event format **1**,
 catalog schema **22**, session overlay schema **18** and emitted runtime
 **`1.0.103-unstable.r41379698026.g3219c66`**. Package and emitted runtime versions
 are different pins. These historical observations do not certify today's
-installation, other schemas or unimplemented readers.
+installation, other schemas or unimplemented readers. The conversation reader
+rejects other native runtime versions and unqualified catalog authority variants.
 
 | Harness-owned source | Selection and purpose |
 | --- | --- |
@@ -373,11 +375,72 @@ installation, other schemas or unimplemented readers.
 | Host overlay: `<userData>/agentSessionData/<storage-key>/session.db` | Read qualified turn/event bridges and retained usage for the verified chat. Resolve its storage key from authoritative identity metadata, not a guessed UUID. |
 
 These are producer-root placeholders, not literal application arguments or
-permission to scan a home directory. Future readers must use explicitly granted
+permission to scan a home directory. Readers must use explicitly granted
 roots, verified catalog ownership and the guarded shared boundary; they must not
 open producer SDK stores, restore sessions, migrate databases or copy sources.
 The [native evidence handoff](evidence-contracts.md#agent-host-native-evidence-handoff)
 defines coverage, accounting and original-anchor requirements.
+
+### Read a qualified native conversation
+
+**Production availability:** this backend reader is implemented but gated out of
+the executable's registry. The selected `native-helper-v0.1.0` does not support
+the required guarded JSON and literal-prefix predicates. Until a separately
+authorized, qualified helper release and reviewed registration update land,
+`/api/status` does not advertise `agent-host-conversations` and `/api/read-set`
+rejects that selection with `READER_UNAVAILABLE`. Preparing a development candidate
+does not enable it or replace the production resolver.
+
+The following contract applies to trusted embeddings and qualification tests
+that explicitly register the reader with a verified compatible helper:
+
+Start with explicit grants to the selected native-history and catalog files (or
+their authorized containing directories), following the existing `--source`
+controls. Prepare a verified native helper through the documented
+[artifact workflow](../native/sqlite-guard/ARTIFACTS.md); the runtime never builds,
+downloads or substitutes an unguarded database reader during a read.
+Native artifact publication requires separate release authorization, as in #39;
+that completed release does not provide this reader's required predicates.
+Catalog ownership needs a connection-scoped snapshot (the shared boundary's WAL
+mode with existing readable sidecars). Per-request/rollback-mode catalogs are
+reported unavailable; do not change producer journal settings or create sidecars
+to make a read succeed.
+
+With that explicit registration, authenticated `/api/status` advertises `agent-host-conversations` in
+`multiSourceReaders`. Send an authenticated `POST /api/read-set` using the existing
+launch-token and origin controls, with this shape (grant IDs come from status,
+not from captured paths):
+
+```json
+{
+  "readerId": "agent-host-conversations",
+  "sources": [
+    { "key": "history", "sourceId": "source-1", "relativePath": "events.jsonl" },
+    { "key": "catalog", "sourceId": "source-2", "relativePath": "agent-host.db" }
+  ]
+}
+```
+
+For file grants use an empty `relativePath`; directory grants use a contained
+relative path. Both role bindings are required. The roles permit explicit
+unavailability, but a missing input cannot establish a conversation and is never
+reported as a successful empty transcript. Unsupported schemas/pins, denied
+access and missing native preparation remain explicit errors or limitations.
+The read does not require the session overlay, optional telemetry or a model.
+
+Native history additionally permits at most 256 KiB per physical record
+(excluding LF), 8 MiB total bytes including framing/blanks, 8,192 distinct event
+IDs (including malformed envelopes), and 32,768 physical records (including
+replays, malformed lines and blanks). Crossing a limit returns `READ_LIMIT`
+(413) and clears the previous view; no truncated transcript is published.
+
+The backend implementation does not add automatic native-source discovery or a
+new report UI. The current single-file extension/scan controls are not native
+conversation selectors. #12 owns source discovery/correlation, #14 owns report
+drill-down and #20 owns integrated producer verification. Use original anchors
+only within their current read generation; refresh discards the previous view.
+Results are in memory only. Do not copy private content into saved reports or
+send it to analysis merely to verify a read.
 
 ### Retained history versus optional telemetry
 
