@@ -414,6 +414,25 @@ test("ambiguous/deleted/wrong-provider/legacy/stale catalog ownership fails clos
   }
 });
 
+test("malformed deletion flags on competing catalog matches cannot silently choose another owner", async () => {
+  for (const tombstoned of [null, "0", "deleted", 2n, -1n, 0.5]) {
+    const rows = catalogRows();
+    const original = rows.sdk_chats?.[0];
+    assert.ok(original);
+    rows.sdk_chats?.push(row("chats_v2", {
+      ...original.values, chat_uri: "competing-chat", tombstoned,
+    }));
+    const view = await agentHostConversationReader.read(input([start()], { rows }));
+    assert.equal(view.sessions.length, 0);
+    assert.ok(view.sources.every((source) => source.coverage.messages.status === "unavailable"));
+    const problem = view.issues.find((item) => item.message.includes("unsupported deletion flag"));
+    assert.equal(problem?.references?.filter((reference) => reference.location.kind === "sqlite"
+      && reference.location.table === "chats_v2").length, 2);
+    assert.ok(problem?.references?.some((reference) => reference.location.kind === "sqlite"
+      && reference.location.key[0]?.value === "competing-chat"));
+  }
+});
+
 test("request-scoped catalog snapshots cannot qualify ownership by mixing interleaved commits", async () => {
   const rows = catalogRows();
   const chat = rows.sdk_chats?.[0];

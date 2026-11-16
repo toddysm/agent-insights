@@ -142,7 +142,10 @@ export async function resolveAgentHostOwnership(
       return fail("Agent Host ownership changed between bounded catalog projections.");
     matches.set(key, row);
   }
-  const current = [...matches.values()].filter((row) => integer(row.values.tombstoned, 0));
+  const candidates = [...matches.values()];
+  if (candidates.some((row) => !integer(row.values.tombstoned, 0) && !integer(row.values.tombstoned, 1)))
+    return fail("Agent Host chat has an unsupported deletion flag; ownership cannot be established.");
+  const current = candidates.filter((row) => integer(row.values.tombstoned, 0));
   const selected = current[0];
   if (current.length !== 1 || !selected)
     return fail("Native backing has no unique live Agent Host chat; deleted, missing or ambiguous ownership.");
