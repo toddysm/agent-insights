@@ -191,6 +191,8 @@ Support is intentionally limited to the qualified baseline:
   authority 2, matching owner/catalog generations, and equal catalog/projected
   revisions. Returned owner/authority keys must exactly match the selected owner,
   even when a catalog declares case-insensitive key collations.
+  Authority flags and revisions require SQLite INTEGER cells; exact-valued REAL
+  cells are not accepted as integer authority.
   Legacy authority, stale projections, conflicting live owners,
   provider overrides, malformed deletion flags, provisional/hidden/deleted owners and malformed identity
   mappings are unavailable, not guessed or repaired. Archived retained chats
@@ -240,7 +242,10 @@ Captured steering delivery is retained without inferring task purpose.
 
 Original instruction IDs are SDK-session scoped and distinguish logical
 `messageId` from a fallback envelope ID. Exact event/logical-message replays retain
-all original anchors but contribute once; repeated text with different identities
+all original anchors but contribute once. Logical replays may differ only in
+envelope event ID; conflicting timestamps, predecessors or other envelope facts
+are excluded rather than selecting the first captured value.
+Repeated text with different identities
 remains distinct. Conflicting identities are excluded with anchored diagnostics,
 not repaired into multiple human instructions. Captured physical order is retained;
 timestamps never reorder submissions.

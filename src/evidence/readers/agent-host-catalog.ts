@@ -115,9 +115,9 @@ function jsonObject(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
-/** SQLite integer flags remain bigint; strings and fractional/coerced values cannot establish authority. */
+/** Only SQLite INTEGER cells (bigint), never exact-valued REAL cells, can establish integer flags. */
 function integer(value: unknown, expected: number): boolean {
-  return value === expected || value === BigInt(expected);
+  return value === BigInt(expected);
 }
 
 /**
@@ -185,8 +185,7 @@ export async function resolveAgentHostOwnership(
       !integer(owner.is_chat_backing, 0) || !integer(authority.authority_version, 2) ||
       typeof owner.session_generation !== "string" || !owner.session_generation ||
       authority.session_generation !== owner.session_generation ||
-      !((typeof authority.revision === "bigint" && authority.revision >= 0n) ||
-        (typeof authority.revision === "number" && Number.isSafeInteger(authority.revision) && authority.revision >= 0)) ||
+      typeof authority.revision !== "bigint" || authority.revision < 0n ||
       authority.revision !== authority.projected_revision)
     return fail("Agent Host owner, generation or normalized catalog authority is unsupported or stale.");
   signal.throwIfAborted();

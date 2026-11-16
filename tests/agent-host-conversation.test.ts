@@ -211,7 +211,7 @@ test("exact event/logical-message replays merge anchors, while repeated text rem
   const submission = event("user.message", "one", { messageId: "stable", content: "same" });
   const view = await agentHostConversationReader.read(input([
     start(), submission, submission,
-    { ...submission, id: "replayed", parentId: "one" },
+    { ...submission, id: "replayed" },
     event("session.resume", "resume", {}),
     event("user.message", "new", { messageId: "different", content: "same" }),
   ]));
@@ -231,6 +231,30 @@ test("conflicting native or logical identities remain diagnosed instead of inven
     assert.equal(view.events.length, 0);
     const conflict = view.issues.find((item) => item.code === "ambiguous-session");
     assert.equal(conflict?.references?.length, 2);
+  }
+});
+
+test("logical replay conflicts in captured envelope facts exclude both user and assistant messages", async () => {
+  for (const type of ["user.message", "assistant.message"]) {
+    for (const fields of [
+      { timestamp: "2026-11-03T10:00:00.002Z" },
+      { timestamp: undefined },
+      { parentId: "different-parent" },
+      { parentId: undefined },
+      { ephemeral: true },
+      { agentId: null },
+    ]) {
+      const original = event(type, "original", { messageId: "stable", content: "same" });
+      const view = await agentHostConversationReader.read(input([
+        start(), original, { ...original, ...fields, id: "replayed" },
+      ]));
+      assert.equal(view.events.length, 0);
+      const conflict = view.issues.find((issue) => issue.code === "ambiguous-session");
+      assert.ok(conflict);
+      assert.equal(conflict.references?.length, 2);
+      assert.deepEqual(conflict.references?.map((reference) =>
+        reference.location.kind === "jsonl" ? reference.location.line : null), [2, 3]);
+    }
   }
 });
 
@@ -469,6 +493,32 @@ test("owner and authority projection keys must exactly match the selected chat o
   }
 });
 
+test("exact-valued REAL catalog flags and revisions cannot establish integer authority", async () => {
+  for (const { query, columns, value } of [
+    { query: "sdk_chats", columns: ["tombstoned"], value: 0 },
+    { query: "sdk_chats", columns: ["archived"], value: 1 },
+    { query: "owner", columns: ["verified"], value: 1 },
+    { query: "owner", columns: ["is_chat_backing"], value: 0 },
+    { query: "authority", columns: ["authority_version"], value: 2 },
+    { query: "authority", columns: ["revision", "projected_revision"], value: 3 },
+  ]) {
+    const rows = catalogRows();
+    const original = rows[query]?.[0];
+    assert.ok(original);
+    const malformed = row(original.table, {
+      ...original.values, ...Object.fromEntries(columns.map((column) => [column, value])),
+    });
+    rows[query] = [malformed];
+    const view = await agentHostConversationReader.read(input([start()], { rows }));
+    assert.equal(view.sessions.length, 0);
+    assert.ok(view.sources.every((source) => source.coverage.messages.status === "unavailable"));
+    assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.table === malformed.table
+        && reference.location.fingerprint === malformed.fingerprint)));
+  }
+});
+
 test("request-scoped catalog snapshots cannot qualify ownership by mixing interleaved commits", async () => {
   const rows = catalogRows();
   const chat = rows.sdk_chats?.[0];
@@ -665,9 +715,9 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   writer.exec(`
       PRAGMA journal_mode=WAL;
       PRAGMA user_version=22;
-      CREATE TABLE chats_v2(chat_uri TEXT PRIMARY KEY NOT NULL, owner_session_uri TEXT, storage_resource TEXT, parent_chat TEXT, provider_data TEXT, tombstoned INTEGER, archived INTEGER, origin_session_uri TEXT);
-      CREATE TABLE sessions_v2(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, provider TEXT, session_generation TEXT, verified INTEGER, is_chat_backing INTEGER);
-      CREATE TABLE session_chat_catalogs(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, authority_version INTEGER, session_generation TEXT, revision INTEGER, projected_revision INTEGER);
+      CREATE TABLE chats_v2(chat_uri TEXT PRIMARY KEY NOT NULL, owner_session_uri TEXT, storage_resource TEXT, parent_chat TEXT, provider_data TEXT, tombstoned, archived, origin_session_uri TEXT);
+      CREATE TABLE sessions_v2(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, provider TEXT, session_generation TEXT, verified, is_chat_backing);
+      CREATE TABLE session_chat_catalogs(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, authority_version, session_generation TEXT, revision, projected_revision);
       CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT);
     `);
   for (const rows of Object.values(catalogRows()))
@@ -720,6 +770,26 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
         && reference.location.table === table
         && reference.location.key[0]?.value === "COPILOTCLI:/STORED")));
     writer.prepare(`UPDATE ${table} SET session_uri = ?`).run("copilotcli:/stored");
+  }
+  for (const { table, columns, value } of [
+    { table: "chats_v2", columns: ["tombstoned"], value: 0n },
+    { table: "chats_v2", columns: ["archived"], value: 1n },
+    { table: "sessions_v2", columns: ["verified"], value: 1n },
+    { table: "sessions_v2", columns: ["is_chat_backing"], value: 0n },
+    { table: "session_chat_catalogs", columns: ["authority_version"], value: 2n },
+    { table: "session_chat_catalogs", columns: ["revision", "projected_revision"], value: 3n },
+  ]) {
+    writer.prepare(`UPDATE ${table} SET ${columns.map((column) => `${column} = CAST(? AS REAL)`).join(", ")}`)
+      .run(...columns.map(() => value));
+    const storage = writer.prepare(`SELECT typeof(${columns[0]}) AS storage_type FROM ${table}`).get();
+    assert.equal(storage?.storage_type, "real");
+    const rejected = await service.readSet(selection, new AbortController().signal);
+    assert.equal(rejected.sessions.length, 0);
+    assert.ok(rejected.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.table === table)));
+    writer.prepare(`UPDATE ${table} SET ${columns.map((column) => `${column} = ?`).join(", ")}`)
+      .run(...columns.map(() => value));
   }
   writer.prepare("DELETE FROM metadata WHERE key IN (?, ?)")
     .run("sessionStorageIdentity:ahp-session:/runtime", "chatStorageIdentity:ahp-chat:/runtime");

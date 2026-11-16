@@ -221,8 +221,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     if (previous) {
       previous.nativeIds.push(event.id);
       for (const reference of event.references) previous.references.push(reference);
-      if (!isDeepStrictEqual(previous.event.data, event.data) ||
-          previous.event.value.ephemeral !== event.value.ephemeral)
+      if (!isDeepStrictEqual({ ...previous.event.value, id: event.id }, event.value))
         previous.conflict = true;
     } else messages.set(key, { event, nativeIds: [event.id], references: [...event.references], conflict: false });
   }
