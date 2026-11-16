@@ -449,6 +449,26 @@ test("malformed deletion flags on competing catalog matches cannot silently choo
   }
 });
 
+test("owner and authority projection keys must exactly match the selected chat owner", async () => {
+  for (const query of ["owner", "authority"]) {
+    const rows = catalogRows();
+    const original = rows[query]?.[0];
+    assert.ok(original);
+    const mismatched = row(original.table, {
+      ...original.values, session_uri: "COPILOTCLI:/STORED",
+    });
+    rows[query] = [mismatched];
+    const view = await agentHostConversationReader.read(input([start()], { rows }));
+    assert.equal(view.sessions.length, 0);
+    assert.ok(view.sources.every((source) => source.coverage.messages.status === "unavailable"));
+    assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.table === mismatched.table
+        && reference.location.key[0]?.value === "COPILOTCLI:/STORED"
+        && reference.location.fingerprint === mismatched.fingerprint)));
+  }
+});
+
 test("request-scoped catalog snapshots cannot qualify ownership by mixing interleaved commits", async () => {
   const rows = catalogRows();
   const chat = rows.sdk_chats?.[0];
@@ -646,8 +666,8 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
       PRAGMA journal_mode=WAL;
       PRAGMA user_version=22;
       CREATE TABLE chats_v2(chat_uri TEXT PRIMARY KEY NOT NULL, owner_session_uri TEXT, storage_resource TEXT, parent_chat TEXT, provider_data TEXT, tombstoned INTEGER, archived INTEGER, origin_session_uri TEXT);
-      CREATE TABLE sessions_v2(session_uri TEXT PRIMARY KEY NOT NULL, provider TEXT, session_generation TEXT, verified INTEGER, is_chat_backing INTEGER);
-      CREATE TABLE session_chat_catalogs(session_uri TEXT PRIMARY KEY NOT NULL, authority_version INTEGER, session_generation TEXT, revision INTEGER, projected_revision INTEGER);
+      CREATE TABLE sessions_v2(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, provider TEXT, session_generation TEXT, verified INTEGER, is_chat_backing INTEGER);
+      CREATE TABLE session_chat_catalogs(session_uri TEXT COLLATE NOCASE PRIMARY KEY NOT NULL, authority_version INTEGER, session_generation TEXT, revision INTEGER, projected_revision INTEGER);
       CREATE TABLE metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT);
     `);
   for (const rows of Object.values(catalogRows()))
@@ -691,6 +711,16 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   assert.equal(service.view?.id, refreshed.id);
   assert.equal(first.events[0]?.kind === "message" ? first.events[0].instructionId : null,
     refreshed.events[0]?.kind === "message" ? refreshed.events[0].instructionId : null);
+  for (const table of ["sessions_v2", "session_chat_catalogs"]) {
+    writer.prepare(`UPDATE ${table} SET session_uri = ?`).run("COPILOTCLI:/STORED");
+    const rejected = await service.readSet(selection, new AbortController().signal);
+    assert.equal(rejected.sessions.length, 0);
+    assert.ok(rejected.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.table === table
+        && reference.location.key[0]?.value === "COPILOTCLI:/STORED")));
+    writer.prepare(`UPDATE ${table} SET session_uri = ?`).run("copilotcli:/stored");
+  }
   writer.prepare("DELETE FROM metadata WHERE key IN (?, ?)")
     .run("sessionStorageIdentity:ahp-session:/runtime", "chatStorageIdentity:ahp-chat:/runtime");
   for (const { key, value } of [

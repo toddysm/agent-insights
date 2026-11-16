@@ -180,6 +180,7 @@ export async function resolveAgentHostOwnership(
   const owner = owners[0]?.values;
   const authority = authorities[0]?.values;
   if (owners.length !== 1 || authorities.length !== 1 || !owner || !authority ||
+      owner.session_uri !== ownerId || authority.session_uri !== ownerId ||
       owner.provider !== "copilotcli" || !integer(owner.verified, 1) ||
       !integer(owner.is_chat_backing, 0) || !integer(authority.authority_version, 2) ||
       typeof owner.session_generation !== "string" || !owner.session_generation ||

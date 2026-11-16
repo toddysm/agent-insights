@@ -189,7 +189,9 @@ Support is intentionally limited to the qualified baseline:
   The latter mapping supports unreserved raw SDK IDs, not inferred filename IDs
   or a role guessed from the chat URI. Both paths require a verified `copilotcli` owner, normalized
   authority 2, matching owner/catalog generations, and equal catalog/projected
-  revisions. Legacy authority, stale projections, conflicting live owners,
+  revisions. Returned owner/authority keys must exactly match the selected owner,
+  even when a catalog declares case-insensitive key collations.
+  Legacy authority, stale projections, conflicting live owners,
   provider overrides, malformed deletion flags, provisional/hidden/deleted owners and malformed identity
   mappings are unavailable, not guessed or repaired. Archived retained chats
   remain readable and retain their archive flag.
