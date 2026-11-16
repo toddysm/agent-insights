@@ -119,12 +119,14 @@ pub(super) struct Query {
     pub filters: Vec<Filter>,
 }
 
-/// A placeholder-bound equality filter on a declared column or restricted JSON path.
+/// A bound equality/JSON-path filter or literal text prefix; prefix and JSON path are mutually exclusive.
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(super) struct Filter {
     pub column: String,
     pub parameter: String,
+    #[serde(default)]
+    pub prefix: bool,
     #[serde(default, deserialize_with = "present_path")]
     pub json_path: Option<Vec<PathPart>>,
 }

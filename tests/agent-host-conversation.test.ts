@@ -124,7 +124,8 @@ function input(
                 return false;
               }
               return value !== null && typeof value === "object" && "storage" in value
-                && value.storage === bindings.storage;
+                && value.storage === bindings.storage
+                && typeof bindings.prefix === "string" && String(item.values.key).startsWith(bindings.prefix);
             }));
           }
           const result = rows[queryId];
@@ -584,9 +585,11 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   const insertMetadata = writer.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)");
   writer.exec("BEGIN");
   for (let index = 0; index < 10_001; index++)
-    insertMetadata.run(`unrelated:${index}`, index % 2 ? "scalar-not-json" : JSON.stringify({
-      runtime: `unrelated-runtime:${index}`, storage: `unrelated-storage:${index}`,
+    insertMetadata.run(`unrelated:${index}`, JSON.stringify({
+      runtime: `unrelated-runtime:${index}`, storage: "copilotcli:/stored",
     }));
+  insertMetadata.run("unrelated-scalar", "scalar-not-json");
+  insertMetadata.run("unrelated-malformed", "{invalid-json");
   writer.exec("COMMIT");
   await writeFile(file, [start(), event("user.message", "u", { messageId: "logical", content: "synthetic only" })].map((value) => JSON.stringify(value)).join("\n"));
   const beforeFiles = (await readdir(root)).sort();

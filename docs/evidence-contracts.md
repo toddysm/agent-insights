@@ -192,8 +192,9 @@ Support is intentionally limited to the qualified baseline:
   combining their rows could qualify ownership that never existed in one commit.
   The reader does not alter journal mode or create missing WAL/SHM sidecars.
 - `sessions_v2`, `session_chat_catalogs`, `chats_v2` and scoped `metadata`
-  projections establish identity. Reverse identity lookups filter JSON `storage`
-  by the selected owner/chat; suppression and provider overrides use exact
+  projections establish identity. Reverse identity lookups filter both the
+  session/chat mapping-key namespace and JSON `storage` by the selected owner/chat;
+  suppression and provider overrides use exact
   metadata keys for stored and runtime identities. Unrelated metadata is not
   returned or charged against result budgets. Guarded JSON predicates treat
   malformed JSON as nonmatching, never a null match or a query-wide parse error.
@@ -479,6 +480,9 @@ Readers must validate their domain semantics before creating normalized facts.
 JSON-path equality filters guard extraction with `json_valid`; malformed JSON
 does not match, including when the bound comparison value is null. Readers must
 validate matched objects and cannot treat nonmatching rows as qualified evidence.
+Code-owned `prefix: true` filters instead require text bindings and compare a
+literal, case-sensitive prefix (no SQL wildcard interpretation); prefix and JSON
+path modes cannot be combined in one filter.
 
 Optional missing/incompatible inputs are typed unavailable values with controlled
 diagnostics, never empty result sets. They must remain visible as unavailable

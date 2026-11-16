@@ -187,6 +187,12 @@ function definition(): SqliteDefinition {
           { column: "payload", parameter: "answer", jsonPath: ["answer"] },
         ],
       },
+      {
+        id: "by_prefix",
+        table: "items",
+        columns: ["id", "payload", "amount"],
+        filters: [{ column: "id", parameter: "prefix", prefix: true }],
+      },
     ],
   });
 }
@@ -436,6 +442,18 @@ test("query parameters must match the declared filter names exactly", async (t) 
     );
     await set.dispose();
   }
+});
+
+test("literal text-prefix projections treat SQL wildcards as ordinary characters and reject non-text bindings", async (t) => {
+  const data = await fixture(t);
+  data.writer.prepare("INSERT INTO items VALUES(?,?,?)").run("row%_literal", "{}", 1);
+  data.writer.prepare("INSERT INTO items VALUES(?,?,?)").run("rowXXliteral", "{}", 2);
+  const set = await openSet(data);
+  const database = databaseInput(set);
+  const rows = await database.query("by_prefix", { prefix: "row%_" });
+  assert.deepEqual(rows.map((item) => item.values.id), ["row%_literal"]);
+  assert.deepEqual(await database.query("by_prefix", { prefix: "ROW%_" }), []);
+  await assert.rejects(database.query("by_prefix", { prefix: 7 }), code("SQLITE_BINDINGS"));
 });
 
 test("JSON field equality isolates malformed rows without matching them to null", async (t) => {

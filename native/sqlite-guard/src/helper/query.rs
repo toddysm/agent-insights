@@ -101,7 +101,10 @@ impl Definition {
                 return Err(Failure::Schema);
             }
             for filter in &query.filters {
-                if !table.columns.contains(&filter.column) || !identifier(&filter.parameter) {
+                if !table.columns.contains(&filter.column)
+                    || !identifier(&filter.parameter)
+                    || (filter.prefix && filter.json_path.is_some())
+                {
                     return Err(Failure::Schema);
                 }
                 if let Some(path) = &filter.json_path
@@ -247,7 +250,14 @@ fn compile(
     for filter in &query.filters {
         let column = quoted(&filter.column);
         let predicate;
-        if let Some(parts) = &filter.json_path {
+        if filter.prefix {
+            let value = bindings.get(&filter.parameter).ok_or(Failure::Bindings)?;
+            if !matches!(value, Cell::Text(_)) {
+                return Err(Failure::Bindings);
+            }
+            predicate = format!("substr({column}, 1, length(?)) COLLATE BINARY IS ?");
+            values.push(value.clone());
+        } else if let Some(parts) = &filter.json_path {
             let mut path = String::from("$");
             for part in parts {
                 match part {

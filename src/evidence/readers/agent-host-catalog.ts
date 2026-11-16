@@ -74,7 +74,10 @@ export const agentHostCatalogDefinition = sqliteDefinitionSchema.parse({
       id: "storage_identity",
       table: "metadata",
       columns: ["key", "value"],
-      filters: [{ column: "value", jsonPath: ["storage"], parameter: "storage" }],
+      filters: [
+        { column: "key", parameter: "prefix", prefix: true },
+        { column: "value", jsonPath: ["storage"], parameter: "storage" },
+      ],
     },
     {
       id: "metadata_key",
@@ -188,8 +191,11 @@ export async function resolveAgentHostOwnership(
   signal.throwIfAborted();
   // Guarded JSON filters exclude scalar/malformed values; only this owner/chat's mappings consume row budgets.
   const metadata: SqliteRow[] = [];
-  for (const storage of new Set([ownerId, chatId]))
-    metadata.push(...await catalog.query("storage_identity", { storage }));
+  for (const { storage, prefix } of [
+    { storage: ownerId, prefix: "sessionStorageIdentity:" },
+    { storage: chatId, prefix: "chatStorageIdentity:" },
+  ])
+    metadata.push(...await catalog.query("storage_identity", { storage, prefix }));
   const translations: { runtime: string; storage: string; row: SqliteRow; session: boolean; provider: string | null }[] = [];
   for (const row of metadata) {
     signal.throwIfAborted();
