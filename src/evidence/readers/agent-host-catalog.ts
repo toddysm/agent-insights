@@ -70,7 +70,18 @@ export const agentHostCatalogDefinition = sqliteDefinitionSchema.parse({
       columns: ["session_uri", "authority_version", "session_generation", "revision", "projected_revision"],
       filters: [{ column: "session_uri", parameter: "owner" }],
     },
-    { id: "identity_metadata", table: "metadata", columns: ["key", "value"], filters: [] },
+    {
+      id: "storage_identity",
+      table: "metadata",
+      columns: ["key", "value"],
+      filters: [{ column: "value", jsonPath: ["storage"], parameter: "storage" }],
+    },
+    {
+      id: "metadata_key",
+      table: "metadata",
+      columns: ["key", "value"],
+      filters: [{ column: "key", parameter: "key" }],
+    },
   ],
 });
 
@@ -175,8 +186,10 @@ export async function resolveAgentHostOwnership(
       authority.revision !== authority.projected_revision)
     return fail("Agent Host owner, generation or normalized catalog authority is unsupported or stale.");
   signal.throwIfAborted();
-  // Metadata has mixed JSON and scalar values. Never run json_extract over this heterogeneous table.
-  const metadata = await catalog.query("identity_metadata", {});
+  // Guarded JSON filters exclude scalar/malformed values; only this owner/chat's mappings consume row budgets.
+  const metadata: SqliteRow[] = [];
+  for (const storage of new Set([ownerId, chatId]))
+    metadata.push(...await catalog.query("storage_identity", { storage }));
   const translations: { runtime: string; storage: string; row: SqliteRow; session: boolean; provider: string | null }[] = [];
   for (const row of metadata) {
     signal.throwIfAborted();
@@ -211,7 +224,11 @@ export async function resolveAgentHostOwnership(
   const runtimeChat = translate(chatId, false);
   if (!runtimeOwner || !runtimeChat)
     return fail("Agent Host storage identity is ambiguous or reports a conflicting provider.");
-  const suppressed = metadata.filter((row) =>
+  const status: SqliteRow[] = [];
+  for (const identity of new Set([ownerId, runtimeOwner]))
+    for (const prefix of ["sessionTombstone:", "sessionHidden:", "sessionsV2Excluded:copilotcli:", "sessionProvisional:"])
+      status.push(...await catalog.query("metadata_key", { key: `${prefix}${identity}` }));
+  const suppressed = status.filter((row) =>
     [ownerId, runtimeOwner].some((identity) =>
       (row.values.key === `sessionTombstone:${identity}` && row.values.value === "true") ||
       row.values.key === `sessionHidden:${identity}` ||
@@ -219,7 +236,9 @@ export async function resolveAgentHostOwnership(
       (row.values.key === `sessionProvisional:${identity}` && row.values.value === "true")));
   observe(suppressed);
   if (suppressed.length) return fail("Agent Host owner is deleted, hidden or provisional.");
-  const providerOverrides = metadata.filter((row) => row.values.key === `chatAgentProvider:${chatId}`);
+  const providerOverrides: SqliteRow[] = [];
+  for (const identity of new Set([chatId, runtimeChat]))
+    providerOverrides.push(...await catalog.query("metadata_key", { key: `chatAgentProvider:${identity}` }));
   observe(providerOverrides);
   if (providerOverrides.some((row) => row.values.value !== "copilotcli"))
     return fail("Agent Host chat reports a different provider.");

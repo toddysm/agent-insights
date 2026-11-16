@@ -438,7 +438,7 @@ test("query parameters must match the declared filter names exactly", async (t) 
   }
 });
 
-test("JSON field equality is a code-owned projection and malformed source JSON is explicit", async (t) => {
+test("JSON field equality isolates malformed rows without matching them to null", async (t) => {
   const data = await fixture(t);
   const set = await openSet(data);
   assert.equal(
@@ -449,13 +449,13 @@ test("JSON field equality is a code-owned projection and malformed source JSON i
   await set.finish();
   await set.dispose();
   data.writer
-    .prepare("UPDATE items SET payload=?")
-    .run("PRIVATE_MARKER invalid json");
+    .prepare("INSERT INTO items VALUES(?,?,?)")
+    .run("unrelated", "PRIVATE_MARKER invalid json", 1);
   const bad = await openSet(data);
-  await assert.rejects(
-    databaseInput(bad).query("by_answer", { answer: "fictional" }),
-    code("SQLITE_DATA"),
-  );
+  const valid = await databaseInput(bad).query("by_answer", { answer: "fictional" });
+  assert.equal(valid.length, 1);
+  assert.equal(valid[0]?.values.id, "row-1");
+  assert.deepEqual(await databaseInput(bad).query("by_answer", { answer: null }), []);
 });
 
 test("unknown versions, views, generated columns and wrong primary keys cannot be silently admitted", async (t) => {

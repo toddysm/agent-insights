@@ -191,14 +191,22 @@ Support is intentionally limited to the qualified baseline:
   all catalog queries. Per-request/rollback-mode snapshots are unavailable:
   combining their rows could qualify ownership that never existed in one commit.
   The reader does not alter journal mode or create missing WAL/SHM sidecars.
-- `sessions_v2`, `session_chat_catalogs`, `chats_v2` and bounded `metadata`
-  projections establish identity. The metadata projection has mixed scalar/JSON
-  values; it is not queried with indiscriminate JSON extraction. Explicit
+- `sessions_v2`, `session_chat_catalogs`, `chats_v2` and scoped `metadata`
+  projections establish identity. Reverse identity lookups filter JSON `storage`
+  by the selected owner/chat; suppression and provider overrides use exact
+  metadata keys for stored and runtime identities. Unrelated metadata is not
+  returned or charged against result budgets. Guarded JSON predicates treat
+  malformed JSON as nonmatching, never a null match or a query-wide parse error.
+  Explicit
   `sessionStorageIdentity:`/`chatStorageIdentity:` mappings preserve runtime and
   storage namespaces. The stored chat identity is `chats_v2.chat_uri`, not its
   `storage_resource` backing (which may identify an SDK session).
   Compatibility mirrors are not unioned as additional chats.
   Schema/access/query failures remain controlled runtime failures.
+  Matching rows still share the boundary's 10,000-row/8-MiB result budgets;
+  excessive relevant mappings fail explicitly with `SQLITE_LIMIT`, never
+  truncation or arbitrary owner selection. Reverse lookups may scan the catalog
+  and remain subject to the existing query deadline and source-size limit.
 
 `message.text` preserves native `user.message.data.content` verbatim, including an
 empty submission. Optional `transformedContent` remains separate; no scaffold
@@ -468,6 +476,9 @@ supplies `MultiSourceInput.get(key)`. File roles expose bounded borrowed bytes;
 SQLite roles expose an observed `userVersion`, `snapshotScope` and named parameterized queries,
 not a database connection. Query results preserve bigint/binary cells internally.
 Readers must validate their domain semantics before creating normalized facts.
+JSON-path equality filters guard extraction with `json_valid`; malformed JSON
+does not match, including when the bound comparison value is null. Readers must
+validate matched objects and cannot treat nonmatching rows as qualified evidence.
 
 Optional missing/incompatible inputs are typed unavailable values with controlled
 diagnostics, never empty result sets. They must remain visible as unavailable

@@ -112,7 +112,21 @@ function input(
           else if (queryId === "session_backed_chats") assert.deepEqual(bindings, { storage: "copilotcli:/sdk-fictional" });
           else if (queryId === "owner" || queryId === "authority")
             assert.deepEqual(bindings, { owner: "copilotcli:/stored" });
-          else assert.equal(queryId, "identity_metadata");
+          else {
+            assert.ok(queryId === "storage_identity" || queryId === "metadata_key");
+            return Promise.resolve((rows.identity_metadata ?? []).filter((item) => {
+              if (queryId === "metadata_key") return item.values.key === bindings.key;
+              let value: unknown;
+              try {
+                value = JSON.parse(String(item.values.value));
+              } catch (error) {
+                if (!(error instanceof SyntaxError)) throw error;
+                return false;
+              }
+              return value !== null && typeof value === "object" && "storage" in value
+                && value.storage === bindings.storage;
+            }));
+          }
           const result = rows[queryId];
           assert.ok(result, "Only registered projections may be used.");
           return Promise.resolve(result);
@@ -403,6 +417,7 @@ test("ambiguous/deleted/wrong-provider/legacy/stale catalog ownership fails clos
     (rows) => { rows.identity_metadata?.push(row("metadata", { key: "sessionsV2Excluded:copilotcli:copilotcli:/stored", value: "excluded" })); },
     (rows) => { rows.identity_metadata?.push(row("metadata", { key: "sessionStorageIdentity:ahp-session:/other", value: '{"runtime":"ahp-session:/other","storage":"copilotcli:/stored","provider":"copilotcli"}' })); },
     (rows) => { rows.identity_metadata?.push(row("metadata", { key: "chatAgentProvider:copilotcli:/stored/chat", value: "claude" })); },
+    (rows) => { rows.identity_metadata?.push(row("metadata", { key: "chatAgentProvider:ahp-chat:/runtime", value: "claude" })); },
   ];
   for (const mutate of cases) {
     const rows = catalogRows();
@@ -533,7 +548,7 @@ test("native reads honor cancellation and reject underlying query failures rathe
   await assert.rejects(agentHostConversationReader.read(broken), /synthetic-query-failure/);
 });
 
-test("production reader preserves history/database/WAL bytes, original rows, and generation isolation", {
+test("native catalog isolates malformed JSON and large unrelated metadata while enforcing relevant-row limits", {
   skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-insights-native-chat-"));
@@ -564,6 +579,15 @@ test("production reader preserves history/database/WAL bytes, original rows, and
       writer.prepare(`INSERT INTO ${original.table} (${names.join(",")}) VALUES (${names.map(() => "?").join(",")})`)
         .run(...Object.values(original.values));
     }
+  writer.prepare("INSERT INTO chats_v2 (chat_uri, provider_data) VALUES (?, ?)")
+    .run("unrelated-corrupt-chat", "{malformed-json");
+  const insertMetadata = writer.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)");
+  writer.exec("BEGIN");
+  for (let index = 0; index < 10_001; index++)
+    insertMetadata.run(`unrelated:${index}`, index % 2 ? "scalar-not-json" : JSON.stringify({
+      runtime: `unrelated-runtime:${index}`, storage: `unrelated-storage:${index}`,
+    }));
+  writer.exec("COMMIT");
   await writeFile(file, [start(), event("user.message", "u", { messageId: "logical", content: "synthetic only" })].map((value) => JSON.stringify(value)).join("\n"));
   const beforeFiles = (await readdir(root)).sort();
   // SHM coordination may change; closing a parent SHM descriptor also releases the fixture writer's POSIX locks.
@@ -578,6 +602,8 @@ test("production reader preserves history/database/WAL bytes, original rows, and
   };
   const first = await service.readSet(selection, new AbortController().signal);
   assert.equal(first.events.length, 1, JSON.stringify(first.issues));
+  assert.ok(first.sessions[0]?.nativeIdentities?.some((identity) =>
+    identity.namespace === "agent-host-session" && identity.value === "ahp-session:/runtime"));
   assert.ok(first.sessions[0]?.references.some((ref) => ref.location.kind === "sqlite" && ref.location.fingerprint.length === 64));
   assert.deepEqual((await readdir(root)).sort(), beforeFiles);
   assert.deepEqual(await Promise.all(evidenceFiles.map((name) => readFile(path.join(root, name)))), beforeBytes);
@@ -586,6 +612,14 @@ test("production reader preserves history/database/WAL bytes, original rows, and
   assert.equal(service.view?.id, refreshed.id);
   assert.equal(first.events[0]?.kind === "message" ? first.events[0].instructionId : null,
     refreshed.events[0]?.kind === "message" ? refreshed.events[0].instructionId : null);
+  writer.exec("BEGIN");
+  for (let index = 0; index < 10_001; index++)
+    insertMetadata.run(`sessionStorageIdentity:conflict:${index}`, JSON.stringify({
+      runtime: `conflict:${index}`, storage: "copilotcli:/stored", provider: "copilotcli",
+    }));
+  writer.exec("COMMIT");
+  await assert.rejects(service.readSet(selection, new AbortController().signal), { code: "SQLITE_LIMIT" });
+  assert.equal(service.view, null);
   await service.close();
   assert.equal(service.view, null);
 });

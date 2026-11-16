@@ -226,7 +226,7 @@ fn binding_bytes(bindings: &BTreeMap<String, Cell>) -> Result<usize, Failure> {
     Ok(size)
 }
 
-/// Build a SELECT with placeholders, deterministic primary-key ordering and one-over row detection.
+/// Build bounded projections; malformed JSON never matches a JSON-path predicate, even a null binding.
 fn compile(
     query: &Query,
     table: &Table,
@@ -245,7 +245,8 @@ fn compile(
     let mut values = Vec::new();
     let mut predicates = Vec::new();
     for filter in &query.filters {
-        let mut column = quoted(&filter.column);
+        let column = quoted(&filter.column);
+        let predicate;
         if let Some(parts) = &filter.json_path {
             let mut path = String::from("$");
             for part in parts {
@@ -257,8 +258,12 @@ fn compile(
                     PathPart::Index(index) => path.push_str(&format!("[{index}]")),
                 }
             }
-            column = format!("json_extract({column}, ?)");
+            predicate = format!(
+                "CASE WHEN json_valid({column}) THEN json_extract({column}, ?) IS ? ELSE 0 END"
+            );
             values.push(Cell::Text(path));
+        } else {
+            predicate = format!("{column} IS ?");
         }
         values.push(
             bindings
@@ -266,7 +271,7 @@ fn compile(
                 .ok_or(Failure::Bindings)?
                 .clone(),
         );
-        predicates.push(format!("{column} IS ?"));
+        predicates.push(predicate);
     }
     let mut sql = format!(
         "SELECT {} FROM main.{}",
