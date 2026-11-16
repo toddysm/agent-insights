@@ -439,7 +439,7 @@ test("native reads honor cancellation and reject underlying query failures rathe
   await assert.rejects(agentHostConversationReader.read(broken), /synthetic-query-failure/);
 });
 
-test("production reader uses guarded original rows, preserves source bytes, and invalidates prior generations", {
+test("production reader preserves history/database/WAL bytes, original rows, and generation isolation", {
   skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-insights-native-chat-"));
@@ -472,7 +472,9 @@ test("production reader uses guarded original rows, preserves source bytes, and 
     }
   await writeFile(file, [start(), event("user.message", "u", { messageId: "logical", content: "synthetic only" })].map((value) => JSON.stringify(value)).join("\n"));
   const beforeFiles = (await readdir(root)).sort();
-  const beforeBytes = await Promise.all(beforeFiles.map((name) => readFile(path.join(root, name))));
+  // SHM coordination may change; closing a parent SHM descriptor also releases the fixture writer's POSIX locks.
+  const evidenceFiles = beforeFiles.filter((name) => name !== "catalog.db-shm");
+  const beforeBytes = await Promise.all(evidenceFiles.map((name) => readFile(path.join(root, name))));
   const selection = {
     readerId: "agent-host-conversations",
     sources: [
@@ -481,10 +483,10 @@ test("production reader uses guarded original rows, preserves source bytes, and 
     ],
   };
   const first = await service.readSet(selection, new AbortController().signal);
-  assert.equal(first.events.length, 1);
+  assert.equal(first.events.length, 1, JSON.stringify(first.issues));
   assert.ok(first.sessions[0]?.references.some((ref) => ref.location.kind === "sqlite" && ref.location.fingerprint.length === 64));
   assert.deepEqual((await readdir(root)).sort(), beforeFiles);
-  assert.deepEqual(await Promise.all(beforeFiles.map((name) => readFile(path.join(root, name)))), beforeBytes);
+  assert.deepEqual(await Promise.all(evidenceFiles.map((name) => readFile(path.join(root, name)))), beforeBytes);
   const refreshed = await service.readSet(selection, new AbortController().signal);
   assert.notEqual(refreshed.id, first.id);
   assert.equal(service.view?.id, refreshed.id);
