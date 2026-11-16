@@ -174,6 +174,13 @@ captured content, invokes producer restoration/migration APIs, calls a model or
 persists a transcript. Local saved-chat #11 remains a separate, unmodified contract.
 Native execution accounting and session overlay usage remain #32's responsibility.
 
+Native history has separate retention ceilings: 256 KiB per physical record
+(excluding LF), 8 MiB cumulative bytes (including framing and blanks), 8,192
+distinct event IDs and 32,768 physical records. IDs in malformed envelopes consume the
+identity budget; exact replays, malformed lines and blanks consume the physical
+record budget. Exceeding any ceiling rejects the whole read with `READ_LIMIT`
+(413), never a truncated transcript or partially published view.
+
 Support is intentionally limited to the qualified baseline:
 
 - One retained format-1 `session.start`, first among valid native envelopes,

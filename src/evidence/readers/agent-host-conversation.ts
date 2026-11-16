@@ -5,6 +5,7 @@
  */
 import { isDeepStrictEqual } from "node:util";
 import { z } from "zod";
+import { RuntimeError } from "../../runtime/errors.js";
 import { parseReadView, type ReadView, type EvidenceReference } from "../contracts.js";
 import type { MultiSourceInput, MultiSourceReader } from "../source-access.js";
 import { jsonLines } from "./jsonl.js";
@@ -23,6 +24,14 @@ interface NativeEvent {
 /** Mutable message assembly is confined to this generation; validation freezes published facts. */
 type Message = Extract<ReadView["events"][number], { kind: "message" }>;
 type NativeMessage = NonNullable<Message["nativeMessage"]>;
+
+/** Independent retention ceilings include malformed records, blanks and exact replay anchors. */
+const historyLimits = Object.freeze({
+  recordBytes: 256 * 1024,
+  totalBytes: 8 * 1024 * 1024,
+  identities: 8192,
+  records: 32768,
+});
 
 /** Reject impossible calendar dates before Date.parse can normalize them to another day. */
 const nativeTimestamp = z.iso.datetime({ offset: true });
@@ -65,6 +74,7 @@ function messageKey(event: NativeEvent): string {
  * Only retained user.message records establish instruction identity. Deltas, queued snapshots,
  * tools and lifecycle events never become extra instructions. Unsupported or incomplete data
  * remains visible through original-anchor diagnostics and unavailable/partial coverage.
+ * Rejects with READ_LIMIT (413) before publishing any result when retention ceilings are exceeded.
  */
 async function read(input: MultiSourceInput): Promise<ReadView> {
   const startedAtMs = Date.now();
@@ -129,6 +139,13 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
   for await (const line of jsonLines({
     readId: input.readId, sourceId: history.sourceId,
     bytes: history.bytes, signal: input.signal,
+  }, {
+    maxRecordBytes: historyLimits.recordBytes,
+    onLine(line) {
+      if (line.byteLength > historyLimits.recordBytes || line.line > historyLimits.records ||
+          line.byteOffset + line.byteLength + (line.terminated ? 1 : 0) > historyLimits.totalBytes)
+        throw new RuntimeError("READ_LIMIT", "Native history exceeded its record or retained-byte limit.", 413);
+    },
   })) {
     const reference: EvidenceReference = {
       sourceId: history.sourceId,
@@ -141,8 +158,11 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       continue;
     }
     const value = line.value;
-    if (!object(value) || !identifier(value.id) || !identifier(value.type) || !object(value.data)) {
-      const id = object(value) ? identifier(value.id) : null;
+    const id = object(value) ? identifier(value.id) : null;
+    if (id !== null && !records.has(id) && !malformedIds.has(id) &&
+        records.size + malformedIds.size >= historyLimits.identities)
+      throw new RuntimeError("READ_LIMIT", "Native history exceeded its distinct-event identity limit.", 413);
+    if (!object(value) || id === null || !identifier(value.type) || !object(value.data)) {
       if (id !== null) {
         const previous = records.get(id);
         if (previous) {
@@ -158,7 +178,6 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       issue(history.sourceId, "unsupported-schema", "Native event envelope is unsupported.", [reference]);
       continue;
     }
-    const id = String(value.id);
     const previous = records.get(id);
     if (previous) {
       previous.references.push(reference);

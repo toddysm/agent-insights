@@ -70,7 +70,7 @@ function catalogRows(): Record<string, SqliteRow[]> {
   };
 }
 
-/** Borrow synthetic bytes in small, UTF-8-splitting pieces; query bindings must be code-owned exact lookups. */
+/** Borrow synthetic bytes in seven-byte chunks by default; larger boundary fixtures may choose bounded chunks. */
 function input(
   records: readonly unknown[],
   options: {
@@ -82,6 +82,7 @@ function input(
     signal?: AbortSignal;
     userVersion?: number;
     metadataNoCase?: boolean;
+    chunkBytes?: number;
   } = {},
 ): MultiSourceInput {
   const readId = options.readId ?? "test-read";
@@ -99,8 +100,8 @@ function input(
           available: true, kind: "file", sourceId,
           bytes: {
             async *[Symbol.asyncIterator]() {
-              for (let offset = 0; offset < bytes.length; offset += 7)
-                yield bytes.subarray(offset, offset + 7);
+              for (let offset = 0; offset < bytes.length; offset += options.chunkBytes ?? 7)
+                yield bytes.subarray(offset, offset + (options.chunkBytes ?? 7));
             },
           },
         };
@@ -223,6 +224,69 @@ test("exact event/logical-message replays merge anchors, while repeated text rem
   assert.equal(view.events[0]?.references.length, 3);
   assert.deepEqual(view.events[0]?.kind === "message" ? view.events[0].nativeMessage?.eventIds : null, ["one", "replayed"]);
   assert.deepEqual(view.events.map((item) => item.nativeId), ["one", "new"]);
+});
+
+test("native retention accepts exact record/byte ceilings and rejects one byte over without truncation", async () => {
+  const first = JSON.stringify(start()) + "\n";
+  const submission = event("user.message", "bounded", { content: "" });
+  const recordOverhead = Buffer.byteLength(JSON.stringify(submission));
+  const content = "\u00e9".repeat(Math.floor((256 * 1024 - recordOverhead) / 2));
+  submission.data.content = content + "x".repeat(256 * 1024 - recordOverhead - Buffer.byteLength(content));
+  const record = JSON.stringify(submission);
+  assert.equal(Buffer.byteLength(record), 256 * 1024);
+  const exactRecord = await agentHostConversationReader.read(input([], { raw: first + record, chunkBytes: 64 * 1024 }));
+  assert.equal(exactRecord.events.length, 1);
+  await assert.rejects(
+    agentHostConversationReader.read(input([], { raw: first + record + " ", chunkBytes: 64 * 1024 })),
+    { code: "READ_LIMIT", status: 413 },
+  );
+  const fullRecord = JSON.stringify(event("user.message", "payload", { content: "x".repeat(256 * 1024 - 512) })) + "\n";
+  const repeats = Math.floor((8 * 1024 * 1024 - Buffer.byteLength(first)) / Buffer.byteLength(fullRecord));
+  const remaining = 8 * 1024 * 1024 - Buffer.byteLength(first) - repeats * Buffer.byteLength(fullRecord);
+  const raw = first + fullRecord.repeat(repeats) + " ".repeat(remaining);
+  assert.equal(Buffer.byteLength(raw), 8 * 1024 * 1024);
+  const exactBytes = await agentHostConversationReader.read(input([], { raw, chunkBytes: 64 * 1024 }));
+  assert.equal(exactBytes.events.length, 1);
+  assert.equal(exactBytes.events[0]?.references.length, repeats);
+  await assert.rejects(
+    agentHostConversationReader.read(input([], { raw: raw + " ", chunkBytes: 64 * 1024 })),
+    { code: "READ_LIMIT", status: 413 },
+  );
+});
+
+test("distinct-event ceiling counts malformed identities but not repeated envelopes", async () => {
+  for (const malformed of [false, true]) {
+    const records = [start(), ...Array.from({ length: 8191 }, (_, index) =>
+      malformed ? { id: `damaged-${index}` } : event("session.idle", `idle-${index}`, {}))];
+    const view = await agentHostConversationReader.read(input([...records, records[1]], { chunkBytes: 64 * 1024 }));
+    assert.equal(view.sessions.length, 1);
+    await assert.rejects(
+      agentHostConversationReader.read(input([...records, malformed ? { id: "one-over" } : event("session.idle", "one-over", {})],
+        { chunkBytes: 64 * 1024 })),
+      { code: "READ_LIMIT", status: 413 },
+    );
+  }
+});
+
+test("physical-record ceiling includes replay anchors, malformed diagnostics and blank lines", async () => {
+  const first = JSON.stringify(start()) + "\n";
+  for (const record of [
+    JSON.stringify(event("user.message", "replay", { content: "bounded" })) + "\n",
+    "{\n",
+    "\n",
+  ]) {
+    const raw = first + record.repeat(32767);
+    const view = await agentHostConversationReader.read(input([], { raw, chunkBytes: 64 * 1024 }));
+    assert.equal(view.sessions.length, 1);
+    if (record.startsWith("{\"id\"")) {
+      assert.equal(view.events.length, 1);
+      assert.equal(view.events[0]?.references.length, 32767);
+    } else if (record === "{\n") assert.equal(view.issues.filter((issue) => issue.code === "unsupported-schema").length, 32767);
+    await assert.rejects(
+      agentHostConversationReader.read(input([], { raw: raw + record, chunkBytes: 64 * 1024 })),
+      { code: "READ_LIMIT", status: 413 },
+    );
+  }
 });
 
 test("conflicting native or logical identities remain diagnosed instead of inventing multiple instructions", async () => {
@@ -904,6 +968,11 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   assert.equal(service.view?.id, refreshed.id);
   assert.equal(first.events[0]?.kind === "message" ? first.events[0].instructionId : null,
     refreshed.events[0]?.kind === "message" ? refreshed.events[0].instructionId : null);
+  const admittedHistory = await readFile(file);
+  await writeFile(file, JSON.stringify(start()) + "\n" + " ".repeat(256 * 1024 + 1));
+  await assert.rejects(service.readSet(selection, new AbortController().signal), { code: "READ_LIMIT", status: 413 });
+  assert.equal(service.view, null);
+  await writeFile(file, admittedHistory);
   for (const { key, value } of [
     { key: "sessionTombstone:copilotcli:/stored", value: null },
     { key: "sessionProvisional:ahp-session:/runtime", value: 1n },

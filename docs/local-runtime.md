@@ -428,6 +428,12 @@ reported as a successful empty transcript. Unsupported schemas/pins, denied
 access and missing native preparation remain explicit errors or limitations.
 The read does not require the session overlay, optional telemetry or a model.
 
+Native history additionally permits at most 256 KiB per physical record
+(excluding LF), 8 MiB total bytes including framing/blanks, 8,192 distinct event
+IDs (including malformed envelopes), and 32,768 physical records (including
+replays, malformed lines and blanks). Crossing a limit returns `READ_LIMIT`
+(413) and clears the previous view; no truncated transcript is published.
+
 The backend implementation does not add automatic native-source discovery or a
 new report UI. The current single-file extension/scan controls are not native
 conversation selectors. #12 owns source discovery/correlation, #14 owns report
