@@ -688,6 +688,41 @@ test("metadata key collations cannot substitute differently spelled mappings or 
     || reference.location.table !== "metadata"));
 });
 
+test("reverse mappings must parse to the storage identity selected by the native predicate", async () => {
+  for (const { prefix, storage } of [
+    { prefix: "session", storage: "copilotcli:/stored" },
+    { prefix: "chat", storage: "copilotcli:/stored/chat" },
+  ]) {
+    const rows = catalogRows();
+    rows.identity_metadata = [];
+    const conflicting = row("metadata", {
+      key: `${prefix}StorageIdentity:duplicate-runtime`,
+      value: `{"runtime":"duplicate-runtime","storage":${JSON.stringify(storage)},"storage":"copilotcli:/other","provider":"copilotcli"}`,
+    });
+    const source = input([start()], { rows });
+    const view = await agentHostConversationReader.read({
+      ...source,
+      get(key) {
+        const selected = source.get(key);
+        if (!selected.available || selected.kind !== "sqlite") return selected;
+        return {
+          ...selected,
+          query(queryId, bindings) {
+            if (queryId === "storage_identity" && bindings.prefix === `${prefix}StorageIdentity:`)
+              return Promise.resolve([conflicting]);
+            return selected.query(queryId, bindings);
+          },
+        };
+      },
+    });
+    assert.equal(view.sessions.length, 0);
+    assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.key[0]?.value === conflicting.values.key
+        && reference.location.fingerprint === conflicting.fingerprint)));
+  }
+});
+
 test("recorded session-backed chats without provider data resolve by storage, never chat names or guessed owners", async () => {
   const rows = catalogRows();
   const stored = row("chats_v2", {
@@ -885,6 +920,20 @@ test("native catalog isolates malformed JSON and large unrelated metadata while 
   assert.ok(exactKeys.sessions[0]?.references.every((reference) => reference.location.kind !== "sqlite"
     || reference.location.table !== "metadata"));
   for (const { key } of aliases) writer.prepare("DELETE FROM metadata WHERE key = ?").run(key);
+  for (const { prefix, storage } of [
+    { prefix: "session", storage: "copilotcli:/stored" },
+    { prefix: "chat", storage: "copilotcli:/stored/chat" },
+  ]) {
+    const key = `${prefix}StorageIdentity:duplicate-runtime`;
+    insertMetadata.run(key,
+      `{"runtime":"duplicate-runtime","storage":${JSON.stringify(storage)},"storage":"copilotcli:/other","provider":"copilotcli"}`);
+    const rejected = await service.readSet(selection, new AbortController().signal);
+    assert.equal(rejected.sessions.length, 0);
+    assert.ok(rejected.issues.some((issue) => issue.code === "ambiguous-session"
+      && issue.references?.some((reference) => reference.location.kind === "sqlite"
+        && reference.location.key[0]?.value === key)));
+    writer.prepare("DELETE FROM metadata WHERE key = ?").run(key);
+  }
   for (const { key, value } of [
     { key: "sessionStorageIdentity:copilotcli:/stored", value: "{malformed-json" },
     { key: "chatStorageIdentity:copilotcli:/stored/chat", value: '{"runtime":"copilotcli:/stored/chat","storage":"copilotcli:/other"}' },

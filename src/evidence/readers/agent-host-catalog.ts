@@ -206,6 +206,7 @@ export async function resolveAgentHostOwnership(
     const value = jsonObject(row.values.value);
     if (!value || typeof value.runtime !== "string" || !value.runtime ||
         typeof value.storage !== "string" || !value.storage ||
+        value.storage !== (session ? ownerId : chatId) ||
         key !== `${session ? "session" : "chat"}StorageIdentity:${value.runtime}` ||
         (session && typeof value.provider !== "string"))
       {

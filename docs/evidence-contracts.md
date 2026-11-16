@@ -214,7 +214,10 @@ Support is intentionally limited to the qualified baseline:
   malformed JSON as nonmatching, never a null match or a query-wide parse error.
   Explicit
   `sessionStorageIdentity:`/`chatStorageIdentity:` mappings preserve runtime and
-  storage namespaces. The stored chat identity is `chats_v2.chat_uri`, not its
+  storage namespaces. Each returned mapping must also parse to the selected
+  storage identity; disagreement between SQLite extraction and JSON parsing
+  cannot silently trigger stored-identity fallback.
+  The stored chat identity is `chats_v2.chat_uri`, not its
   `storage_resource` backing (which may identify an SDK session).
   Stored-identity fallback requires both an absent reverse mapping and an absent
   exact forward mapping key; malformed or conflicting forward mappings remain
