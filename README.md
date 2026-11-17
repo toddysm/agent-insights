@@ -13,7 +13,10 @@ separately. No editor settings or private sessions are changed automatically.
 ## Experience design
 
 The [session-insights HTML walkthrough](design/session-insights/index.html)
-uses synthetic data to explore the proposed report and evidence drill-downs.
+uses synthetic data to explore the revision-2 read-only report, evidence
+drill-downs, source refresh and explicit analysis lifecycle. It does not read
+real captures, call a model or save report history. Experience approval in
+[#3](https://github.com/toddysm/agent-insights/issues/3) remains a separate gate.
 Open it locally in a browser; no backend or build is required.
 See the [walkthrough guide](design/session-insights/README.md) for scenarios,
 limitations, and validation instructions.

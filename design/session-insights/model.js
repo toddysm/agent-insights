@@ -1,4 +1,4 @@
-/** Synthetic evidence and in-memory interpretation edits; never reads captures or contacts a provider. */
+/** Synthetic read-only evidence and explicit in-memory source/analysis lifecycles; no capture access or provider calls. */
 const InsightsModel = (() => {
   const taskSeeds = [
     {
@@ -13,7 +13,7 @@ const InsightsModel = (() => {
       id: "t2",
       title: "Fix date filtering",
       status: "Completed",
-      evidence: "User-confirmed",
+      evidence: "Source acceptance",
       prompt: "Next, fix date filtering so the end date is included.",
       range: [15, 22],
     },
@@ -211,12 +211,6 @@ const InsightsModel = (() => {
     "Repeated requirement",
     "Rejected approach",
   ];
-  const categories = [
-    ...steeringCategories,
-    "Requested clarification",
-    "New requirement",
-    "Routine approval",
-  ];
 
   /** Return a fresh synthetic capture; modes deliberately remove evidence rather than replace missing values with zero. */
   function createState(mode = "complete") {
@@ -234,9 +228,14 @@ const InsightsModel = (() => {
       content: mode !== "partial",
       telemetry: mode !== "transcript",
       analyzed: !["partial", "analysis-off", "empty"].includes(mode),
-      revision: 0,
-      analysisStale: false,
-      nextTask: 1,
+      readId: 1,
+      sourceState: "ready",
+      runSequence: 0,
+      run: null,
+      sourceAcceptance: Object.freeze({
+        id: "C02",
+        text: "Date filtering now includes the end date; that is what I needed.",
+      }),
       sessionInstruction: Object.freeze({
         id: "session-opening",
         turn: 0,
@@ -258,17 +257,9 @@ const InsightsModel = (() => {
         evidence: task.evidence,
         range: [...task.range],
         instructionIds: Object.freeze([`prompt-${task.id}`]),
-        excluded: false,
-        corrected: false,
       })),
-      signals: structuredClone(signalSeeds).map((signal) => ({
-        ...signal,
-        confirmed: false,
-      })),
-      artifacts: structuredClone(artifactSeeds).map((artifact) => ({
-        ...artifact,
-        confirmed: false,
-      })),
+      signals: structuredClone(signalSeeds),
+      artifacts: structuredClone(artifactSeeds),
       intervals: structuredClone(intervals),
       tools: toolNames.flatMap((names, group) =>
         names.map((name, index) => ({
@@ -303,17 +294,17 @@ const InsightsModel = (() => {
     return state;
   }
 
-  /** Resolve a known task, including excluded tasks; invalid deep links are errors, not a different task. */
+  /** Resolve a known inferred task; invalid deep links never substitute a different record. */
   function taskById(state, id) {
     const task = state.tasks.find((item) => item.id === id);
     if (!task)
       throw new RangeError(
-        "That task is not present in this demo. It may have been reset or merged.",
+        "That task is not present in this source read.",
       );
     return task;
   }
 
-  /** Resolve preserved source instructions independently of editable task ranges or titles. */
+  /** Resolve original source instructions independently of inferred task boundaries. */
   function instructionsForTask(state, id) {
     return taskById(state, id).instructionIds.map((sourceId) => {
       const source = state.instructions.find((item) => item.id === sourceId);
@@ -323,15 +314,15 @@ const InsightsModel = (() => {
     });
   }
 
-  /** Label missing, unallocated, or excluded attribution without inventing an active task interpretation. */
+  /** Label unallocated or unanalyzed attribution without inventing a task interpretation. */
   function taskLabel(state, id) {
     if (!id) return "Unallocated";
     const task = taskById(state, id);
     if (!state.analyzed) return "Not analyzed";
-    return task.excluded ? `Unallocated / ${task.title} excluded` : task.title;
+    return task.title;
   }
 
-  /** Calculate unique task associations from the artifact's recorded operations after interpretation edits. */
+  /** Calculate unique task associations from the artifact's recorded operations. */
   function artifactTasks(state, artifact) {
     return [
       ...new Set(
@@ -356,6 +347,8 @@ const InsightsModel = (() => {
 
   /** Derive recorded metrics for the whole capture or an event-attributed task; null denotes unavailable coverage. */
   function metrics(state, taskId = null) {
+    if (!state.imported || state.sourceState !== "ready")
+      throw new RangeError("Source evidence is unavailable for this read.");
     if (taskId) taskById(state, taskId);
     const tools = state.tools.filter(
       (item) => !taskId || item.taskId === taskId,
@@ -378,10 +371,10 @@ const InsightsModel = (() => {
       !state.telemetry ||
       requests.some((item) => item.input === null || item.output === null);
     return {
-      tasks: state.tasks.filter((item) => !item.excluded),
-      completed: state.tasks.filter(
-        (item) => !item.excluded && item.status === "Completed",
-      ).length,
+      tasks: state.analyzed ? state.tasks : [],
+      completed: state.analyzed
+        ? state.tasks.filter((item) => item.status === "Completed").length
+        : null,
       steering: state.analyzed ? signals.length : null,
       artifacts: state.content && state.telemetry ? artifacts.length : null,
       deliverables:
@@ -416,213 +409,49 @@ const InsightsModel = (() => {
     };
   }
 
-  /** Mark interpretation edits as requiring a new assessment, without running a model or changing source usage. */
-  function changed(state) {
-    state.revision += 1;
-    state.analysisStale = true;
+  /** Reread only the selected synthetic source; discard interpretations and supersede any old run, never analyze automatically. */
+  function refreshSource(state, sourceState = "ready") {
+    if (!["ready", "changed", "unavailable"].includes(sourceState))
+      throw new RangeError("Unknown source-read result.");
+    if (!state.imported)
+      throw new RangeError("Select a source before refreshing.");
+    state.readId += 1;
+    state.sourceState = sourceState;
+    state.analyzed = false;
+    if (state.run) state.run.status = "superseded";
   }
 
-  /** Reject empty task names instead of silently saving an unusable interpretation. */
-  function validatedTitle(title) {
-    const trimmed = title.trim();
-    if (!trimmed || trimmed.length > 120)
-      throw new RangeError("Use a task title between 1 and 120 characters.");
-    return trimmed;
-  }
-
-  /** Save a user-supplied task label in this page's memory. */
-  function renameTask(state, id, title) {
-    const value = validatedTitle(title);
-    const task = taskById(state, id);
-    task.title = value;
-    task.corrected = true;
-    changed(state);
-  }
-
-  /** Reassign all evidence collections together so task edits cannot leave contradictory resource counts. */
-  function reassign(state, predicate, destination) {
-    [state.tools, state.requests, state.signals, state.intervals].forEach(
-      (collection) => {
-        collection.forEach((record) => {
-          if (predicate(record)) record.taskId = destination;
-        });
-      },
-    );
-  }
-
-  /** Validate and sort adjacent active ranges before either previewing or mutating a single-range merge. */
-  function mergeSelection(state, ids) {
-    const selected = [...new Set(ids)]
-      .map((id) => taskById(state, id))
-      .sort((a, b) => a.range[0] - b.range[0]);
-    if (selected.length < 2 || selected.some((task) => task.excluded))
-      throw new RangeError("Select at least two active tasks to merge.");
-    if (
-      selected.some(
-        (task, index) =>
-          index > 0 && selected[index - 1].range[1] + 1 !== task.range[0],
-      )
-    )
-      throw new RangeError(
-        "This single-range mockup can merge only adjacent task ranges. Select contiguous tasks without gaps.",
-      );
-    return selected;
-  }
-
-  /** Merge adjacent active tasks; keep every source record and derive completion from their outcomes. */
-  function mergeTasks(state, ids, title) {
-    const selected = mergeSelection(state, ids);
-    const value = validatedTitle(title);
-    const id = `merged-${state.nextTask++}`;
-    const merged = {
-      id,
-      title: value,
-      status: selected.every((task) => task.status === "Completed")
-        ? "Completed"
-        : "Partial",
-      evidence: "Derived from merged outcomes",
-      instructionIds: Object.freeze([
-        ...new Set(selected.flatMap((task) => task.instructionIds)),
-      ]),
-      range: [
-        Math.min(...selected.map((task) => task.range[0])),
-        Math.max(...selected.map((task) => task.range[1])),
-      ],
-      corrected: true,
-      excluded: false,
+  /** Start one acknowledged, content-bearing fixture run; reject missing evidence or overlapping runs without changing state. */
+  function beginAnalysis(state, acknowledged) {
+    if (acknowledged !== true)
+      throw new RangeError("Acknowledge the selected scope and destination first.");
+    if (!state.imported || state.sourceState !== "ready" || !state.content)
+      throw new RangeError("Available message content is required for analysis.");
+    if (state.run?.status === "running")
+      throw new RangeError("Cancel or finish the running analysis first.");
+    state.analyzed = false;
+    state.run = {
+      id: ++state.runSequence,
+      readId: state.readId,
+      status: "running",
     };
-    reassign(state, (record) => ids.includes(record.taskId), id);
-    state.tasks = [
-      ...state.tasks.filter((task) => !ids.includes(task.id)),
-      merged,
-    ].sort((a, b) => a.range[0] - b.range[0]);
-    changed(state);
-    return id;
+    return state.run.id;
   }
 
-  /** Split one active task at a user-selected turn; preserve usage and mark the new outcome as uncertain. */
-  function splitTask(state, id, turn, title) {
-    const task = taskById(state, id);
-    const value = validatedTitle(title);
+  /** Settle only a still-running run for this exact source read; reject late/cancelled results and never attach them to a newer view. */
+  function finishAnalysis(state, runId, status) {
+    if (!["complete", "failed", "cancelled"].includes(status))
+      throw new RangeError("Unknown analysis result.");
     if (
-      !Number.isInteger(turn) ||
-      turn <= task.range[0] ||
-      turn > task.range[1] ||
-      task.excluded
+      !state.run ||
+      state.run.id !== runId ||
+      state.run.status !== "running" ||
+      state.run.readId !== state.readId ||
+      state.sourceState !== "ready"
     )
-      throw new RangeError(
-        "Choose a split turn inside the selected active task.",
-      );
-    const nextId = `split-${state.nextTask++}`;
-    const next = {
-      ...task,
-      id: nextId,
-      title: value,
-      range: [turn, task.range[1]],
-      status: "Uncertain",
-      evidence: "Needs outcome review",
-      corrected: true,
-    };
-    reassign(
-      state,
-      (record) => record.taskId === id && record.turn >= turn,
-      nextId,
-    );
-    task.range = [task.range[0], turn - 1];
-    task.corrected = true;
-    task.status = "Uncertain";
-    task.evidence = "Needs outcome review";
-    state.tasks.push(next);
-    state.tasks.sort((a, b) => a.range[0] - b.range[0]);
-    changed(state);
-    return nextId;
-  }
-
-  /** Adjust a non-overlapping active range; reject conflicts atomically and leave displaced records unallocated. */
-  function adjustRange(state, id, start, end) {
-    const task = taskById(state, id);
-    if (
-      !Number.isInteger(start) ||
-      !Number.isInteger(end) ||
-      start < 1 ||
-      end > 28 ||
-      start > end
-    )
-      throw new RangeError("Use an inclusive turn range between 1 and 28.");
-    if (task.excluded)
-      throw new RangeError("Restore this task before changing its segment.");
-    const overlap = state.tasks.find(
-      (other) =>
-        other.id !== id && start <= other.range[1] && end >= other.range[0],
-    );
-    if (overlap)
-      throw new RangeError(
-        `This range overlaps "${overlap.title}". Keep task ranges separate, including excluded tasks.`,
-      );
-    reassign(
-      state,
-      (record) =>
-        record.taskId === id && (record.turn < start || record.turn > end),
-      null,
-    );
-    reassign(state, (record) => record.turn >= start && record.turn <= end, id);
-    task.range = [start, end];
-    task.corrected = true;
-    task.status = "Uncertain";
-    task.evidence = "Needs outcome review";
-    changed(state);
-  }
-
-  /** Exclude or restore an interpretation without deleting its original events or session totals. */
-  function excludeTask(state, id, excluded) {
-    taskById(state, id).excluded = excluded;
-    changed(state);
-  }
-
-  /** Save a human correction to one interaction's category; tags do not multiply the counted message. */
-  function classifySignal(state, id, category) {
-    const signal = state.signals.find((item) => item.id === id);
-    if (!signal || !categories.includes(category))
-      throw new RangeError(
-        "Select a known interaction and involvement category.",
-      );
-    signal.category = category;
-    signal.tags = [category];
-    signal.confirmed = true;
-    changed(state);
-  }
-
-  /** Update an artifact's reviewable purpose; unknown remains a valid, explicit classification. */
-  function classifyArtifact(state, id, purpose) {
-    const artifact = state.artifacts.find((item) => item.id === id);
-    if (
-      !artifact ||
-      ![
-        "Deliverable",
-        "Temporary helper",
-        "Supporting artifact",
-        "Unknown",
-      ].includes(purpose)
-    )
-      throw new RangeError("Select a known artifact and purpose.");
-    artifact.purpose = purpose;
-    artifact.confirmed = true;
-    changed(state);
-  }
-
-  /** Record an explicit user outcome correction without presenting it as tool-verified evidence. */
-  function setOutcome(state, id, status) {
-    if (
-      !["Completed", "Partial", "Blocked", "Abandoned", "Uncertain"].includes(
-        status,
-      )
-    )
-      throw new RangeError("Choose a supported outcome.");
-    const task = taskById(state, id);
-    task.status = status;
-    task.evidence = "User-confirmed";
-    task.corrected = true;
-    changed(state);
+      throw new RangeError("This result is no longer current; nothing was applied.");
+    state.run.status = status;
+    state.analyzed = status === "complete";
   }
 
   return {
@@ -633,16 +462,9 @@ const InsightsModel = (() => {
     artifactTasks,
     unionMinutes,
     metrics,
-    renameTask,
-    mergeSelection,
-    mergeTasks,
-    splitTask,
-    adjustRange,
-    excludeTask,
-    classifySignal,
-    classifyArtifact,
-    setOutcome,
-    categories,
+    refreshSource,
+    beginAnalysis,
+    finishAnalysis,
     steeringCategories,
   };
 })();

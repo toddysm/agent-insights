@@ -34,30 +34,28 @@
         <a href="#prompts" data-nav="prompts"
           ><span aria-hidden="true">04</span> Prompt coaching</a
         >
-        <a href="#review" data-nav="review"
-          ><span aria-hidden="true">05</span> Review interpretations</a
-        >
       </nav>
       <div class="lab-controls">
         <p class="nav-label">WALK THROUGH A SCENARIO</p>
         <label for="scenario">Load a fresh example</label>
         <select id="scenario">
           <option value="report">S2 / Understand a session</option>
-          <option value="empty">S1 / Import your first session</option>
+          <option value="empty">S1 / Open harness evidence</option>
           <option value="steering">S3 / Investigate steering</option>
           <option value="artifacts">S4 / Inspect the artifacts</option>
           <option value="usage">S5 / Explain resource usage</option>
           <option value="prompts">S6 / Improve a prompt</option>
-          <option value="review">S7 / Correct interpretations</option>
           <option value="partial">S8 / Incomplete evidence</option>
           <option value="analysis-off">S8 / Analysis not enabled</option>
           <option value="unsupported">S8 / Unsupported import</option>
+          <option value="source-changed">S8 / Source changed during read</option>
+          <option value="source-unavailable">S8 / Source unavailable</option>
         </select>
         <p id="scenario-note">
           Start with outcomes. Every metric leads to its evidence.
         </p>
         <button class="sidebar-button" data-action="reset">
-          Reset all demo changes
+          Reset synthetic example
         </button>
       </div>
       <div class="sidebar-footer">
@@ -76,15 +74,15 @@
       <header class="topbar">
         <div>
           <span class="prototype-tag">DESIGN PROTOTYPE</span>
-          <span class="topbar-note">Synthetic data / revision 1</span>
+          <span class="topbar-note">Synthetic data / revision 2 / read-only</span>
         </div>
         <button class="text-button" data-action="capture-help">
           Capture help <span aria-hidden="true">?</span>
         </button>
       </header>
       <div class="demo-notice">
-        An interactive sketch, not a working analyzer. Edits stay in this page
-        until reset or reload.
+        An interactive sketch, not a working analyzer. Harness evidence is the
+        only authority; this page uses fictional fixtures in memory, not real sources.
       </div>
       <main id="main" tabindex="-1" aria-label="Insights workspace"></main>
       <footer class="page-footer">
