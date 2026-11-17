@@ -19,7 +19,7 @@ export const agentHostOverlayDefinition = sqliteDefinitionSchema.parse({
   ],
   queries: [
     { id: "turns", table: "turns", columns: ["id", "event_id"], filters: [] },
-    { id: "usage", table: "turn_usage", columns: ["turn_id", "usage"], filters: [{ column: "turn_id", parameter: "turn" }] },
+    { id: "usage", table: "turn_usage", columns: ["turn_id", "usage"], filters: [] },
     { id: "metadata", table: "session_metadata", columns: ["key", "value"], filters: [{ column: "key", parameter: "key" }] },
   ],
 });
@@ -39,6 +39,7 @@ function parseJson(value: unknown): unknown {
  * Normalize latest per-turn per-model reports from a connection-scoped overlay.
  * Missing/unsupported identity leaves usage unavailable; access/query/cancellation failures reject.
  * Only root native user.message event IDs establish host turn bridges, not assistant loop-turn IDs.
+ * Read usage once under the shared row/byte budget, independently of bridged turn count.
  */
 export async function readTurnUsage(
   overlay: SourceInput, history: NativeHistory, ownership: AgentHostOwnership,
@@ -100,6 +101,18 @@ export async function readTurnUsage(
     const group = byEvent.get(eventId) ?? [];
     group.push(row); byEvent.set(eventId, group);
   }
+  if (byEvent.size === 0) return result;
+  const usageByTurn = new Map<string, SqliteRow[]>();
+  for (const row of await overlay.query("usage", {})) {
+    signal.throwIfAborted();
+    const turnId = identifier(row.values.turn_id);
+    if (!turnId) {
+      issue(overlay.sourceId, "missing-field", "Retained report has no exact host turn identity.", [sqliteReference(overlay.sourceId, row)]);
+      continue;
+    }
+    const rows = usageByTurn.get(turnId) ?? [];
+    rows.push(row); usageByTurn.set(turnId, rows);
+  }
   for (const [eventId, group] of byEvent) {
     signal.throwIfAborted();
     if (group.length !== 1) {
@@ -108,11 +121,11 @@ export async function readTurnUsage(
     }
     const turn = group[0]!;
     const event = history.records.get(eventId)!;
-    const rows = await overlay.query("usage", { turn: turn.values.id! });
+    const rows = usageByTurn.get(String(turn.values.id)) ?? [];
     if (rows.length === 0) continue;
     const refs = [...metadataRefs, sqliteReference(overlay.sourceId, turn), ...rows.map((row) => sqliteReference(overlay.sourceId, row))];
     if (rows.length !== 1 || rows[0]?.values.turn_id !== turn.values.id) {
-      issue(overlay.sourceId, "ambiguous-session", "Retained report does not match the exact queried host turn.", refs);
+      issue(overlay.sourceId, "ambiguous-session", "Retained report does not match the exact unique host turn.", refs);
       continue;
     }
     const row = rows[0]!;

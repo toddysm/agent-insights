@@ -361,6 +361,10 @@ do not make latest-call gauges consumption totals. Replacement usage has no reco
 observation time: it remains null, not the bridged user-message timestamp.
 Queries share the access layer's aggregate row/byte/deadline and 256-query ceilings;
 exceeding a ceiling fails the entire read rather than publishing an evicted subset.
+The overlay reads the `turns` and `turn_usage` projections once each and groups
+usage by exact `turn_id` in memory, so the query count does not grow with bridged
+turns. Unbridged usage rows do not establish observations, and duplicate reports
+for one turn remain excluded rather than selecting one.
 
 Exact native event replays merge original anchors. Conflicting event/lifecycle
 identities poison every affected call; they are not arbitrarily paired.

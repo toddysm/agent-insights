@@ -92,7 +92,7 @@ function input(records: readonly unknown[], options: {
             assert.ok(["metadata", "turns", "usage"].includes(query));
             const table = query === "metadata" ? "session_metadata" : query === "usage" ? "turn_usage" : "turns";
             return Promise.resolve((options.overlay ?? []).filter((item) => item.table === table &&
-              (query === "metadata" ? item.values.key === bindings.key : query === "usage" ? item.values.turn_id === bindings.turn : true)));
+              (query === "metadata" ? item.values.key === bindings.key : true)));
           }
           const table = query === "sdk_chats" ? "chats_v2" : query === "owner" ? "sessions_v2"
             : query === "authority" ? "session_chat_catalogs" : null;
@@ -520,6 +520,26 @@ test("overlay ownership, foreign rows, duplicate bridges, malformed counters and
     assert.ok(view.issues.some((issue) => issue.sourceId === "synthetic:overlay" && issue.code === "ambiguous-session"));
     assert.ok(view.issues.some((issue) => issue.sourceId === "synthetic:history" && issue.code === "ambiguous-session"));
   }
+});
+
+test("bulk overlay usage retains only exact unique turn reports without borrowing unrelated rows", async () => {
+  const report = overlayRows()[2]!.values.usage!;
+  const view = await agentHostExecutionReader.read(input([
+    start(), event("user.message", "user-event"),
+    event("user.message", "duplicate-event"), event("user.message", "missing-event"),
+  ], { overlay: [
+    ...overlayRows(),
+    row("turns", { id: "duplicate-turn", event_id: "duplicate-event" }),
+    row("turns", { id: "missing-turn", event_id: "missing-event" }),
+    row("turn_usage", { turn_id: "duplicate-turn", usage: report }),
+    row("turn_usage", { turn_id: "duplicate-turn", usage: report }),
+    row("turn_usage", { turn_id: "unbridged-turn", usage: report }),
+    row("turn_usage", { turn_id: null, usage: report }),
+  ] }));
+  const observations = executions(view).filter((item) => item.kind === "usage-observation");
+  assert.deepEqual(observations.map((item) => item.nativeId), ["host-turn", "host-turn"]);
+  assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session"));
+  assert.ok(view.issues.some((issue) => issue.code === "missing-field"));
 });
 
 test("native reads reject cancellation, damaged tails and source changes without a fabricated successful view", async () => {
