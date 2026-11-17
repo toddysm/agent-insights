@@ -11,7 +11,7 @@ import { identifier, object, readNativeHistory, type NativeEvent } from "./agent
 import { eventTime, executionIdentities, pointerSegment, tokenCount, usageObservation, type NativeExecution, type NativeIssue } from "./agent-host-events.js";
 import { agentHostOverlayDefinition, readTurnUsage } from "./agent-host-usage.js";
 
-/** A lifecycle has at most one distinct start and completion; ambiguous alternatives poison it. */
+/** A session/agent-scoped lifecycle has at most one distinct start and completion; ambiguous alternatives poison it. */
 interface Lifecycle {
   readonly kind: "tool-call" | "agent-span" | "assistant-turn";
   readonly nativeId: string | null;
@@ -24,6 +24,11 @@ interface Lifecycle {
 /** Only an omitted optional session ID inherits the qualified enclosing SDK scope; explicit invalid/conflicting values survive. */
 function nativeSessionScope(event: NativeEvent, sdk: string): unknown {
   return event.data.sessionId === undefined ? sdk : event.data.sessionId;
+}
+
+/** Subagent wrapper candidates share a call ID only within the same retained SDK-session scope. */
+function wrapperCallKey(event: NativeEvent, sdk: string, callId: string): string {
+  return JSON.stringify([nativeSessionScope(event, sdk), callId]);
 }
 
 /** Group calls/turns by native agent/session scope, inheriting only omitted session IDs, never graph proximity. */
@@ -142,13 +147,13 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     lifecycles.set(lifecycle.key, previous);
   }
   const agentsByCall = new Map<string, Lifecycle[]>();
-  const toolsByCall = new Map<string, number>();
   for (const item of lifecycles.values()) {
-    if (item.nativeId === null || item.kind === "assistant-turn") continue;
-    if (item.kind === "agent-span") {
-      const candidates = agentsByCall.get(item.nativeId) ?? [];
-      candidates.push(item); agentsByCall.set(item.nativeId, candidates);
-    } else toolsByCall.set(item.nativeId, (toolsByCall.get(item.nativeId) ?? 0) + 1);
+    if (item.nativeId === null || item.kind !== "agent-span") continue;
+    const first = item.start ?? item.end;
+    if (!first) continue;
+    const key = wrapperCallKey(first, sdk, item.nativeId);
+    const candidates = agentsByCall.get(key) ?? [];
+    candidates.push(item); agentsByCall.set(key, candidates);
   }
   for (const lifecycle of lifecycles.values()) {
     input.signal.throwIfAborted();
@@ -212,14 +217,14 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     if (malformed || !assigned)
       issue(history.sourceId, "unsupported-schema", "Lifecycle has malformed or conflicting identity, metadata or status; unavailable fields were not repaired.", refs);
     const agents = lifecycle.kind === "tool-call" && lifecycle.nativeId !== null
-      ? agentsByCall.get(lifecycle.nativeId) ?? [] : [];
+      ? agentsByCall.get(wrapperCallKey(first, sdk, lifecycle.nativeId)) ?? [] : [];
     const agent = agents[0];
-    // Absent spawning parent denotes root. Nested task-registry/agent-ID equivalence is not qualified.
+    // Lifecycle keys already make the root tool unique within its SDK/envelope-agent scope.
     const wrapper = agents.length === 1 && agent?.conflict === false && agent.start !== undefined &&
-      agent.records.every((event) => event.data.parentId === undefined && nativeSessionScope(event, sdk) === sdk) &&
+      agent.records.every((event) => event.data.parentId === undefined && nativeSessionScope(event, sdk) === sdk &&
+        (event.value.agentId === undefined || identifier(event.value.agentId) !== null)) &&
       nativeSessionScope(first, sdk) === sdk &&
-      agentId === null && lifecycle.records.every((event) => event.value.agentId === undefined) &&
-      toolsByCall.get(lifecycle.nativeId ?? "") === 1;
+      agentId === null && lifecycle.records.every((event) => event.value.agentId === undefined);
     if (agents.length > 0 && !wrapper)
       issue(history.sourceId, "ambiguous-session", "Tool and subagent IDs overlap without a qualified unique root-parent relationship; accounting is ambiguous and non-additive.", refs);
     events.push({

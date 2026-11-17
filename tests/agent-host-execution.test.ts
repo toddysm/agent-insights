@@ -234,6 +234,39 @@ test("completion-only subagent parent metadata never establishes a root wrapper"
   }
 });
 
+test("foreign sessions and other tool-agent scopes cannot change qualified root accounting", async () => {
+  const tool = [
+    event("tool.execution_start", "root-s", { toolCallId: "shared", toolName: "task" }),
+    event("tool.execution_complete", "root-e", { toolCallId: "shared", success: true }),
+  ];
+  const agent = [
+    event("subagent.started", "child-s", { toolCallId: "shared", agentName: "worker" }, { agentId: "child" }),
+    event("subagent.completed", "child-e", { toolCallId: "shared" }, { agentId: "child" }),
+  ];
+  for (const sessionId of ["other-sdk", null, 7]) {
+    const view = await agentHostExecutionReader.read(input([
+      start(), ...tool, ...agent.map((record) => ({ ...record, data: { ...record.data, sessionId } })),
+    ]));
+    const root = executions(view).find((item) => item.kind === "tool-call" && item.sessionId !== null);
+    assert.equal(root?.nativeExecution?.accounting, "execution");
+  }
+  for (const scope of [{ sessionId: "other-sdk" }, { agentId: "unrelated-child" }]) {
+    const view = await agentHostExecutionReader.read(input([
+      start(), ...tool, ...agent,
+      event("tool.execution_start", "unrelated-s", { toolCallId: "shared", toolName: "read", ...("sessionId" in scope ? scope : {}) }, "agentId" in scope ? scope : {}),
+      event("tool.execution_complete", "unrelated-e", { toolCallId: "shared", success: true, ...("sessionId" in scope ? scope : {}) }, "agentId" in scope ? scope : {}),
+    ]));
+    const root = executions(view).find((item) => item.kind === "tool-call" &&
+      item.sessionId !== null && item.nativeExecution?.agentId === null);
+    assert.equal(root?.nativeExecution?.accounting, "bridge-wrapper");
+  }
+  const invalidAgent = await agentHostExecutionReader.read(input([
+    start(), ...tool,
+    event("subagent.started", "invalid-agent", { toolCallId: "shared", agentName: "worker" }, { agentId: 7 }),
+  ]));
+  assert.equal(executions(invalidAgent).find((item) => item.kind === "tool-call")?.nativeExecution?.accounting, "ambiguous");
+});
+
 test("nested native ID collisions do not classify an unrelated tool as another agent's wrapper", async () => {
   const view = await agentHostExecutionReader.read(input([
     start(),

@@ -338,6 +338,9 @@ For lifecycle pairing, API/chunk grouping, conflict poisoning and root-wrapper
 qualification, only an omitted optional native `data.sessionId` inherits the
 qualified enclosing SDK session. Explicit malformed or different IDs are not
 repaired into that scope; original namespace witnesses remain retained.
+Wrapper candidate call IDs also stay within that SDK scope, and root-tool
+uniqueness follows the existing session/envelope-agent lifecycle key. Foreign
+sessions or tools in other envelope-agent scopes do not change root accounting.
 
 Every usage observation declares `observation.additive: false`; no observation
 is a `model-call` or per-call usage ledger. Ephemeral `assistant.usage` and
