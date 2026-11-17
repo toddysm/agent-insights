@@ -334,6 +334,11 @@ candidate, never a browser-selected executable.
 | `usage-observation` / `turn-inclusive`, `turn-direct` | Separate latest retained per-model whole-turn and direct-turn reports. Inclusive totals contain descendants/compaction; direct totals exclude descendants. Both are cumulative, overlap and must **not** be added. Top-level/latest-call/context gauges are ignored. |
 | `usage-observation` / `session-snapshot` | Reported native shutdown per-model cumulative input/output snapshot. It overlaps turn/output observations and is not another set of per-call contributions. No shutdown means unavailable, not zero. |
 
+For lifecycle pairing, API/chunk grouping, conflict poisoning and root-wrapper
+qualification, only an omitted optional native `data.sessionId` inherits the
+qualified enclosing SDK session. Explicit malformed or different IDs are not
+repaired into that scope; original namespace witnesses remain retained.
+
 Every usage observation declares `observation.additive: false`; no observation
 is a `model-call` or per-call usage ledger. Ephemeral `assistant.usage` and
 `model.call_*` records remain outside this qualified persisted mapping.

@@ -21,8 +21,13 @@ interface Lifecycle {
   conflict: boolean;
 }
 
-/** Lifecycle grouping uses declared call/turn identity and native agent/session scope, never graph proximity. */
-function lifecycleKey(event: NativeEvent): { key: string; kind: Lifecycle["kind"]; nativeId: string | null; end: boolean } | null {
+/** Only an omitted optional session ID inherits the qualified enclosing SDK scope; explicit invalid/conflicting values survive. */
+function nativeSessionScope(event: NativeEvent, sdk: string): unknown {
+  return event.data.sessionId === undefined ? sdk : event.data.sessionId;
+}
+
+/** Group calls/turns by native agent/session scope, inheriting only omitted session IDs, never graph proximity. */
+function lifecycleKey(event: NativeEvent, sdk: string): { key: string; kind: Lifecycle["kind"]; nativeId: string | null; end: boolean } | null {
   const kind = event.type === "tool.execution_start" || event.type === "tool.execution_complete" ? "tool-call"
     : event.type === "assistant.turn_start" || event.type === "assistant.turn_end" ? "assistant-turn"
     : ["subagent.started", "subagent.completed", "subagent.failed"].includes(event.type) ? "agent-span" : null;
@@ -30,7 +35,7 @@ function lifecycleKey(event: NativeEvent): { key: string; kind: Lifecycle["kind"
   const nativeId = identifier(kind === "assistant-turn" ? event.data.turnId : event.data.toolCallId);
   const badAgent = event.value.agentId !== undefined && identifier(event.value.agentId) === null;
   return {
-    key: JSON.stringify([kind, event.data.sessionId ?? null, event.value.agentId ?? null,
+    key: JSON.stringify([kind, nativeSessionScope(event, sdk), event.value.agentId ?? null,
       nativeId === null || badAgent ? ["unpaired", event.id] : nativeId]),
     kind, nativeId,
     end: ["tool.execution_complete", "assistant.turn_end", "subagent.completed", "subagent.failed"].includes(event.type),
@@ -105,7 +110,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
   const sessionId = sessions[0]?.id ?? null;
   const lifecycles = new Map<string, Lifecycle>();
   const poisoned = new Set(parsed.conflicts.flatMap((event) => {
-    const key = lifecycleKey(event);
+    const key = lifecycleKey(event, sdk);
     return key ? [key.key] : [];
   }));
   for (const event of records.values()) {
@@ -118,7 +123,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       issue(history.sourceId, "missing-field", "Native event timestamp is absent or invalid; no timing was inferred.", event.references);
     if (event.value.ephemeral !== undefined && event.value.ephemeral !== false)
       issue(history.sourceId, "unsupported-schema", "Transient or malformed persistence metadata is outside the qualified retained-event contract.", event.references);
-    const lifecycle = lifecycleKey(event);
+    const lifecycle = lifecycleKey(event, sdk);
     if (event.conflict) {
       issue(history.sourceId, "ambiguous-session", "Conflicting native event identity was excluded.", event.references);
       continue;
@@ -211,7 +216,8 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     const agent = agents[0];
     // Absent spawning parent denotes root. Nested task-registry/agent-ID equivalence is not qualified.
     const wrapper = agents.length === 1 && agent?.conflict === false && agent.start !== undefined &&
-      agent.start.data.parentId === undefined && agent.start.data.sessionId === first.data.sessionId &&
+      agent.start.data.parentId === undefined && nativeSessionScope(agent.start, sdk) === sdk &&
+      nativeSessionScope(first, sdk) === sdk &&
       agentId === null && lifecycle.records.every((event) => event.value.agentId === undefined) &&
       toolsByCall.get(lifecycle.nativeId ?? "") === 1;
     if (agents.length > 0 && !wrapper)
@@ -260,9 +266,9 @@ function readNativeUsage(
   events: NativeExecution[], issue: NativeIssue,
 ): void {
   const responses = new Map<string, NativeEvent[]>();
-  /** Scope an API response independently of host association; conflicting aliases poison every affected group. */
+  /** Scope API responses using the enclosing SDK ID only when omitted; conflicting aliases poison every affected group. */
   const responseKey = (event: NativeEvent): string =>
-    JSON.stringify([event.data.sessionId ?? null, event.value.agentId ?? null, identifier(event.data.apiCallId) ?? ["event", event.id]]);
+    JSON.stringify([nativeSessionScope(event, sdk), event.value.agentId ?? null, identifier(event.data.apiCallId) ?? ["event", event.id]]);
   const poisoned = new Set(conflicts.filter((event) => event.type === "assistant.message").map(responseKey));
   const known = new Set([
     "session.start", "session.resume", "session.idle", "session.info", "session.warning", "session.error",

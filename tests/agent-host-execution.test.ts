@@ -142,6 +142,63 @@ test("native tools pair within agent scope, retain parallel/nested edges and nev
   assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
 });
 
+test("optional native session identity pairs lifecycle boundaries without merging other or malformed sessions", async () => {
+  for (const explicitStart of [true, false]) {
+    const declared = { sessionId: "sdk-synthetic" };
+    const first = explicitStart ? declared : {};
+    const last = explicitStart ? {} : declared;
+    const view = await agentHostExecutionReader.read(input([
+      start(),
+      event("tool.execution_start", "tool-s", { ...first, toolCallId: "task", toolName: "task" }),
+      event("tool.execution_complete", "tool-e", { ...last, toolCallId: "task", success: true }),
+      event("assistant.turn_start", "turn-s", { ...first, turnId: "turn" }),
+      event("assistant.turn_end", "turn-e", { ...last, turnId: "turn" }),
+      event("subagent.started", "agent-s", { ...last, toolCallId: "task", agentName: "worker" }, { agentId: "child" }),
+      event("subagent.completed", "agent-e", { ...first, toolCallId: "task" }, { agentId: "child" }),
+    ]));
+    assert.equal(view.events.length, 3);
+    assert.ok(executions(view).every((item) => item.nativeExecution?.completeness === "complete" &&
+      item.sessionId === view.sessions[0]?.id && item.references.length === 2));
+    assert.equal(executions(view).find((item) => item.kind === "tool-call")?.nativeExecution?.accounting, "bridge-wrapper");
+  }
+  for (const sessionId of ["other-sdk", null, 7]) {
+    const view = await agentHostExecutionReader.read(input([
+      start(),
+      event("tool.execution_start", "s", { toolCallId: "same", toolName: "read" }),
+      event("tool.execution_complete", "e", { sessionId, toolCallId: "same", success: true }),
+    ]));
+    assert.equal(view.events.length, 2);
+    assert.ok(executions(view).every((item) => item.nativeExecution?.completeness !== "complete"));
+    assert.ok(view.events.some((item) => item.sessionId === null));
+  }
+});
+
+test("optional native session identity groups output chunks once without rescuing other or malformed sessions", async () => {
+  for (const sessionId of ["sdk-synthetic", "other-sdk", null, 7]) {
+    for (const explicitFirst of [true, false]) {
+      const declared = { sessionId };
+      const view = await agentHostExecutionReader.read(input([
+        start(),
+        event("assistant.message", "chunk-0", { ...(explicitFirst ? declared : {}), apiCallId: "api", chunkIndex: 0, chunkCount: 2, outputTokens: 7 }),
+        event("assistant.message", "chunk-1", { ...(explicitFirst ? {} : declared), apiCallId: "api", chunkIndex: 1, chunkCount: 2, outputTokens: 7 }),
+      ]));
+      const observations = executions(view).filter((item) => item.observation?.scope === "assistant-output");
+      if (sessionId === "sdk-synthetic") {
+        assert.equal(observations.length, 1);
+        assert.equal(observations[0]?.usage?.output, 7);
+        assert.equal(observations[0]?.references.length, 2);
+      } else assert.equal(observations.length, 0);
+    }
+  }
+  const repeated = await agentHostExecutionReader.read(input([
+    start(),
+    event("assistant.message", "first", { apiCallId: "same", outputTokens: 7 }),
+    event("assistant.message", "second", { sessionId: "sdk-synthetic", apiCallId: "same", outputTokens: 7 }),
+  ]));
+  assert.equal(repeated.events.length, 0);
+  assert.ok(repeated.issues.some((issue) => issue.message.includes("conflicting API/chunk")));
+});
+
 test("subagent lifecycle distinguishes its unique task wrapper, cancellation and parent task identity", async () => {
   const view = await agentHostExecutionReader.read(input([
     start(),
