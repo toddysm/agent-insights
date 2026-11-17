@@ -11,6 +11,10 @@ The interface states those limitations explicitly. The
 [historical prototype](../design/session-insights/README.md) is separate and
 continues to use fictional data.
 
+Before configuring captures, follow the
+[Agent Host-first capture setup guide](capture-setup.md), including privacy,
+runtime-specific settings, verification and the current production-reader gates.
+
 ## Install and start
 
 Use Node.js 24 and npm. From the repository root:
@@ -194,8 +198,9 @@ retained. A trailing unfinished record is reported, not silently discarded.
 After the writer finishes, choose **Read source** again. Unsupported input without
 usable evidence reports unavailable data rather than successful zero totals.
 Records without an unambiguous reported session remain unassigned; paths and
-timestamps are not used to invent one. Existing capture prerequisites remain
-tracked in [#1](https://github.com/toddysm/agent-insights/issues/1).
+timestamps are not used to invent one. The
+[capture prerequisites and verification guide](capture-setup.md) distinguishes
+this extension format from native Agent Host evidence.
 
 Production readers are registered by the executable. Trusted embedding/tests may
 explicitly supply their own reader list; the server factory alone defaults to

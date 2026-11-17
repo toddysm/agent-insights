@@ -1,8 +1,8 @@
 # Project state
 
-Capability inventory as of 2026-11-09, with the #32 execution-reader build updated
-on 2026-11-16. This records project delivery status, not session data or analysis
-results; unrelated rows are not re-audited by the handoff.
+Capability inventory as of 2026-11-09, with the #32 execution-reader build and #1
+capture-guide status updated on 2026-11-16. This records project delivery status,
+not session data or analysis results; unrelated rows are not re-audited by the handoff.
 
 The merged baseline is main at `5adb0e2984ed62584502a5ca001d372c5e3e037c`.
 The approved architecture and explicit execution breakdown are recorded as
@@ -267,4 +267,4 @@ remains the selected testing mode.
 | Native foundations and runtime integration are merged; public distribution and Agent Host readers remain incomplete | #41 completed #36/#42, #43 completed #37, #44 completed #38 and [#35](https://github.com/toddysm/agent-insights/pull/35) completed #33. Release #39 needs separate permission. Source qualification and Agent Host readers remain separate; optional telemetry remains #34. #10/#29 resumes as the dependency for the approved extension-reader refinements #46-#49, not as Agent Host support. |
 | Current prototype still contains superseded editing flows                                                           | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                                                                                                                                                                                                                 |
 | Conversation readers, reports and interpretation definitions remain incomplete                                      | The execution reader and transport are available; missing consumers are reported explicitly. Delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2)                                                                                                                                                                                                        |
-| End-user capture and usage documentation is not complete                                                            | Deliver [#1](https://github.com/toddysm/agent-insights/issues/1) and [#21](https://github.com/toddysm/agent-insights/issues/21), verified against supported captures and the shipped application                                                                                                                                                                                                |
+| End-user capture and usage documentation is not complete                                                            | The [capture setup guide](capture-setup.md) documents the Agent Host-first baseline, optional exports and verification limits. [#1](https://github.com/toddysm/agent-insights/issues/1) still needs authorized tool-bearing/two-project capture acceptance; [#21](https://github.com/toddysm/agent-insights/issues/21) owns the broader usage guide. Production native-reader gates and integrated verification remain incomplete. |
