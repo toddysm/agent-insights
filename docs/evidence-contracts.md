@@ -102,7 +102,8 @@ qualification and pinned producer evidence. Its native-history-first design
 feeds execution [#32](https://github.com/toddysm/agent-insights/issues/32) and
 conversation [#31](https://github.com/toddysm/agent-insights/issues/31).
 The conversation adapter is now installed as a separately authorized build;
-the qualification handoff itself did not authorize implementation. Execution #32 remains pending.
+the qualification handoff itself did not authorize implementation. The separately
+authorized execution build is described [below](#agent-host-execution-reader).
 The merged [shared access boundary](local-runtime.md#shared-file-and-sqlite-access)
 supplies guards, bounded queries and provenance, not these domain mappings.
 
@@ -304,6 +305,76 @@ files and refresh invalidation. An ordinary run without a prepared candidate
 explicitly skips that integration case; it is not a native qualification pass.
 Producer-generated end-to-end verification remains #20, not a claim made by
 these synthetic tests.
+
+### Agent Host execution reader
+
+`agent-host-executions` consumes explicitly bound `history`, `catalog` and `overlay`
+roles through the shared access boundary. The overlay binding is required by the
+read-set protocol, but may point to a missing optional input; no source is discovered
+or opened from captured content. It shares #31's bounded native framing,
+format-1/emitted-runtime pin and schema-22 catalog authority checks. Schema-18
+overlay projections are separate from the catalog. There is no extension-parser,
+SDK restoration, database migration or source-copy fallback.
+
+The executable **registers but disables** this adapter. Authenticated status lists
+`available: false` and a fixed reason: the pinned `native-helper-v0.1.0` lacks the
+guarded JSON/literal-prefix predicates required for catalog authority. Read-set
+selection returns `READER_UNAVAILABLE` before source admission. A separately
+authorized, qualified helper release and reviewed removal of the registry gate
+are required for production use; candidate preparation cannot override the gate.
+Trusted qualification tests explicitly install the ungated adapter and a verified
+candidate, never a browser-selected executable.
+
+| Normalized evidence | Meaning and accounting |
+| --- | --- |
+| `tool-call` | Pair recorded start/completion by native call ID within SDK session and envelope-agent scope, independent of interleaving/order. Missing boundaries stay partial with null times; missing/invalid `success` is unknown, never success by default. Captured argument JSON and model-facing result text remain inert content, which may already be producer-truncated. Detailed/binary results are available only in the original record, not followed as paths. |
+| `agent-span` | Native subagent start/completion/failure, including reported agent/task/tool-parent namespaces. Cancelled completion is unknown rather than successful work. A uniquely matching root task tool is marked `nativeExecution.accounting: bridge-wrapper`; it is not another additive agent execution. Nested/overlapping call IDs without qualified parent-scope agreement are `ambiguous`, also non-additive; task-registry IDs are not assumed equivalent to envelope-agent IDs. |
+| `assistant-turn` | Recorded agent-loop boundaries, **not a model call, user task or proof of successful execution**. Status remains unknown; usage is null. |
+| `usage-observation` / `assistant-output` | Output-only report with native API identity. Split responses require a complete, nonconflicting set of chunk ordinals with a consistent counter; the repeated API output counter is retained once, never summed across chunks. Incomplete/conflicting/unqualified observations are diagnosed and excluded. Input remains null. |
+| `usage-observation` / `turn-inclusive`, `turn-direct` | Separate latest retained per-model whole-turn and direct-turn reports. Inclusive totals contain descendants/compaction; direct totals exclude descendants. Both are cumulative, overlap and must **not** be added. Top-level/latest-call/context gauges are ignored. |
+| `usage-observation` / `session-snapshot` | Reported native shutdown per-model cumulative input/output snapshot. It overlaps turn/output observations and is not another set of per-call contributions. No shutdown means unavailable, not zero. |
+
+Every usage observation declares `observation.additive: false`; no observation
+is a `model-call` or per-call usage ledger. Ephemeral `assistant.usage` and
+`model.call_*` records remain outside this qualified persisted mapping.
+Optional telemetry #34 is still unqualified. The reader calculates no metrics.
+
+Overlay joins require one connection snapshot, exact root native `user.message`
+envelope IDs in `turns.event_id`, and unique host turn IDs in `turn_usage.turn_id`.
+Assistant loop-turn IDs, text, timestamps and filenames cannot substitute for
+that bridge. Present `agentHost.rowOwnerChat` must match qualified runtime/storage
+chat identity; `agentHost.foreignTurnIds` excludes compatibility rows.
+Malformed ownership/foreign lists and competing native bridges are unavailable.
+When owner metadata is absent, only the exact retained root-event bridge qualifies
+the selected report; this does not authenticate a guessed storage path or discover
+other databases. Per-model input/output/cached counters must be safe nonnegative
+integers and models unique within each reported scope. Missing whole/direct fields
+do not make latest-call gauges consumption totals. Replacement usage has no recorded
+observation time: it remains null, not the bridged user-message timestamp.
+Queries share the access layer's aggregate row/byte/deadline and 256-query ceilings;
+exceeding a ceiling fails the entire read rather than publishing an evicted subset.
+
+Exact native event replays merge original anchors. Conflicting event/lifecycle
+identities poison every affected call; they are not arbitrarily paired.
+`nativeExecution` retains all contributing event IDs and event-graph predecessor
+IDs separately from call/agent/turn/task-parent relationships. Each event also
+retains native identifier namespaces independently of session association.
+Qualified SDK history without unique Agent Host catalog ownership can retain
+**unassigned** native executions, with unknown harness identity and unavailable
+Agent Host coverage. Unsupported native format/runtime produces no executions.
+Unknown operations, malformed fields, missing times/results, interrupted tails,
+context-retention notices and changing sources remain explicit diagnostics.
+Coverage is partial or unavailable, never a complete model-call ledger.
+
+Original JSONL byte/line/pointer anchors and SQLite table/typed-key/column/pointer/
+projection fingerprints survive joins. Refresh replaces the transient generation;
+no payload logs, model calls, browser storage or copied corpus are introduced.
+Synthetic normalization tests run with application validation on Ubuntu, Windows
+and macOS; guarded read/refresh/source-integrity tests additionally run on the four
+native-helper targets via `qualify:source-access`. Skipped native tests in ordinary
+application runs are not native qualification. Producer-generated tool workflows,
+other producer versions and integrated delivery remain #20, not claims of these
+fixtures. Required final guides remain #1/#21.
 
 ### Execution reader behavior
 

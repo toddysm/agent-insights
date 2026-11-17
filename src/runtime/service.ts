@@ -198,6 +198,7 @@ export class RuntimeService {
         Object.freeze({
           id: reader.id,
           inputs,
+          ...(reader.unavailableReason === undefined ? {} : { unavailableReason: reader.unavailableReason }),
           read: reader.read.bind(reader),
         }),
       );
@@ -229,6 +230,8 @@ export class RuntimeService {
       readers: [...this.readers.keys()],
       multiSourceReaders: [...this.multiReaders.values()].map((reader) => ({
         id: reader.id,
+        available: reader.unavailableReason === undefined,
+        reason: reader.unavailableReason ?? null,
         inputs: reader.inputs.map((input) => ({
           key: input.key,
           kind: input.kind,
@@ -514,10 +517,10 @@ export class RuntimeService {
       ),
     });
     const reader = this.multiReaders.get(request.readerId);
-    if (!reader)
+    if (!reader || reader.unavailableReason !== undefined)
       throw new RuntimeError(
         "READER_UNAVAILABLE",
-        "No composite reader is installed for this selection.",
+        reader?.unavailableReason ?? "No composite reader is installed for this selection.",
         501,
       );
     return this.runRead(

@@ -230,6 +230,8 @@ export interface MultiSourceInput {
 export interface MultiSourceReader {
   readonly id: string;
   readonly inputs: readonly SourceRequirement[];
+  /** Fixed code-owned gate; registered but unavailable readers must reject before source admission. */
+  readonly unavailableReason?: string;
   /** Normalize borrowed inputs; preserve every declared source and its original references. */
   read(input: MultiSourceInput): Promise<ReadView>;
 }

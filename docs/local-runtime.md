@@ -350,8 +350,9 @@ The source qualification in
 [#30](https://github.com/toddysm/agent-insights/issues/30) supplied the pinned
 handoff. The separately authorized
 [conversation reader](evidence-contracts.md#agent-host-conversation-reader) now
-registers through the shared access boundary; native execution accounting
-[#32](https://github.com/toddysm/agent-insights/issues/32) remains pending.
+uses the shared access boundary. The separately authorized
+[native execution reader](evidence-contracts.md#agent-host-execution-reader)
+adds retained lifecycles and non-additive usage, with the production gate below.
 Selecting `vscode-otel-jsonl`, enabling an extension exporter or preparing the
 native helper does not add Agent Host support. Ask/Agent mode, running locally
 and the Copilot CLI analysis executor do not identify the capture's harness.
@@ -380,6 +381,49 @@ roots, verified catalog ownership and the guarded shared boundary; they must not
 open producer SDK stores, restore sessions, migrate databases or copy sources.
 The [native evidence handoff](evidence-contracts.md#agent-host-native-evidence-handoff)
 defines coverage, accounting and original-anchor requirements.
+
+### Agent Host execution availability
+
+The executable registers `agent-host-executions` but reports `available: false`
+and an incompatibility reason in authenticated `/api/status`. Selection through
+`POST /api/read-set` returns `READER_UNAVAILABLE` (501) **before opening sources**.
+The pinned `native-helper-v0.1.0` lacks the guarded catalog predicates. Neither
+preparing that release nor preparing a development candidate enables this gate.
+A compatible helper release needs separate publication/qualification approval
+and a reviewed registry update; the analyzer never builds/downloads a replacement
+during reads. The existing extension reader remains independently available.
+
+Trusted qualification embeddings with an explicitly registered ungated reader
+and verified candidate use:
+
+```json
+{
+  "readerId": "agent-host-executions",
+  "sources": [
+    { "key": "history", "sourceId": "source-1", "relativePath": "events.jsonl" },
+    { "key": "catalog", "sourceId": "source-2", "relativePath": "agent-host.db" },
+    { "key": "overlay", "sourceId": "source-3", "relativePath": "session.db" }
+  ]
+}
+```
+
+These are illustrative grant IDs from authenticated status, not captured paths.
+All three roles need explicit bindings; a missing optional overlay leaves host
+usage unavailable while retained native executions can still be read. Use an
+empty relative path for a file grant. The catalog and present usage overlay need
+connection-scoped snapshots with existing readable WAL/SHM sidecars. Do not change
+producer journal settings, create missing sidecars or guess a storage key to make
+a read succeed. Source identity changes, unsupported schemas, budgets, permission
+failures and cancellation remain explicit, with no copied-source fallback.
+
+Supported pins and retention ceilings match the qualified native conversation
+baseline; overlay support is limited to schema 18 and exact retained root
+user-event/host-turn bridges. See the [execution field and accounting contract](evidence-contracts.md#agent-host-execution-reader).
+Assistant turns are not model calls. Output-only, whole/direct-turn and shutdown
+usage observations are non-additive; complete per-call token usage/timing remains
+unavailable without separately qualified telemetry. No source read invokes a model
+or executes captured arguments/results. These synthetic tests do not replace the
+producer-generated integrated workflow in #20 or complete guides #1/#21.
 
 ### Read a qualified native conversation
 

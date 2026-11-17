@@ -4,37 +4,14 @@
  * No SDK restoration, source discovery, persistence, execution accounting or model call occurs.
  */
 import { isDeepStrictEqual } from "node:util";
-import { z } from "zod";
-import { RuntimeError } from "../../runtime/errors.js";
 import { parseReadView, type ReadView, type EvidenceReference } from "../contracts.js";
 import type { MultiSourceInput, MultiSourceReader } from "../source-access.js";
-import { jsonLines } from "./jsonl.js";
 import { agentHostCatalogDefinition, resolveAgentHostOwnership } from "./agent-host-catalog.js";
-
-/** Source events retain their first physical position and every exact replay anchor. */
-interface NativeEvent {
-  readonly value: Record<string, unknown>;
-  readonly id: string;
-  readonly type: string;
-  readonly data: Record<string, unknown>;
-  readonly references: EvidenceReference[];
-  conflict: boolean;
-}
+import { readNativeHistory, identifier, nativeTimestamp, nativeMessageKey as messageKey, type NativeEvent } from "./agent-host-history.js";
 
 /** Mutable message assembly is confined to this generation; validation freezes published facts. */
 type Message = Extract<ReadView["events"][number], { kind: "message" }>;
 type NativeMessage = NonNullable<Message["nativeMessage"]>;
-
-/** Independent retention ceilings include malformed records, blanks and exact replay anchors. */
-const historyLimits = Object.freeze({
-  recordBytes: 256 * 1024,
-  totalBytes: 8 * 1024 * 1024,
-  identities: 8192,
-  records: 32768,
-});
-
-/** Reject impossible calendar dates before Date.parse can normalize them to another day. */
-const nativeTimestamp = z.iso.datetime({ offset: true });
 
 /** Types that cannot themselves establish a submitted instruction or complete response. */
 const nonMessageEvents = new Set([
@@ -50,25 +27,6 @@ const nonMessageEvents = new Set([
   "pending_messages.modified", "session.context_changed", "session.model_change",
 ]);
 
-/** JSON objects only; arrays and null cannot supply event fields. */
-function object(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-/** Identifiers are retained verbatim, not trimmed, coerced or inferred from paths/text. */
-function identifier(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-/** Valid agent identity scopes logical messages; malformed agent variants cannot split a replay key. */
-function messageKey(event: NativeEvent): string {
-  const messageId = identifier(event.data.messageId);
-  return JSON.stringify([
-    event.type, identifier(event.value.agentId),
-    messageId === null ? "event-id" : "message-id", messageId ?? event.id,
-  ]);
-}
-
 /**
  * Read the qualified format-1 native stream and catalog within runtime-owned bounds/lifetimes.
  * Only retained user.message records establish instruction identity. Deltas, queued snapshots,
@@ -80,14 +38,11 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
   const startedAtMs = Date.now();
   const history = input.get("history");
   const catalog = input.get("catalog");
-  const issues: ReadView["issues"][number][] = [];
-  const records = new Map<string, NativeEvent>();
-  const malformedIds = new Map<string, EvidenceReference[]>();
-  const conflictingMessages = new Set<string>();
+  const parsed = await readNativeHistory(history, input.readId, input.signal);
+  const { records, issues, producer, version, start } = parsed;
+  const conflictingMessages = new Set(parsed.conflicts.map(messageKey));
   const events: Message[] = [];
   const sessions: ReadView["sessions"][number][] = [];
-  let producer: string | null = null;
-  let version: string | null = null;
   let qualified = false;
   /** Aggregate payload-free diagnostics while preserving all supplied original anchors. */
   const issue = (
@@ -131,87 +86,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
       sessions, events, issues,
     });
   };
-  input.signal.throwIfAborted();
-  if (!history.available || history.kind !== "file") {
-    issue(history.sourceId, "unreadable-source", "Native history is unavailable; no archive or saved-chat fallback is attempted.");
-    return finish();
-  }
-  for await (const line of jsonLines({
-    readId: input.readId, sourceId: history.sourceId,
-    bytes: history.bytes, signal: input.signal,
-  }, {
-    maxRecordBytes: historyLimits.recordBytes,
-    onLine(line) {
-      if (line.byteLength > historyLimits.recordBytes || line.line > historyLimits.records ||
-          line.byteOffset + line.byteLength + (line.terminated ? 1 : 0) > historyLimits.totalBytes)
-        throw new RuntimeError("READ_LIMIT", "Native history exceeded its record or retained-byte limit.", 413);
-    },
-  })) {
-    const reference: EvidenceReference = {
-      sourceId: history.sourceId,
-      recordId: "error" in line ? `unparsed-line:${line.line}:byte:${line.byteOffset}` : line.recordId,
-      location: { kind: "jsonl", line: line.line, pointer: "", byteOffset: line.byteOffset, byteLength: line.byteLength },
-    };
-    if ("error" in line) {
-      issue(history.sourceId, line.terminated ? "unsupported-schema" : "truncated-record",
-        "A native record is malformed, oversized or interrupted; its content was not reconstructed.", [reference]);
-      continue;
-    }
-    const value = line.value;
-    const id = object(value) ? identifier(value.id) : null;
-    if (id !== null && !records.has(id) && !malformedIds.has(id) &&
-        records.size + malformedIds.size >= historyLimits.identities)
-      throw new RuntimeError("READ_LIMIT", "Native history exceeded its distinct-event identity limit.", 413);
-    if (!object(value) || id === null || !identifier(value.type) || !object(value.data)) {
-      if (id !== null) {
-        const previous = records.get(id);
-        if (previous) {
-          previous.conflict = true;
-          previous.references.push(reference);
-          conflictingMessages.add(messageKey(previous));
-        } else {
-          const references = malformedIds.get(id) ?? [];
-          references.push(reference);
-          malformedIds.set(id, references);
-        }
-      }
-      issue(history.sourceId, "unsupported-schema", "Native event envelope is unsupported.", [reference]);
-      continue;
-    }
-    const previous = records.get(id);
-    if (previous) {
-      previous.references.push(reference);
-      if (!isDeepStrictEqual(previous.value, value)) {
-        previous.conflict = true;
-        conflictingMessages.add(messageKey(previous));
-        conflictingMessages.add(messageKey({
-          value, id, type: String(value.type), data: value.data, references: [reference], conflict: true,
-        }));
-      }
-    } else {
-      const malformed = malformedIds.get(id) ?? [];
-      const event: NativeEvent = {
-        value, id, type: String(value.type), data: value.data,
-        references: [...malformed, reference], conflict: malformed.length > 0,
-      };
-      records.set(id, event);
-      if (event.conflict) conflictingMessages.add(messageKey(event));
-      malformedIds.delete(id);
-    }
-  }
-  const starts = [...records.values()].filter((event) => event.type === "session.start");
-  const start = starts[0];
-  producer = identifier(start?.data.producer);
-  version = identifier(start?.data.copilotVersion);
-  if (starts.length !== 1 || !start || start.conflict ||
-      records.values().next().value !== start ||
-      start.data.version !== 1 || start.data.producer !== "copilot-agent" ||
-      start.data.copilotVersion !== "1.0.103-unstable.r41379698026.g3219c66" ||
-      !identifier(start.data.sessionId) || start.value.agentId !== undefined ||
-      start.value.parentId !== null) {
-    issue(history.sourceId, "unsupported-schema", "A unique qualified format-1 session.start with the pinned producer/runtime is required.", starts.flatMap((event) => event.references));
-    return finish();
-  }
+  if (!start) return finish();
   const sdkSessionId = String(start.data.sessionId);
   if (!catalog.available || catalog.kind !== "sqlite") {
     issue(catalog.sourceId, "unreadable-source", "Agent Host catalog is unavailable; a shared native SDK file alone does not establish Agent Host ownership.");
