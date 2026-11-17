@@ -563,7 +563,7 @@ test("ordinary startup registers executions as explicitly unavailable before sou
   assert.equal(service.view, null);
 });
 
-test("verified native candidate exercises read/refresh/original evidence and preserves synthetic source bytes", {
+test("verified native candidate retains 300 bridged turns within the shared query budget and preserves source bytes", {
   skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-insights-execution-native-"));
@@ -589,7 +589,20 @@ test("verified native candidate exercises read/refresh/original evidence and pre
     CREATE TABLE turn_usage(turn_id TEXT PRIMARY KEY NOT NULL, usage TEXT NOT NULL);
     CREATE TABLE session_metadata(key TEXT PRIMARY KEY NOT NULL, value TEXT);
   `);
-  for (const [database, rows] of [[catalog, catalogRows()], [overlay, overlayRows()]] as const) {
+  const extraTurns = Array.from({ length: 299 }, (_, offset) => {
+    const index = offset + 1;
+    return {
+      event: event("user.message", `user-event-${index}`, { content: "fictional" }),
+      rows: [
+        row("turns", { id: `host-turn-${index}`, event_id: `user-event-${index}` }),
+        row("turn_usage", { turn_id: `host-turn-${index}`, usage: JSON.stringify({
+          _meta: { turnTokenTotals: [{ model: "model", inputTokens: index, cachedTokens: 0, outputTokens: index + 1 }] },
+        }) }),
+      ],
+    };
+  });
+  const retainedRows = [...overlayRows(), ...extraTurns.flatMap((turn) => turn.rows)];
+  for (const [database, rows] of [[catalog, catalogRows()], [overlay, retainedRows]] as const) {
     for (const original of rows) {
       const names = Object.keys(original.values);
       database.prepare(`INSERT INTO ${original.table} (${names.join(",")}) VALUES (${names.map(() => "?").join(",")})`)
@@ -597,6 +610,7 @@ test("verified native candidate exercises read/refresh/original evidence and pre
     }
   }
   await writeFile(file, [start(), event("user.message", "user-event", { content: "fictional" }),
+    ...extraTurns.map((turn) => turn.event),
     event("tool.execution_start", "s", { toolCallId: "call", toolName: "read", arguments: { command: "never-execute" } }),
     event("tool.execution_complete", "e", { toolCallId: "call", success: true, result: { content: "fictional-output" } }),
   ].map((value) => JSON.stringify(value)).join("\n") + "\n");
@@ -613,11 +627,24 @@ test("verified native candidate exercises read/refresh/original evidence and pre
   };
   const first = await service.readSet(selection, new AbortController().signal);
   assert.equal(first.events.filter((item) => item.kind === "tool-call").length, 1);
-  assert.equal(first.events.filter((item) => item.kind === "usage-observation").length, 2);
+  const observations = executions(first).filter((item) => item.kind === "usage-observation");
+  assert.equal(observations.length, 301);
+  assert.ok(observations.every((item) => item.observation?.additive === false && item.startedAtMs === null));
+  assert.deepEqual(observations.filter((item) => item.nativeId === "host-turn").map((item) => item.usage?.input), [30, 20]);
+  for (const [offset, turn] of extraTurns.entries()) {
+    const matched = observations.filter((item) => item.nativeId === turn.rows[0]!.values.id);
+    assert.equal(matched.length, 1);
+    assert.equal(matched[0]?.usage?.input, offset + 1);
+    assert.equal(matched[0]?.usage?.output, offset + 2);
+    assert.ok(matched[0]?.references.some((ref) => ref.location.kind === "sqlite" &&
+      ref.location.table === "turn_usage" && ref.location.column === "usage" &&
+      ref.location.pointer === "/_meta/turnTokenTotals/0"));
+  }
   const refreshed = await service.readSet(selection, new AbortController().signal);
   assert.notEqual(refreshed.id, first.id);
   assert.equal(service.view?.id, refreshed.id);
   assert.equal(first.events[0]?.nativeId, refreshed.events[0]?.nativeId);
+  assert.equal(refreshed.events.filter((item) => item.kind === "usage-observation").length, observations.length);
   assert.ok(first.events.some((item) => item.references.some((ref) => ref.location.kind === "sqlite" && ref.location.fingerprint.length === 64)));
   assert.deepEqual((await readdir(root)).sort(), files);
   assert.deepEqual(await Promise.all(immutable.map((name) => readFile(path.join(root, name)))), bytes);
