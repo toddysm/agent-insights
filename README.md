@@ -2,6 +2,14 @@
 
 Project for analyzing the usage of Copilot AI agents.
 
+## Prepare capture evidence
+
+Start with the [VS Code capture setup guide](docs/capture-setup.md) for Copilot
+Agent Host prerequisites, private paths, runtime-specific logging/export,
+verification and troubleshooting. Retained native history is the primary
+source; optional telemetry and the production native-reader gates are explained
+separately. No editor settings or private sessions are changed automatically.
+
 ## Experience design
 
 The [session-insights HTML walkthrough](design/session-insights/index.html)
