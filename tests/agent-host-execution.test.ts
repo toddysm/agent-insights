@@ -217,6 +217,23 @@ test("subagent lifecycle distinguishes its unique task wrapper, cancellation and
   assert.equal(agent?.usage, null);
 });
 
+test("completion-only subagent parent metadata never establishes a root wrapper", async () => {
+  for (const parentId of ["parent-task", null, 7]) {
+    const view = await agentHostExecutionReader.read(input([
+      start(),
+      event("tool.execution_start", "tool-s", { toolCallId: "task", toolName: "task" }),
+      event("subagent.started", "agent-s", { toolCallId: "task", agentName: "worker" }, { agentId: "child" }),
+      event("subagent.completed", "agent-e", { toolCallId: "task", parentId }, { agentId: "child" }),
+      event("tool.execution_complete", "tool-e", { toolCallId: "task", success: true }),
+    ]));
+    const tool = executions(view).find((item) => item.kind === "tool-call");
+    const agent = executions(view).find((item) => item.kind === "agent-span");
+    assert.equal(tool?.nativeExecution?.accounting, "ambiguous");
+    assert.equal(agent?.nativeExecution?.parentAgentTaskId, typeof parentId === "string" ? parentId : null);
+    assert.ok(view.issues.some((issue) => issue.message.includes("non-additive")));
+  }
+});
+
 test("nested native ID collisions do not classify an unrelated tool as another agent's wrapper", async () => {
   const view = await agentHostExecutionReader.read(input([
     start(),
@@ -302,6 +319,29 @@ test("output-only native usage and session snapshots remain non-additive, not mo
   assert.equal(observations.find((item) => item.observation?.scope === "session-snapshot")?.usage?.input, 20);
   assert.ok(observations.some((item) => item.references.some((ref) => ref.location.pointer === "/data/modelMetrics/model~1a~0b/usage")));
   assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+});
+
+test("counterless sibling messages cannot bypass usage-bearing API group validation", async () => {
+  for (const chunkCount of [2, 3]) {
+    for (const counterlessFirst of [true, false]) {
+      const sibling = event("assistant.message", "counterless", { apiCallId: "api", chunkIndex: 0, chunkCount });
+      const chunks = [
+        event("assistant.message", "chunk-0", { apiCallId: "api", chunkIndex: 0, chunkCount: 2, outputTokens: 7 }),
+        event("assistant.message", "chunk-1", { apiCallId: "api", chunkIndex: 1, chunkCount: 2, outputTokens: 7 }),
+      ];
+      const view = await agentHostExecutionReader.read(input([
+        start(), ...(counterlessFirst ? [sibling, ...chunks] : [...chunks, sibling]),
+      ]));
+      assert.equal(view.events.length, 0);
+      const diagnostic = view.issues.find((issue) => issue.message.includes("conflicting API/chunk"));
+      assert.equal(diagnostic?.references?.length, 3);
+    }
+  }
+  const noUsage = await agentHostExecutionReader.read(input([
+    start(), event("assistant.message", "plain", { apiCallId: "api", content: "no usage report" }),
+  ]));
+  assert.equal(noUsage.events.length, 0);
+  assert.ok(noUsage.issues.every((issue) => !issue.message.includes("API/chunk")));
 });
 
 test("conflicting API aliases, missing chunks and transient usage cannot rescue another response group", async () => {

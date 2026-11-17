@@ -216,7 +216,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     const agent = agents[0];
     // Absent spawning parent denotes root. Nested task-registry/agent-ID equivalence is not qualified.
     const wrapper = agents.length === 1 && agent?.conflict === false && agent.start !== undefined &&
-      agent.start.data.parentId === undefined && nativeSessionScope(agent.start, sdk) === sdk &&
+      agent.records.every((event) => event.data.parentId === undefined && nativeSessionScope(event, sdk) === sdk) &&
       nativeSessionScope(first, sdk) === sdk &&
       agentId === null && lifecycle.records.every((event) => event.value.agentId === undefined) &&
       toolsByCall.get(lifecycle.nativeId ?? "") === 1;
@@ -257,8 +257,8 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
 }
 
 /**
- * Preserve output-only message observations once per native API/chunk identity and shutdown
- * model snapshots separately. Unknown operations/ephemeral per-call records are never spans.
+ * Validate every sibling of a usage-bearing native API response before preserving its output-only
+ * observation. Shutdown model snapshots remain separate; unknown/ephemeral operations are never spans.
  */
 function readNativeUsage(
   records: ReadonlyMap<string, NativeEvent>, conflicts: readonly NativeEvent[],
@@ -281,11 +281,9 @@ function readNativeUsage(
   ]);
   for (const event of records.values()) {
     if (event.type === "assistant.message") {
-      if (event.data.outputTokens !== undefined || event.conflict) {
-        const key = responseKey(event);
-        const group = responses.get(key) ?? [];
-        group.push(event); responses.set(key, group);
-      }
+      const key = responseKey(event);
+      const group = responses.get(key) ?? [];
+      group.push(event); responses.set(key, group);
     } else if (event.type === "session.shutdown" && !event.conflict) {
       if (event.value.agentId !== undefined || (event.value.ephemeral !== undefined && event.value.ephemeral !== false) ||
           (event.data.sessionId !== undefined && event.data.sessionId !== sdk)) {
@@ -322,6 +320,8 @@ function readNativeUsage(
   }
   for (const group of responses.values()) {
     const first = group[0]!;
+    const poisonedScope = poisoned.has(responseKey(first));
+    if (!poisonedScope && !group.some((event) => event.data.outputTokens !== undefined || event.conflict)) continue;
     const refs = group.flatMap((event) => event.references);
     const counts = new Set(group.map((event) => event.data.outputTokens));
     const chunked = group.some((event) => event.data.chunkIndex !== undefined || event.data.chunkCount !== undefined);
@@ -332,7 +332,7 @@ function readNativeUsage(
       group.every((event) => event.data.chunkCount === count && typeof event.data.chunkIndex === "number" &&
         Number.isSafeInteger(event.data.chunkIndex) && event.data.chunkIndex >= 0 && event.data.chunkIndex < count);
     const output = tokenCount(first.data.outputTokens);
-    if (poisoned.has(responseKey(first)) ||
+    if (poisonedScope ||
         group.some((event) => event.conflict ||
           (event.value.ephemeral !== undefined && event.value.ephemeral !== false) ||
           (event.value.agentId !== undefined && !identifier(event.value.agentId)) ||
