@@ -364,6 +364,9 @@ exceeding a ceiling fails the entire read rather than publishing an evicted subs
 
 Exact native event replays merge original anchors. Conflicting event/lifecycle
 identities poison every affected call; they are not arbitrarily paired.
+Conflicting subagent boundaries remain negative wrapper witnesses even without
+a retained completion. Invalid optional relationship fields remain unavailable
+and diagnosed without erasing independently qualified session assignment.
 `nativeExecution` retains all contributing event IDs and event-graph predecessor
 IDs separately from call/agent/turn/task-parent relationships. Each event also
 retains native identifier namespaces independently of session association.

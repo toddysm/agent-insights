@@ -114,10 +114,15 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     ownership?.reason ?? "Agent Host catalog is unavailable; native SDK executions remain unassigned.", ownership?.references);
   const sessionId = sessions[0]?.id ?? null;
   const lifecycles = new Map<string, Lifecycle>();
-  const poisoned = new Set(parsed.conflicts.flatMap((event) => {
+  const poisoned = new Set<string>();
+  const poisonedAgentCalls = new Set<string>();
+  for (const event of parsed.conflicts) {
     const key = lifecycleKey(event, sdk);
-    return key ? [key.key] : [];
-  }));
+    if (!key) continue;
+    poisoned.add(key.key);
+    if (key.kind === "agent-span" && key.nativeId !== null)
+      poisonedAgentCalls.add(wrapperCallKey(event, sdk, key.nativeId));
+  }
   for (const event of records.values()) {
     input.signal.throwIfAborted();
     if ((event.value.agentId !== undefined && !identifier(event.value.agentId)) ||
@@ -175,8 +180,9 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     const agentId = field("agentId", true);
     const parentToolCallId = field("parentToolCallId");
     const turnId = field("turnId");
-    const reportedSession = field("sessionId");
-    const assigned = !malformed && (reportedSession === null || reportedSession === sdk);
+    const assigned = lifecycle.nativeId !== null && lifecycle.records.every((event) =>
+      nativeSessionScope(event, sdk) === sdk &&
+      (event.value.agentId === undefined || identifier(event.value.agentId) !== null));
     let startedAtMs = lifecycle.start ? eventTime(lifecycle.start) : null;
     let endedAtMs = last ? eventTime(last) : null;
     if ((lifecycle.start && startedAtMs === null) || (last && endedAtMs === null))
@@ -216,16 +222,19 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     }
     if (malformed || !assigned)
       issue(history.sourceId, "unsupported-schema", "Lifecycle has malformed or conflicting identity, metadata or status; unavailable fields were not repaired.", refs);
-    const agents = lifecycle.kind === "tool-call" && lifecycle.nativeId !== null
-      ? agentsByCall.get(wrapperCallKey(first, sdk, lifecycle.nativeId)) ?? [] : [];
+    const callKey = lifecycle.kind === "tool-call" && lifecycle.nativeId !== null
+      ? wrapperCallKey(first, sdk, lifecycle.nativeId) : null;
+    const agents = callKey === null ? [] : agentsByCall.get(callKey) ?? [];
+    const poisonedAgent = callKey !== null && poisonedAgentCalls.has(callKey);
+    const overlappingAgent = agents.length > 0 || poisonedAgent;
     const agent = agents[0];
     // Lifecycle keys already make the root tool unique within its SDK/envelope-agent scope.
-    const wrapper = agents.length === 1 && agent?.conflict === false && agent.start !== undefined &&
+    const wrapper = !poisonedAgent && agents.length === 1 && agent?.conflict === false && agent.start !== undefined &&
       agent.records.every((event) => event.data.parentId === undefined && nativeSessionScope(event, sdk) === sdk &&
         (event.value.agentId === undefined || identifier(event.value.agentId) !== null)) &&
       nativeSessionScope(first, sdk) === sdk &&
       agentId === null && lifecycle.records.every((event) => event.value.agentId === undefined);
-    if (agents.length > 0 && !wrapper)
+    if (overlappingAgent && !wrapper)
       issue(history.sourceId, "ambiguous-session", "Tool and subagent IDs overlap without a qualified unique root-parent relationship; accounting is ambiguous and non-additive.", refs);
     events.push({
       id: `${input.readId}:execution:${events.length}`, kind: lifecycle.kind,
@@ -243,7 +252,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
         parentEventIds: [...new Set(lifecycle.records.flatMap((event) => typeof event.value.parentId === "string" ? [event.value.parentId] : []))],
         agentId, turnId, toolCallId: lifecycle.kind === "assistant-turn" ? null : lifecycle.nativeId,
         parentToolCallId, parentAgentTaskId, completeness,
-        accounting: wrapper ? "bridge-wrapper" : agents.length > 0 ? "ambiguous" : lifecycle.kind === "assistant-turn" ? "boundary" : "execution",
+        accounting: wrapper ? "bridge-wrapper" : overlappingAgent ? "ambiguous" : lifecycle.kind === "assistant-turn" ? "boundary" : "execution",
         cancelled,
       },
     });

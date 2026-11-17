@@ -267,6 +267,49 @@ test("foreign sessions and other tool-agent scopes cannot change qualified root 
   assert.equal(executions(invalidAgent).find((item) => item.kind === "tool-call")?.nativeExecution?.accounting, "ambiguous");
 });
 
+test("conflicting subagent replays remain scoped negative wrapper witnesses without completion", async () => {
+  for (const sessionId of ["sdk-synthetic", "other-sdk"]) {
+    const conflicting = event("subagent.started", "replayed-agent", {
+      sessionId, toolCallId: "shared", agentName: "first",
+    }, { agentId: "child" });
+    const view = await agentHostExecutionReader.read(input([
+      start(),
+      event("tool.execution_start", "tool-s", { toolCallId: "shared", toolName: "task" }),
+      event("tool.execution_complete", "tool-e", { toolCallId: "shared", success: true }),
+      conflicting, { ...conflicting, data: { ...conflicting.data, agentName: "conflicting" } },
+    ]));
+    const tool = executions(view).find((item) => item.kind === "tool-call");
+    assert.equal(tool?.nativeExecution?.accounting, sessionId === "sdk-synthetic" ? "ambiguous" : "execution");
+    assert.equal(executions(view).filter((item) => item.kind === "agent-span").length, 0);
+    assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session" && issue.references?.length));
+  }
+});
+
+test("invalid optional relationships do not erase independently qualified session assignment", async () => {
+  for (const relationship of ["parentToolCallId", "turnId"]) {
+    for (const [first, last] of [[7, undefined], [null, undefined], ["first", "different"]]) {
+      for (const subagent of [false, true]) {
+        const scope = subagent ? { agentId: "child" } : {};
+        const view = await agentHostExecutionReader.read(input([
+          start(),
+          event(subagent ? "subagent.started" : "tool.execution_start", "s", {
+            sessionId: "sdk-synthetic", toolCallId: "call", [subagent ? "agentName" : "toolName"]: "worker", [relationship]: first,
+          }, scope),
+          event(subagent ? "subagent.completed" : "tool.execution_complete", "e", {
+            toolCallId: "call", success: true, [relationship]: last,
+          }, scope),
+        ]));
+        assert.equal(view.events.length, 1);
+        const execution = executions(view)[0];
+        assert.equal(execution?.sessionId, view.sessions[0]?.id);
+        assert.equal(execution?.status, "ok");
+        assert.equal(relationship === "turnId" ? execution?.nativeExecution?.turnId : execution?.nativeExecution?.parentToolCallId, null);
+        assert.ok(view.issues.some((issue) => issue.code === "unsupported-schema"));
+      }
+    }
+  }
+});
+
 test("nested native ID collisions do not classify an unrelated tool as another agent's wrapper", async () => {
   const view = await agentHostExecutionReader.read(input([
     start(),
