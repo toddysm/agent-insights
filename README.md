@@ -21,10 +21,14 @@ The [Agent Host conversation reader](docs/evidence-contracts.md#agent-host-conve
 uses this boundary for explicitly selected native history and its authoritative
 host catalog. It remains gated out of production pending a separately qualified
 compatible native-helper release; a development candidate does not enable it.
+The [Agent Host execution reader](docs/evidence-contracts.md#agent-host-execution-reader)
+adds retained tools/agents/turns and non-additive usage observations. It is
+registered but explicitly unavailable pending a compatible qualified helper
+release; it does not invent model calls or complete token totals from native history.
 The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
 memory-only model execution. The first production reader handles VS Code's
 OpenTelemetry extension file export in place. Local saved-chat conversation readers,
-Agent Host execution accounting, report views and interpretation definitions
+production Agent Host availability, report views and interpretation definitions
 remain pending; unavailable capabilities do not
 show example data as real results.
 The [bounded JSONL scan](docs/local-runtime.md#scan-large-jsonl-captures-in-place)

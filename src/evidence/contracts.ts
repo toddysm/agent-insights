@@ -168,6 +168,12 @@ export const nativeIdentitySchema = z
       "agent-host-chat",
       "agent-host-storage-session",
       "agent-host-storage-chat",
+      "copilot-sdk-event",
+      "copilot-sdk-agent",
+      "copilot-sdk-tool-call",
+      "copilot-sdk-turn",
+      "copilot-sdk-api-call",
+      "agent-host-turn",
     ]),
     value: id,
   })
@@ -183,7 +189,7 @@ export const executionContentSchema = z
   })
   .readonly();
 
-/** Recorded messages and spans only. Missing timestamps/content/usage are explicit nulls. */
+/** Recorded messages, executions, turn boundaries and non-additive usage; no inferred model spans. */
 export const eventSchema = z.discriminatedUnion("kind", [
   z
     .strictObject({
@@ -226,7 +232,7 @@ export const eventSchema = z.discriminatedUnion("kind", [
   z
     .strictObject({
       ...eventFields,
-      kind: z.enum(["model-call", "tool-call", "agent-span", "hook-execution"]),
+      kind: z.enum(["model-call", "tool-call", "agent-span", "hook-execution", "assistant-turn", "usage-observation"]),
       name: id.nullable(),
       startedAtMs: milliseconds.nullable(),
       endedAtMs: milliseconds.nullable(),
@@ -260,6 +266,25 @@ export const eventSchema = z.discriminatedUnion("kind", [
         .readonly()
         .optional(),
       content: executionContentSchema.optional(),
+      /** Native graph edges are not execution parents; paired envelopes retain both namespaces. */
+      nativeExecution: z.strictObject({
+        eventIds: z.array(id).min(1).readonly(),
+        parentEventIds: z.array(id).readonly(),
+        agentId: id.nullable(),
+        turnId: id.nullable(),
+        toolCallId: id.nullable(),
+        parentToolCallId: id.nullable(),
+        parentAgentTaskId: id.nullable(),
+        completeness: z.enum(["complete", "missing-start", "missing-completion"]),
+        accounting: z.enum(["execution", "bridge-wrapper", "ambiguous", "boundary", "observation"]),
+        cancelled: z.boolean().nullable(),
+      }).readonly().optional(),
+      /** These observations can overlap each other and executions; they are never additive totals. */
+      observation: z.strictObject({
+        scope: z.enum(["assistant-output", "turn-inclusive", "turn-direct", "session-snapshot"]),
+        additive: z.literal(false),
+        model: id.nullable(),
+      }).readonly().optional(),
     })
     .refine(
       (event) =>
@@ -267,6 +292,11 @@ export const eventSchema = z.discriminatedUnion("kind", [
         event.endedAtMs === null ||
         event.endedAtMs >= event.startedAtMs,
       { message: "Span end precedes its start" },
+    )
+    .refine(
+      (event) => event.kind !== "usage-observation" ||
+        (event.observation !== undefined && event.usage !== null && event.usage.basis !== "per-call"),
+      { message: "Usage observations must state their non-additive scope" },
     )
     .readonly(),
 ]);

@@ -42,6 +42,8 @@ export const statusSchema = z.strictObject({
   multiSourceReaders: z.array(
     z.strictObject({
       id: z.string(),
+      available: z.boolean().optional(),
+      reason: z.string().nullable().optional(),
       inputs: z.array(
         z.strictObject({
           key: z.string(),
