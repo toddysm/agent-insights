@@ -161,13 +161,14 @@
       .replace(".000Z", " UTC (synthetic)");
   }
 
-  /** Replace the report after failed reads; retry and source selection never resurrect archived evidence. */
-  function sourceUnavailable() {
-    return heading(
-      state.sourceState === "changed" ? "Source changed during a read" : "Source unavailable",
-      "NO REPORT FOR THIS READ",
-      `Selected synthetic source / read ${state.readId} / ${readTime()}`,
-    ) + `<div class="callout error" role="alert">${state.sourceState === "changed" ? "This view could not establish the needed source coverage." : "The harness removed, rotated, or no longer exposes this evidence."} No successful totals or older interpretations are shown.</div><p>There is no application archive, saved analysis history, or source replica to fall back to.</p><div class="actions"><button class="button" data-action="refresh">Retry synthetic read</button><button class="secondary" data-action="import">Choose another example</button></div><p class="small muted">Retry illustrates a harness source becoming available again; it does not restore an application copy.</p>`;
+  /** Show failed-read recovery, optionally beneath an existing page heading; never resurrect cached evidence. */
+  function sourceUnavailable(withHeading = true) {
+    const title = state.sourceState === "changed" ? "Source changed during a read" : "Source unavailable";
+    const scope = `Selected synthetic source / read ${state.readId} / ${readTime()}`;
+    return (withHeading
+      ? heading(title, "NO REPORT FOR THIS READ", scope)
+      : `<h2>${h(title)}</h2><p class="meta">${h(scope)}</p>`) +
+      `<div class="callout error" role="alert">${state.sourceState === "changed" ? "This view could not establish the needed source coverage." : "The harness removed, rotated, or no longer exposes this evidence."} No successful totals or older interpretations are shown.</div><p>There is no application archive, saved analysis history, or source replica to fall back to.</p><div class="actions"><button class="button" data-action="refresh">Retry synthetic read</button><button class="secondary" data-action="import">Choose another example</button></div><p class="small muted">Retry illustrates a harness source becoming available again; it does not restore an application copy.</p>`;
   }
 
   /** Offer a useful path forward when synthetic content or analysis is unavailable. */
@@ -188,14 +189,14 @@
       "Your sessions",
       "THE STARTING POINT",
       "Choose a conversation. Understand the work behind it.",
-      `<button class="button" data-action="import">Open demo source</button><button class="secondary" data-action="discover">Find demo sessions</button>${state.imported ? '<button class="secondary" data-action="refresh">Refresh selected source</button>' : ""}`,
+      `<button class="button" data-action="import">Open demo source</button><button class="secondary" data-action="discover">Find demo sessions</button>${state.imported && state.sourceState === "ready" ? '<button class="secondary" data-action="refresh">Refresh selected source</button>' : ""}`,
     );
     if (!state.imported)
       return (
         intro +
         `<section class="empty"><div class="empty-symbol" aria-hidden="true">01</div><h2>A report starts with evidence.</h2><p class="muted">No supported harness source is selected. Choose existing evidence; capture setup cannot recover historical content.</p><div class="actions"><button class="button" data-action="import">Open a synthetic example</button><button class="secondary" data-action="capture-help">Capture prerequisites</button></div><p class="small muted">This prototype does not open a file picker, scan directories, or read real conversations.</p></section>`
       );
-    if (state.sourceState !== "ready") return intro + sourceUnavailable();
+    if (state.sourceState !== "ready") return intro + sourceUnavailable(false);
     return (
       intro +
       `<div class="filter-bar"><label>Search sessions<input id="session-search" type="search" value="${h(filters.search)}" placeholder="Session or project"></label></div>
@@ -860,6 +861,14 @@
     }
   }
 
+  /** Replace the fixture without reusing read or run identities within this page. */
+  function replaceSource(mode) {
+    const nextState = M.createState(mode);
+    nextState.readId = state.readId + 1;
+    nextState.runSequence = state.runSequence;
+    state = nextState;
+  }
+
   /** Load a fresh synthetic fixture; missing/changed-source scenarios invalidate its report rather than showing cached results. */
   function loadScenario(name) {
     const mode = ["empty", "partial", "analysis-off"].includes(name)
@@ -867,7 +876,7 @@
       : name === "unsupported"
         ? "empty"
         : "complete";
-    state = M.createState(mode);
+    replaceSource(mode);
     if (name === "source-changed" || name === "source-unavailable")
       M.refreshSource(state, name === "source-changed" ? "changed" : "unavailable");
     filters.search = "";
@@ -950,11 +959,14 @@
       openPanel(action);
     else if (action === "reset") loadScenario("report");
     else if (action === "refresh") {
+      const restoreFocus = !dialog.open && main.contains(document.activeElement);
       M.refreshSource(state);
       filters.purpose = "All";
       filters.artifactTask = "All";
       dirty = true;
       navigate(route().base);
+      if (restoreFocus)
+        (main.querySelector('[data-action="refresh"]') || main.querySelector("h1"))?.focus({ preventScroll: true });
       announce("Synthetic source reread. Older interpretations discarded; no analysis started.");
     } else if (action === "settle-analysis") {
       M.finishAnalysis(state, state.run?.id, button.dataset.result);
@@ -963,7 +975,7 @@
       announce(`Synthetic analysis ${state.run.status}. No model request was made.`);
     }
     else if (action === "transcript-demo" || action === "load-import") {
-      state = M.createState(
+      replaceSource(
         action === "transcript-demo" ? "transcript" : button.dataset.mode,
       );
       filters.purpose = "All";

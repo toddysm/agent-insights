@@ -111,9 +111,10 @@ result alongside its recorded helper deletion, not just a generic success label.
 Local hash links can reopen task/evidence views, for example
 [the CSV task's steering evidence](index.html#task/t1?panel=steering&task=t1).
 Links describe the current transient fixture, not saved history.
-User-opened details include a source-read tag; stale tags and unknown records
-produce explicit unavailable states. Original session/task instruction anchors
-stay distinct.
+User-opened details include a source-read tag. Read identities increase across
+refreshes and source replacements within the open page; stale tags and unknown
+records produce explicit unavailable states. Original session/task instruction
+anchors stay distinct.
 
 ## Real behavior and boundaries
 

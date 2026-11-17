@@ -220,12 +220,37 @@ test("refresh supersedes analysis, invalidates old evidence links and never star
   await page.getByRole("button", { name: "Close detail" }).click();
   await startAnalysis(page);
   await page.getByRole("button", { name: "Close detail" }).click();
+  await expect(page.locator("#detail")).not.toBeVisible();
   await expect(page.locator("#metric-tools-session .metric-value")).toHaveText("27");
-  await page.getByRole("button", { name: "Refresh source", exact: true }).click();
+  const refresh = page.getByRole("button", { name: "Refresh source", exact: true });
+  await refresh.focus();
+  await expect(refresh).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(refresh).toBeFocused();
   await expect(page.locator("#main")).toContainText("source read 2:");
   await expect(page.locator("#main")).toContainText("Analysis: superseded");
   await expect(page.locator("#main tbody tr")).toHaveCount(0);
   await page.evaluate((hash) => { location.hash = hash; }, new URL(oldLink).hash);
+  await expect(page.locator("#detail [role=alert]")).toContainText("older evidence link is unavailable");
+});
+
+test("source replacements cannot reuse an old evidence link's read identity", async ({ page }) => {
+  await open(page);
+  await page.getByRole("button", { name: "Refresh source", exact: true }).click();
+  await page.evaluate(() => { location.hash = "report?panel=request&read=2&id=m4"; });
+  await expect(page.locator("#detail pre")).toContainText('"inputTokens": 1500');
+  const oldLink = new URL(page.url()).hash;
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await scenario(page, "partial");
+  await page.getByRole("button", { name: "Refresh source", exact: true }).click();
+  await page.evaluate((hash) => { location.hash = hash; }, oldLink);
+  await expect(page.locator("#detail [role=alert]")).toContainText("older evidence link is unavailable");
+  await page.getByRole("button", { name: "Return to the report", exact: true }).click();
+  await page.locator("[data-nav=sessions]").click();
+  await page.getByRole("button", { name: "Open demo source", exact: true }).click();
+  await page.getByRole("button", { name: "Load content + traces example" }).click();
+  await expect(page.locator("#detail")).not.toBeVisible();
+  await page.evaluate((hash) => { location.hash = hash; }, oldLink);
   await expect(page.locator("#detail [role=alert]")).toContainText("older evidence link is unavailable");
 });
 
@@ -235,6 +260,10 @@ test("S8 unavailable and changing sources remove old reports and block evidence 
     await scenario(page, name);
     await expect(page.locator("#main [role=alert]")).toContainText("No successful totals");
     await expect(page.locator("#main tbody tr, #metric-tools-session")).toHaveCount(0);
+    await page.locator("[data-nav=sessions]").click();
+    await expect(page.locator("#main h1")).toHaveText("Your sessions");
+    await expect(page.locator("#main .breadcrumb")).toHaveCount(1);
+    await expect(page.locator('#main [data-action="refresh"]')).toHaveCount(1);
     await page.evaluate(() => { location.hash = "report?panel=tool&id=c1"; });
     await expect(page.getByRole("heading", { name: "Source evidence unavailable" })).toBeVisible();
     await page.locator("#detail").getByRole("button", { name: "Retry synthetic read" }).click();
