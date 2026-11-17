@@ -319,15 +319,17 @@
       );
     const artifacts = state.artifacts.filter(
       (item) =>
-        (filters.purpose === "All" || item.purpose === filters.purpose) &&
-        (filters.artifactTask === "All" ||
-          M.artifactTasks(state, item).includes(filters.artifactTask)),
+        !state.analyzed ||
+        ((filters.purpose === "All" || item.purpose === filters.purpose) &&
+          (filters.artifactTask === "All" ||
+            M.artifactTasks(state, item).includes(filters.artifactTask))),
     );
     return (
       intro +
       coverageNotice() +
       `<div class="badge-row">${badge(`${state.artifacts.length} unique artifacts`)}${badge(state.analyzed ? "Purpose labels: model-inferred" : "Purpose: not analyzed", "neutral")}${badge("Files: 6 / pull requests: 0 / issues: 0", "neutral")}</div>
-      <div class="filter-bar"><div class="filter-control"><label for="purpose-filter">Purpose</label><select id="purpose-filter" ${!state.analyzed ? "disabled" : ""}>${["All", "Deliverable", "Temporary helper", "Supporting artifact", "Unknown"].map((value) => `<option ${filters.purpose === value ? "selected" : ""}>${h(value)}</option>`).join("")}</select></div><div class="filter-control"><label for="artifact-task-filter">Task</label><select id="artifact-task-filter" ${!state.analyzed ? "disabled" : ""}><option value="All">${state.analyzed ? "All tasks" : "Attribution not analyzed"}</option>${(state.analyzed ? state.tasks : []).map((task) => `<option value="${h(task.id)}" ${filters.artifactTask === task.id ? "selected" : ""}>${h(task.title)}</option>`).join("")}</select></div></div>
+      <div class="filter-bar"><div class="filter-control"><label for="purpose-filter">Purpose</label><select id="purpose-filter" ${!state.analyzed ? "disabled" : ""}>${["All", "Deliverable", "Temporary helper", "Supporting artifact", "Unknown"].map((value) => `<option ${(state.analyzed ? filters.purpose : "All") === value ? "selected" : ""}>${h(value)}</option>`).join("")}</select></div><div class="filter-control"><label for="artifact-task-filter">Task</label><select id="artifact-task-filter" ${!state.analyzed ? "disabled" : ""}><option value="All">${state.analyzed ? "All tasks" : "Attribution not analyzed"}</option>${(state.analyzed ? state.tasks : []).map((task) => `<option value="${h(task.id)}" ${filters.artifactTask === task.id ? "selected" : ""}>${h(task.title)}</option>`).join("")}</select></div></div>
+      ${!state.analyzed ? '<p class="small muted">All recorded identities are shown while purpose and task interpretation are unavailable. Previous filters return only after successful analysis.</p>' : ""}
       <div class="table-wrap"><table><thead><tr><th>Artifact / observed action</th><th>Purpose</th><th>Associated tasks</th><th>Evidence</th></tr></thead><tbody>${
         artifacts
           .map(
@@ -535,12 +537,21 @@
         .filter(([event]) => event === id)
         .map(([, action]) => `${action}: ${artifact.path}`),
     );
+    const result = tool.testResult ?? (
+      operations.length
+        ? "Operation result recorded."
+        : tool.status.startsWith("Failed")
+          ? "Expected filtered rows; received all rows.\nThis check failed. A later invocation records recovery."
+          : tool.name === "terminal"
+            ? "Synthetic test/check completed successfully."
+            : "Synthetic tool result for the selected task."
+    );
     return panelShell(
       `${tool.name} / ${tool.id.toUpperCase()}`,
       M.taskLabel(state, tool.taskId),
       `<div class="badge-row">${badge(tool.status, tool.status.startsWith("Failed") ? "danger" : "")}${badge(`${tool.durationMs} ms`, "neutral")}${badge(`Turn U${tool.turn}`, "neutral")}</div>
       <p class="small muted">This is one recorded tool invocation. Durations include waiting; they are not processor time.</p>
-      ${state.content ? `<h3>Recorded result / synthetic</h3><pre>${h(operations.length ? operations.join("\n") + "\nOperation result recorded." : tool.status.startsWith("Failed") ? "Expected filtered rows; received all rows.\nThis check failed. A later invocation records recovery." : tool.name === "terminal" ? "Synthetic test/check completed successfully." : "Synthetic tool result for the selected task.")}</pre><details><summary>Arguments and source anchor</summary><p>Example reference: ${h(tool.id)} / turn U${tool.turn}. No command on this page is executed.</p><code>${h(tool.name)}(synthetic task context)</code></details>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}`,
+      ${state.content ? `<h3>Recorded result / synthetic</h3><pre>${h([...operations, result].join("\n"))}</pre><details><summary>Arguments and source anchor</summary><p>Example reference: ${h(tool.id)} / turn U${tool.turn}. No command on this page is executed.</p><code>${h(tool.name)}(synthetic task context)</code></details>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}`,
     );
   }
 
@@ -623,7 +634,7 @@
       "SIMULATED ANALYSIS SETUP",
       `<p>The local product uses Copilot CLI as its first analysis executor, with remote model processing. A loopback dashboard is not on-device inference.</p><ul class="evidence-list"><li>Scope<span>Reporting improvements / source read ${state.readId}</span></li><li>Content<span>Prompts, replies, recorded tool results</span></li><li>Product destination<span>Copilot / remote model service</span></li><li>This prototype sends<span>Nothing / bundled fixtures only</span></li></ul>
       <div class="callout info">No API key, model connection, or external transmission is implemented here. Evidence is not executable instructions. In the product, retries may use additional analysis tokens, reported separately from this subject session.</div>
-      ${!state.content ? `<div class="callout">Message content is missing. Load a complete example or inspect capture help; this mock cannot fabricate an assessment.</div><button class="button" data-action="capture-help">Capture help</button>` : `<form class="form-stack" data-form="analysis"><label><input type="checkbox" name="acknowledge" required> I reviewed the scope and remote destination; run only a synthetic simulation here.</label><div class="actions"><button class="button" type="submit">Start simulated analysis</button><button class="secondary" type="button" data-action="close">Cancel</button></div></form>`}`,
+      ${!state.content ? `<div class="callout">Message content is missing. Load a complete example or inspect capture help; this mock cannot fabricate an assessment.</div><button class="button" data-action="capture-help">Capture help</button>` : `<form class="form-stack" data-form="analysis" novalidate><label><input type="checkbox" name="acknowledge" required> I reviewed the scope and remote destination; run only a synthetic simulation here.</label><p class="form-error" role="alert"></p><div class="actions"><button class="button" type="submit">Start simulated analysis</button><button class="secondary" type="button" data-action="close">Cancel</button></div></form>`}`,
     );
   }
 
@@ -965,7 +976,7 @@
       throw new RangeError("That action is not implemented in this prototype.");
   }
 
-  /** Start only an explicitly acknowledged simulation; interpretations are never edited or confirmed by forms. */
+  /** Validate acknowledgment in the model and start a simulation; inline errors avoid native validation popovers trapping dialog controls. */
   function handleForm(form) {
     const data = new FormData(form);
     if (form.dataset.form !== "analysis")

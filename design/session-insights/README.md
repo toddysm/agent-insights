@@ -66,7 +66,9 @@ a prerequisite.
 4. Fail or cancel, then explicitly retry through Analysis setup. No successful
    interpretations appear after failure/cancellation. Actual analysis requests
    made by this prototype are always zero; a product retry may incur separate
-   analysis usage.
+   analysis usage. The artifact inventory temporarily ignores purpose/task
+   filters when analysis is unavailable, showing all recorded identities.
+   Previous selections return only after successful analysis.
 5. While a run is open, close the panel and select **Refresh source**. This
    increments the synthetic source read/time, discards interpretations and
    supersedes the older run. Refresh never starts analysis. Old read-tagged
@@ -103,6 +105,8 @@ Observed elapsed time is 42 minutes; active interval union is 18 minutes, leavin
 24 minutes unobserved. One shared test file produces seven task/artifact
 associations. T2's **Source acceptance** opens exact synthetic human record C02,
 not a confirmation entered through the dashboard.
+T1's completion-evidence link opens C14's explicit synthetic passing-test
+result alongside its recorded helper deletion, not just a generic success label.
 
 Local hash links can reopen task/evidence views, for example
 [the CSV task's steering evidence](index.html#task/t1?panel=steering&task=t1).

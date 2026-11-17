@@ -124,6 +124,27 @@ test("S5 request evidence returns to the same scope and timing exposes overlap",
   await expect(page.locator("#detail")).toContainText("Human typing: unavailable");
 });
 
+test("artifact filters do not hide recorded identities after cancelled or failed analysis", async ({ page }) => {
+  await open(page, "artifacts");
+  await page.getByLabel("Purpose", { exact: true }).selectOption("Temporary helper");
+  await page.getByLabel("Task", { exact: true }).selectOption("t1");
+  await expect(page.locator("#main tbody tr")).toHaveCount(1);
+  for (const result of ["Cancel analysis", "Simulate analysis failure", "Show synthetic completion"]) {
+    await page.locator("[data-nav=report]").click();
+    await startAnalysis(page);
+    await page.getByRole("button", { name: result, exact: true }).click();
+    await expect(page.locator("#detail")).not.toBeVisible();
+    await page.locator("[data-nav=artifacts]").click();
+    const complete = result === "Show synthetic completion";
+    await expect(page.locator("#main tbody tr")).toHaveCount(complete ? 1 : 6);
+    await expect(page.getByLabel("Purpose", { exact: true })).toHaveValue(complete ? "Temporary helper" : "All");
+    if (!complete) {
+      await expect(page.getByLabel("Purpose", { exact: true })).toBeDisabled();
+      await expect(page.getByLabel("Task", { exact: true })).toBeDisabled();
+    }
+  }
+});
+
 test("S6 separates submission context, learned clarifications and suggested assumptions", async ({ page }) => {
   await open(page);
   await scenario(page, "prompts");
@@ -147,6 +168,14 @@ test("source acceptance opens the original human record, not a dashboard confirm
   await expect(page.locator("#detail")).toContainText("task remains partial");
 });
 
+test("evidence-backed completion links actual synthetic passing tests alongside artifact operations", async ({ page }) => {
+  await open(page, "task/t1");
+  await page.getByRole("button", { name: "Inspect outcome evidence" }).click();
+  await page.getByRole("button", { name: "Inspect recorded test result" }).click();
+  await expect(page.locator("#detail pre")).toContainText("8 passed, 0 failed");
+  await expect(page.locator("#detail pre")).toContainText("Deleted: temp/make-fixtures.py");
+});
+
 test("S8 missing content and usage remain unavailable rather than becoming zero", async ({ page }) => {
   await open(page);
   await scenario(page, "partial");
@@ -167,7 +196,9 @@ test("S8 acknowledged analysis supports cancellation, failure, explicit retry an
   await expect(page.locator("#detail")).toContainText("Copilot / remote model service");
   await page.getByRole("button", { name: "Start simulated analysis" }).click();
   await expect(page.getByRole("heading", { name: "Before an interpretation" })).toBeVisible();
+  await expect(page.locator("#detail [role=alert]")).toHaveText("Acknowledge the selected scope and destination first.");
   await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.locator("#detail")).not.toBeVisible();
   await startAnalysis(page);
   await page.getByRole("button", { name: "Cancel analysis", exact: true }).click();
   await expect(page.locator("#main")).toContainText("Analysis: cancelled");

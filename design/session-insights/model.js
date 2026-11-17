@@ -269,6 +269,9 @@ const InsightsModel = (() => {
           turn: toolTurns[group][index],
           durationMs: name === "terminal" ? 1400 + index * 80 : 40 + index * 17,
           status: toolIndex === 6 ? "Failed, recovered later" : "Succeeded",
+          testResult: toolIndex === 14
+            ? "CSV export filtered-row and escaping tests: 8 passed, 0 failed (synthetic)."
+            : null,
         })),
       ),
       requests: usage.flatMap((rows, group) =>
