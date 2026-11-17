@@ -33,11 +33,13 @@ See [application availability](#application-availability) before selecting sourc
    **Preferences: Open User Settings (JSON)** and merge
    `"chat.agentHost.agentDebugLog.enabled": true` into the existing top-level
    object. Do not replace unrelated settings.
-5. Run **Developer: Reload Window**, then start a new test session in the
-   intended harness. This is different from the **full application restart**
-   required for personal Agent Host exporter changes below. Logging is not
-   retroactive. New prompts can invoke remote models and incur usage; obtain
-   the necessary permission before generating a test.
+5. Coordinate interruption of other work, then **fully quit and restart VS Code**,
+   including other windows using the shared host, before starting a new Agent
+   Host test session. Reload-only activation of this host-side logging key has
+   not been verified by this guide; use a full restart rather than assuming
+   **Developer: Reload Window** applied it. Logging is not retroactive.
+   New prompts can invoke remote models and incur usage; obtain the necessary
+   permission before generating a test.
 6. Run **Developer: Open Agent Debug Logs**, select that session, and use the
    [verification checklist](#verify-capture-end-to-end). Missing controls or
    fields are compatibility/coverage findings, not proof of no activity.
@@ -157,7 +159,7 @@ and documented as Preview:
 
 | Runtime | Setting | Value for prospective logs |
 | --- | --- | --- |
-| Copilot Agent Host | `chat.agentHost.agentDebugLog.enabled` | `true` |
+| Copilot Agent Host | `chat.agentHost.agentDebugLog.enabled` | `true`; use the full application restart described in the quick start |
 | Extension-managed Local | `github.copilot.chat.agentDebugLog.fileLogging.enabled` | `true`; reload the window before testing |
 
 If you actually use both runtimes, merge both keys into User Settings:
@@ -176,7 +178,7 @@ need Local access for the primary Agent Host path.
 
 For optional file export, use a per-user directory outside every repository,
 shared by that user's projects. Different OS users should have different private
-locations. `~/.agent-insights/capture/copilot-otel.jsonl` is **documentation
+locations. `~/.agent-insights/capture/agent-host-otel.jsonl` is **documentation
 shorthand**, not necessarily a valid literal setting.
 
 ### macOS and Linux
@@ -186,11 +188,13 @@ analyzer:
 
 ```bash
 mkdir -p -m 700 "$HOME/.agent-insights/capture"
-printf '%s\n' "$HOME/.agent-insights/capture/copilot-otel.jsonl"
+printf '%s\n' "$HOME/.agent-insights/capture/agent-host-otel.jsonl"
 ```
 
-The shell expands `$HOME`; paste the printed **absolute path** into User Settings.
-For Agent Host, use a distinct filename such as `agent-host-otel.jsonl`.
+The shell expands `$HOME`; paste the printed **absolute path** into
+`chat.agentHost.otel.outfile` in User Settings. For the supplemental extension
+pipeline, use a separate `copilot-otel.jsonl` file and
+`github.copilot.chat.otel.outfile` instead.
 The pinned extension file exporter passes its path to the filesystem without
 expanding `~`, `$HOME` or `${userHome}`. VS Code variable substitution does not
 apply to arbitrary settings. Using absolute paths also avoids differences in
@@ -214,7 +218,7 @@ chmod 700 "$HOME/.agent-insights/capture"
 Inspect access-control lists with your OS tools as well. Directory permissions
 do not repair existing files' permissions or remove inherited ACL entries.
 After verifying ownership and policy, an existing personal regular capture file
-can be restricted with `chmod 600 /absolute/private/capture/copilot-otel.jsonl`.
+can be restricted with `chmod 600 /absolute/private/capture/agent-host-otel.jsonl`.
 Do not run recursive permission changes or modify harness database permissions.
 The setup recipe does not precreate an empty file as supposed capture evidence.
 
@@ -224,7 +228,7 @@ In PowerShell, construct the absolute path and a JSON-escaped setting value:
 
 ```powershell
 $capture = Join-Path $HOME '.agent-insights\capture'
-$outfile = Join-Path $capture 'copilot-otel.jsonl'
+$outfile = Join-Path $capture 'agent-host-otel.jsonl'
 $outfile | ConvertTo-Json -Compress
 ```
 
@@ -233,16 +237,17 @@ Security > Advanced** for ownership, inheritance and effective access. Ask an
 administrator if access is shared or policy-controlled; there is no blanket ACL
 reset command here. The path expression does not grant privacy.
 Paste the printed JSON string as the setting value. For example, the synthetic
-Windows path `C:\Users\EXAMPLE\.agent-insights\capture\copilot-otel.jsonl` becomes:
+Windows path `C:\Users\EXAMPLE\.agent-insights\capture\agent-host-otel.jsonl` becomes:
 
 ```json
 {
-  "github.copilot.chat.otel.outfile": "C:\\Users\\EXAMPLE\\.agent-insights\\capture\\copilot-otel.jsonl"
+  "chat.agentHost.otel.outfile": "C:\\Users\\EXAMPLE\\.agent-insights\\capture\\agent-host-otel.jsonl"
 }
 ```
 
-Replace the example with your own resolved path. The equivalent escaped string
-can be used for the host's `outfile`, with its separate filename. JSON backslashes
+Replace the example with your own resolved path. For the supplemental extension
+pipeline, use `github.copilot.chat.otel.outfile` with a separate
+`copilot-otel.jsonl` filename instead. JSON backslashes
 must be escaped; neither `%USERPROFILE%` nor `$HOME` is a portable literal value
 for an exporter setting. Windows path construction/escaping is distinct from
 Windows exporter, ACL or end-to-end qualification; see the
