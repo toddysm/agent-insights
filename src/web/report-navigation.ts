@@ -1,4 +1,5 @@
 /** Resolve read-scoped report navigation and exact original anchors, never nearest-record fallbacks. */
+import { z } from "zod";
 import {
   evidenceReferenceKey,
   type EvidenceReference,
@@ -13,6 +14,28 @@ export interface ReportRoute {
   readonly panel: "metric" | "event" | "coverage" | "activity";
   readonly id: string;
   readonly from: string;
+}
+
+/** A depth exists only for entries created above this exact report's underlying history entry. */
+const historyPositionSchema = z.strictObject({
+  kind: z.literal("session-report"),
+  readId: z.string(),
+  sessionId: z.string(),
+  depth: z.number().int().nonnegative().max(2147483647),
+});
+
+/** Unowned/deep-linked history has no known report base and must use replacement on close. */
+export function reportHistoryDepth(
+  input: unknown,
+  readId: string,
+  sessionId: string,
+): number | null {
+  const parsed = historyPositionSchema.safeParse(input);
+  return parsed.success &&
+    parsed.data.readId === readId &&
+    parsed.data.sessionId === sessionId
+    ? parsed.data.depth
+    : null;
 }
 
 /** Encode identifiers, not captured text/commands, in transient browser navigation. */
@@ -70,7 +93,7 @@ export function parseReportHash(hash: string): ReportRoute | null {
   return { readId, sessionId, panel, id, from };
 }
 
-/** Match all original-location fields, not just a colliding record ID or native event ID. */
+/** Enforce declared event scope before matching complete original anchors shared by distinct observations. */
 export function contributingEvents(
   view: ReadView,
   sessionId: string,
@@ -79,9 +102,14 @@ export function contributingEvents(
   const references = new Set(
     measurement.metric.contributors.map(evidenceReferenceKey),
   );
+  const scope =
+    measurement.scope.kind === "events"
+      ? new Set(measurement.scope.eventIds)
+      : null;
   return view.events.filter(
     (event) =>
       event.sessionId === sessionId &&
+      (!scope || scope.has(event.id)) &&
       event.references.some((reference) =>
         references.has(evidenceReferenceKey(reference)),
       ),

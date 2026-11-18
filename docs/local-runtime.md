@@ -90,11 +90,17 @@ witnesses show their original locators with an unavailable-content explanation.
 Native cumulative/overlay observations remain non-additive and separate from
 per-call token totals. **Inspect activity lanes** distinguishes recorded
 model/tool/agent/hook spans from unavailable waiting, not-analyzed quiet/idle
-and unknown gaps; assistant turns are not fabricated model calls.
+and unknown gaps; assistant turns are not fabricated model calls. Only complete,
+attributable intervals contributing to the activity calculation appear in its
+lanes; excluded wrappers and incomplete tool records remain inspectable as
+evidence, not activity.
 
 Tool filtering changes visible invocations, not session totals. The evidence
 dialog preserves filters and report scroll, supports full-width detail,
-keyboard focus trapping, Escape, Back/Forward and focus return. On narrow
+keyboard focus trapping, Escape, Back/Forward and focus return. Closing returns
+to the underlying report entry, so Back does not reopen a just-closed drawer.
+Fractional timestamps include exact epoch milliseconds alongside the calendar
+display. On narrow
 screens it fills the viewport. Invalid, foreign or stale links never fall back
 to another record. Links identify only a transient read and stop working when
 that generation is discarded.

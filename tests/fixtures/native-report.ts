@@ -15,8 +15,10 @@ import type { ReadView } from "../../src/evidence/contracts.js";
 export const reportCommand =
   'printf "<script>window.reportInjected=true</script>"\nprintf "https://untrusted.invalid/never-open"';
 
-/** Fictional format-1 lifecycle with original message IDs, parallel tools and non-additive usage. */
-export function nativeReportRecords(): readonly unknown[] {
+/** Fictional native lifecycles; optionally include an excluded wrapper and an incomplete invocation. */
+export function nativeReportRecords(
+  includeExcluded = false,
+): readonly unknown[] {
   /** Emit one source envelope with explicit timestamps; relationships are not inferred by the UI. */
   const event = (
     type: string,
@@ -57,6 +59,21 @@ export function nativeReportRecords(): readonly unknown[] {
       arguments: { command: reportCommand, cwd: "/fictional/project" },
       turnId: "turn",
     }),
+    ...(includeExcluded
+      ? [
+          event("tool.execution_start", "wrapper-start", 1500, {
+            toolCallId: "wrapper-call",
+            toolName: "task-wrapper",
+          }),
+          event(
+            "subagent.started",
+            "worker-start",
+            1600,
+            { toolCallId: "wrapper-call", agentName: "worker" },
+            { agentId: "child" },
+          ),
+        ]
+      : []),
     event("tool.execution_start", "read-start", 2000, {
       toolCallId: "read-call",
       toolName: "read",
@@ -68,6 +85,21 @@ export function nativeReportRecords(): readonly unknown[] {
       success: true,
       result: { content: "Fictional file content" },
     }),
+    ...(includeExcluded
+      ? [
+          event(
+            "subagent.completed",
+            "worker-end",
+            4500,
+            { toolCallId: "wrapper-call", agentName: "worker" },
+            { agentId: "child" },
+          ),
+          event("tool.execution_complete", "wrapper-end", 4600, {
+            toolCallId: "wrapper-call",
+            success: true,
+          }),
+        ]
+      : []),
     event("tool.execution_complete", "shell-end", 6000, {
       toolCallId: "shell-call",
       success: true,
@@ -76,6 +108,14 @@ export function nativeReportRecords(): readonly unknown[] {
           "<script>window.reportInjected=true</script>\nstdout: fictional\nstderr: none\nexit status: 0",
       },
     }),
+    ...(includeExcluded
+      ? [
+          event("tool.execution_start", "incomplete-start", 6100, {
+            toolCallId: "incomplete-call",
+            toolName: "unfinished",
+          }),
+        ]
+      : []),
     event("assistant.message", "response", 6500, {
       content:
         "The fictional inspection is complete; this is a source statement, not verified task completion.",

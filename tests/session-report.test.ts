@@ -134,12 +134,21 @@ test("unknown, duplicate, foreign and stale navigation cannot fall back to anoth
   const expanded = parseReadView({
     ...view,
     sessions: [...view.sessions, { ...view.sessions[0]!, id: "other-session" }],
-    events: [...view.events, foreign],
+    events: [
+      ...view.events,
+      foreign,
+      { ...view.events[1]!, id: "shared-anchor-outside-scope" },
+    ],
   });
   assert.deepEqual(
-    contributingEvents(expanded, "session-fixture", input).map(
-      (event) => event.id,
-    ),
+    contributingEvents(expanded, "session-fixture", {
+      ...input,
+      scope: {
+        sessionId: "session-fixture",
+        kind: "events",
+        eventIds: ["call-fixture"],
+      },
+    }).map((event) => event.id),
     ["call-fixture"],
   );
   const altered = {

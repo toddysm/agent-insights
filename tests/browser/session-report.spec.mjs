@@ -1,5 +1,5 @@
 /**
- * Production React report rendered from actual native-reader/calculator fixtures.
+ * Production React report from native-reader/calculator and fractional normalized fixtures.
  * Only transport is shimmed: catalog projections are synthetic, not a released-helper
  * qualification. The guarded native integration case runs in source-discovery.test.ts.
  */
@@ -9,6 +9,8 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { recordedReport } from "../../.build/src/runtime/report.js";
+import { parseReadView } from "../../.build/src/evidence/contracts.js";
+import { exampleReadView } from "../../.build/tests/fixtures/read-view.js";
 import {
   nativeReportView,
   nativeReportRecords,
@@ -16,17 +18,16 @@ import {
 } from "../../.build/tests/fixtures/native-report.js";
 
 /** Mount the real local UI, routing source transport through the real native adapters and calculator, never hard-coded metric values. */
-async function openNativeReport(page) {
+async function openNativeReport(page, includeExcluded = false) {
   const root = await mkdtemp(
     path.join(tmpdir(), "agent-insights-report-browser-"),
   );
   const file = path.join(root, "events.jsonl");
-  await writeFile(
-    file,
-    nativeReportRecords()
+  const raw =
+    nativeReportRecords(includeExcluded)
       .map((record) => JSON.stringify(record))
-      .join("\n") + "\n",
-  );
+      .join("\n") + "\n";
+  await writeFile(file, raw);
   const runtime = await startRuntime({
     sources: [file],
     port: 0,
@@ -34,7 +35,7 @@ async function openNativeReport(page) {
     model: null,
     copilotPath: path.join(root, "no-model"),
   });
-  let view = await nativeReportView();
+  let view = await nativeReportView({ raw });
   const requests = [];
   page.on("request", (request) => requests.push(request.url()));
   /** Keep the test-only reader selection consistent across status and explicit refresh controls. */
@@ -405,6 +406,164 @@ test("refresh discards an outstanding metric response instead of resurrecting th
     ).toBe(0);
   } finally {
     release();
+    await fixture.close();
+  }
+});
+
+test("activity lanes include only calculator contributors, not bridge wrappers or incomplete spans", async ({
+  page,
+}) => {
+  const fixture = await openNativeReport(page, true);
+  try {
+    const report = page.getByRole("region", {
+      name: "Session report",
+      exact: true,
+    });
+    await expect(report.locator(".metric-card").first()).toBeVisible();
+    await expect(
+      report.getByRole("button", { name: /task-wrapper.*wrapper-call/ }),
+    ).toBeVisible();
+    await expect(
+      report.getByRole("button", { name: /unfinished.*incomplete-call/ }),
+    ).toBeVisible();
+    await report
+      .getByRole("button", { name: /task-wrapper.*wrapper-call/ })
+      .click();
+    const wrapper = new URLSearchParams(
+      new URL(page.url()).hash.slice("#report?".length),
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await report
+      .getByRole("button", { name: /^Recorded agent activity:/ })
+      .click();
+    let dialog = page.getByRole("dialog");
+    await dialog.getByRole("button", { name: /shell-call/ }).click();
+    await dialog.getByRole("button", { name: "Back to contributors" }).click();
+    await expect(
+      dialog.getByRole("heading", {
+        level: 3,
+        name: /^Recorded agent activity:/,
+      }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await report
+      .getByRole("button", { name: "Inspect activity lanes", exact: true })
+      .click();
+    dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("button", { name: /task-wrapper|unfinished/ }),
+    ).toHaveCount(0);
+    await expect(
+      dialog.getByRole("button", { name: /tool-call: shell/ }),
+    ).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: /agent-span: worker/ }),
+    ).toBeVisible();
+    await dialog.getByRole("button", { name: /agent-span: worker/ }).click();
+    await dialog.getByRole("button", { name: "Back to contributors" }).click();
+    await expect(
+      dialog.getByRole("heading", {
+        name: "Recorded activity and missing lanes",
+      }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    for (const origin of ["activity", "activity-lanes"]) {
+      wrapper.set("from", origin);
+      await page.evaluate((hash) => {
+        window.location.hash = hash;
+      }, `#report?${wrapper}`);
+      await expect(page.getByRole("dialog").getByRole("alert")).toContainText(
+        "does not belong to the requested evidence scope",
+      );
+      await page.keyboard.press("Escape");
+      await expect(page.getByRole("dialog")).toHaveCount(0);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("fractional timestamp boundaries retain exact epoch milliseconds in cards and evidence titles", async ({
+  page,
+}) => {
+  const fixture = await openNativeReport(page);
+  try {
+    const view = exampleReadView();
+    const start = 1793700000000.25;
+    const end = 1793700000000.75;
+    fixture.setView(
+      parseReadView({
+        ...view,
+        events: view.events.map((event) =>
+          event.kind === "message"
+            ? { ...event, timestampMs: start }
+            : { ...event, startedAtMs: start, endedAtMs: end },
+        ),
+      }),
+    );
+    await page
+      .getByRole("button", { name: "Read source", exact: true })
+      .click();
+    const report = page.getByRole("region", {
+      name: "Session report",
+      exact: true,
+    });
+    await expect(
+      report.getByRole("button", { name: /^Observed elapsed: 0\.5 ms/ }),
+    ).toBeVisible();
+    for (const value of [start, end]) {
+      await report
+        .getByRole("button")
+        .filter({ hasText: `${value} ms since epoch` })
+        .click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByRole("heading", { level: 3 })).toContainText(
+        `${value} ms since epoch`,
+      );
+      await page.keyboard.press("Escape");
+      await expect(dialog).toHaveCount(0);
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("closing nested evidence returns to its report entry without reopening the closed drawer on Back", async ({
+  page,
+}) => {
+  const fixture = await openNativeReport(page);
+  try {
+    const report = page.getByRole("region", {
+      name: "Session report",
+      exact: true,
+    });
+    await expect(report.locator(".metric-card").first()).toBeVisible();
+    await page.evaluate(() => {
+      window.history.pushState(null, "", "#sources");
+    });
+    const metric = report.getByRole("button", {
+      name: "Tool calls: 2; partial coverage",
+      exact: true,
+    });
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await metric.click();
+      const dialog = page.getByRole("dialog");
+      await dialog.getByRole("button", { name: /shell-call/ }).click();
+      await dialog.getByRole("button", { name: "Close evidence" }).click();
+      await expect(dialog).toHaveCount(0);
+      await expect(page).toHaveURL(/#session-report$/);
+      await expect(metric).toBeFocused();
+    }
+    await page.goBack();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(new URL(page.url()).hash.startsWith("#report?")).toBe(false);
+    await page.goForward();
+    await expect(page).toHaveURL(/#session-report$/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  } finally {
     await fixture.close();
   }
 });

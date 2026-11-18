@@ -15,6 +15,7 @@ import {
   unmatchedReferences,
   parseReportHash,
   reportHash,
+  reportHistoryDepth,
   type ReportRoute,
 } from "./report-navigation.js";
 
@@ -34,12 +35,12 @@ interface ReportLocation {
   readonly error: string;
 }
 
-/** Keep valid millisecond evidence inspectable even outside JavaScript's calendar-date range. */
+/** Preserve exact fractional milliseconds and valid evidence outside JavaScript's calendar-date range. */
 function timestamp(value: number): string {
   const date = new Date(value);
   return Number.isNaN(date.getTime())
     ? `${value} ms since epoch (outside displayable date range)`
-    : date.toISOString();
+    : `${date.toISOString()}${Number.isInteger(value) ? "" : ` (${value} ms since epoch)`}`;
 }
 
 /** Read the current fragment without retaining launch credentials or accepting captured links. */
@@ -332,9 +333,17 @@ function EvidenceDrawer({
     element?.showModal();
     return () => {
       element?.close();
-      if (trigger instanceof HTMLElement && trigger.isConnected)
-        trigger.focus({ preventScroll: true });
-      window.scrollTo({ top: scroll });
+      // History traversal restores its own focus/scroll after popstate; restore the report afterward.
+      window.requestAnimationFrame(() => {
+        if (
+          trigger instanceof HTMLElement &&
+          trigger.isConnected &&
+          !document.querySelector("dialog[open]")
+        ) {
+          trigger.focus({ preventScroll: true });
+          window.scrollTo({ top: scroll });
+        }
+      });
     };
   }, []);
   useEffect(() => {
@@ -455,13 +464,30 @@ function SelectedReport({
   /** Navigate only using application-owned IDs; never insert captured HTML or captured hrefs. */
   function navigate(panel: ReportRoute["panel"], id = "", from = ""): void {
     const route = { readId: view.id, sessionId, panel, id, from };
-    window.history.pushState(null, "", reportHash(route));
+    let depth = reportHistoryDepth(window.history.state, view.id, sessionId);
+    if (depth === null || (!location.route && !location.error)) {
+      depth = 0;
+      window.history.replaceState(
+        { kind: "session-report", readId: view.id, sessionId, depth },
+        "",
+        "#session-report",
+      );
+    }
+    window.history.pushState(
+      { kind: "session-report", readId: view.id, sessionId, depth: depth + 1 },
+      "",
+      reportHash(route),
+    );
     setLocation({ route, error: "" });
   }
-  /** Closing keeps the underlying filters and scroll; the drawer restores the invoking focus. */
+  /** Return to this report's existing history entry; unknown/deep links are replaced, never pushed. */
   function close(): void {
-    window.history.pushState(null, "", "#session-report");
-    setLocation({ route: null, error: "" });
+    const depth = reportHistoryDepth(window.history.state, view.id, sessionId);
+    if (depth !== null && depth > 0) window.history.go(-depth);
+    else {
+      window.history.replaceState(null, "", "#session-report");
+      setLocation({ route: null, error: "" });
+    }
   }
 
   const route = location.route;
@@ -475,12 +501,23 @@ function SelectedReport({
   if (route && !panelError && report) {
     const metric = report.measurements.find(
       (entry) =>
-        entry.id === (route.panel === "metric" ? route.id : route.from),
+        entry.id ===
+        (route.panel === "metric"
+          ? route.id
+          : route.from === "activity-lanes"
+            ? "activity"
+            : route.from),
     );
     if (route.panel === "coverage") {
       title = "Source identity and capture coverage";
       content = <Coverage view={view} sessionId={sessionId} />;
     } else if (route.panel === "activity") {
+      const measurement = report.measurements.find(
+        (entry) => entry.id === "activity",
+      );
+      const activity = measurement
+        ? contributingEvents(view, sessionId, measurement)
+        : [];
       title = "Recorded activity and missing lanes";
       content = (
         <div>
@@ -489,21 +526,27 @@ function SelectedReport({
             time or private reasoning. Overlapping spans are not added as
             elapsed time.
           </p>
+          <p>
+            Only contributing complete intervals appear below. Excluded,
+            conflicting and incomplete records are not activity intervals;
+            retained tool records remain inspectable under Tools &amp; commands
+            and excluded-evidence anchors.
+          </p>
           {(
             ["model-call", "tool-call", "agent-span", "hook-execution"] as const
           ).map((kind) => (
             <section key={kind}>
               <h4>{kind}</h4>
-              {events.some((event) => event.kind === kind) ? (
+              {activity.some((event) => event.kind === kind) ? (
                 <ul className="event-list">
-                  {events
+                  {activity
                     .filter((event) => event.kind === kind)
                     .map((event) => (
                       <li key={event.id}>
                         <button
                           type="button"
                           onClick={() =>
-                            navigate("event", event.id, "activity")
+                            navigate("event", event.id, "activity-lanes")
                           }
                         >
                           {eventLabel(event)}
@@ -602,7 +645,6 @@ function SelectedReport({
       if (
         !event ||
         (route.from &&
-          route.from !== "activity" &&
           (!metric ||
             !contributingEvents(view, sessionId, metric).some(
               (item) => item.id === event.id,
@@ -613,7 +655,7 @@ function SelectedReport({
       else {
         title = eventLabel(event);
         back =
-          route.from === "activity"
+          route.from === "activity-lanes"
             ? () => navigate("activity")
             : metric
               ? () => navigate("metric", metric.id)
