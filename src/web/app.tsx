@@ -34,6 +34,8 @@ import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
 import { SourceDiscoveryPanel } from "./source-discovery.js";
 import { SessionReportPanel } from "./session-report.js";
+import { ScannedSessionReportPanel } from "./scanned-report.js";
+import type { ScanReportRequest } from "../metrics/report.js";
 
 /**
  * Read bootstrap access from the initial URL fragment and remove that fragment from history.
@@ -172,6 +174,8 @@ function App(): ReactElement {
   const [format, setFormat] = useState("");
   const [readNotice, setReadNotice] = useState("");
   const [view, setView] = useState<ReadView | null>(null);
+  const [scannedReport, setScannedReport] = useState<ScanReportRequest | null>(null);
+  const [scannedReportAttempt, setScannedReportAttempt] = useState(0);
   const [sessionId, setSessionId] = useState("");
   const [scanReset, setScanReset] = useState(0);
   const [discoveryReset, setDiscoveryReset] = useState(0);
@@ -193,6 +197,12 @@ function App(): ReactElement {
     run?.sessionId === sessionId &&
     run?.operationId === operationId &&
     run?.id !== startAttempt?.previousRunId;
+
+  /** Reopening the same selection discards its old response/evidence state before calculation starts. */
+  const openScannedReport = useCallback((selection: ScanReportRequest | null): void => {
+    setScannedReport(selection);
+    setScannedReportAttempt((previous) => previous + 1);
+  }, []);
 
   /** Apply source/provider status, retaining only selections still offered by the backend. */
   const adoptStatus = useCallback((result: RuntimeStatus): void => {
@@ -220,6 +230,7 @@ function App(): ReactElement {
     setAnalysisNotice("");
     setPollError("");
     setView(null);
+    setScannedReport(null);
     setSessionId("");
     setAcknowledged(false);
   }
@@ -495,7 +506,7 @@ function App(): ReactElement {
           <a href="#sources" aria-current="page">
             Sources
           </a>
-          {view ? <a href="#session-report">Session report</a> : <span aria-disabled="true">
+          {view || scannedReport ? <a href="#session-report">Session report</a> : <span aria-disabled="true">
             Session report <small>Read a source first</small>
           </span>}
         </nav>
@@ -687,6 +698,7 @@ function App(): ReactElement {
                       send={request}
                       onStart={() => { clearView(false); setReadNotice(""); }}
                       onBusy={setBusy}
+                      onReport={openScannedReport}
                     />
                   )}
                   <p className="notice" role="status">
@@ -760,6 +772,8 @@ function App(): ReactElement {
               )}
             </section>
             {view && <SessionReportPanel key={view.id} view={view} send={request} />}
+            {scannedReport && <ScannedSessionReportPanel key={`${scannedReport.id}/${scannedReport.sessionId}/${scannedReportAttempt}`}
+              selection={scannedReport} send={request} onBusy={setBusy} />}
             <section
               className="panel analysis"
               aria-labelledby="analysis-heading"

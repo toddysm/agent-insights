@@ -57,7 +57,7 @@ function currentLocation(): ReportLocation {
 }
 
 /** Format recorded numbers without replacing missing data or silently rounding measured milliseconds. */
-function metricValue(entry: ReportMeasurement): string {
+export function metricValue(entry: { readonly display: ReportMeasurement["display"]; readonly metric: { readonly value: number | null } }): string {
   const value = entry.metric.value;
   if (value === null) return "Unavailable";
   if (entry.display === "timestamp") return timestamp(value);
@@ -310,7 +310,7 @@ function OriginalEvent({
 }
 
 /** Native modal focus trapping and Escape handling preserve the report's filter, scroll and invoking control. */
-function EvidenceDrawer({
+export function EvidenceDrawer({
   title,
   children,
   close,

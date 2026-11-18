@@ -1,6 +1,6 @@
 /**
  * Independently generate owned large fixtures, measure fresh-process RSS and
- * verify exact catalog/provenance results. Prints aggregate receipts only; no
+ * verify exact catalog, whole-session report and metric-contributor results. Prints aggregate receipts only; no
  * private capture, model runtime, retained corpus or persistent index is used.
  * A passed receipt requires a clean working tree and unchanged HEAD throughout.
  */
@@ -123,13 +123,26 @@ if (workerSize) {
     let result;
     let scanElapsedMs;
     let detailElapsedMs;
+    let reportElapsedMs;
     try {
       result = await run(service, workerSize);
       scanElapsedMs = Math.round(performance.now() - started);
       const sessionId = service.scanCatalog.catalog(result.id, null).sessions[0].id;
+      const reportStart = performance.now();
+      const report = await service.scanReport({ id: result.id, sessionId }, new AbortController().signal);
+      reportElapsedMs = Math.round(performance.now() - reportStart);
+      const values = Object.fromEntries(report.measurements.map((entry) => [entry.id, entry.value]));
+      assert.equal(values.input, 20);
+      assert.equal(values.output, 5);
+      assert.equal(values.activity, 1000);
+      assert.equal(values.cumulative, 1000);
+      assert.equal(values.elapsed, 1000);
+      assert.equal(values.tools, null); // Conflicting records prevent a measured-zero coverage claim.
+      assert.equal(report.admittedBytes, workerSize);
+      assert.equal(service.view, null);
       const detailStart = performance.now();
-      const details = await service.scanDetails({ id: result.id, sessionId,
-        cursor: null, fromMs: null, toMs: null }, new AbortController().signal);
+      const details = await service.scanMetricDetails({ id: result.id, sessionId,
+        metricId: "input", cursor: null }, new AbortController().signal);
       detailElapsedMs = Math.round(performance.now() - detailStart);
       assert.equal(details.contributors[0].byteOffset, 0);
       assert.equal(details.contributors[0].line, 1);
@@ -138,16 +151,21 @@ if (workerSize) {
         createHash("sha256").update(execution().subarray(0, -1)).digest("hex"));
       assert.ok(details.next);
       assert.ok(details.contributors.length <= 20);
+      const next = await service.scanMetricDetails({ id: result.id, sessionId,
+        metricId: "input", cursor: details.next }, new AbortController().signal);
+      assert.ok(next.contributors[0].byteOffset > details.contributors.at(-1).byteOffset);
+      assert.equal((await service.scanReport({ id: result.id, sessionId }, new AbortController().signal))
+        .measurements.find((entry) => entry.id === "input").value, 20);
     }
     finally { clearInterval(timer); sample(); }
     const maxRss = Math.max(peak.rss, process.resourceUsage().maxRSS * 1024);
     console.log(JSON.stringify({
       sourceBytes: workerSize, node: process.version, platform: process.platform, arch: process.arch,
-      elapsedMs: Math.round(performance.now() - started), scanElapsedMs, detailElapsedMs, baseline,
+      elapsedMs: Math.round(performance.now() - started), scanElapsedMs, reportElapsedMs, detailElapsedMs, baseline,
       peak: { ...peak, rss: maxRss }, additionalPeakRss: Math.max(0, maxRss - baseline.rss),
       records: result.counts.records, duplicates: result.counts.duplicates,
       sessions: result.sessions, modelCalls: result.classification.executions.modelCalls,
-      scannedBytes: result.scannedBytes, scope: "synthetic-fixed-cardinality-not-real-capture-compatibility",
+      scannedBytes: result.scannedBytes, scope: "synthetic-fixed-cardinality-report-and-metric-pages-not-real-capture-compatibility",
     }));
   } finally {
     await service?.close();
@@ -168,7 +186,7 @@ if (workerSize) {
   }
   const small = receipts.find((receipt) => receipt.sourceBytes === 128 * MiB);
   const large = receipts.find((receipt) => receipt.sourceBytes === 1024 * MiB);
-  assert.ok(large.additionalPeakRss <= 256 * MiB, "1 GiB scan exceeds 256 MiB additional peak RSS");
+  assert.ok(large.additionalPeakRss <= 256 * MiB, "1 GiB report path exceeds 256 MiB additional peak RSS");
   const rssGrowth = large.peak.rss - small.peak.rss;
   assert.ok(rssGrowth <= 64 * MiB, "128 MiB to 1 GiB peak RSS growth exceeds 64 MiB");
   assert.equal(gitOutput("rev-parse", "HEAD").trim(), revision, "HEAD changed during qualification");

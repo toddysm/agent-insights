@@ -6,6 +6,7 @@ import {
   type ScanStatus,
 } from "../evidence/streaming.js";
 import { statusSchema } from "../runtime/protocol.js";
+import type { ScanReportRequest } from "../metrics/report.js";
 
 /** Reuse the authenticated, schema-validating transport and parent selection/operation lock. */
 interface ScanPanelProps {
@@ -15,13 +16,14 @@ interface ScanPanelProps {
   send: <T>(route: string, schema: z.ZodType<T>, body?: unknown) => Promise<T>;
   onStart: () => void;
   onBusy: (busy: boolean) => void;
+  onReport: (selection: ScanReportRequest | null) => void;
 }
 
 /**
  * Replace (never append) catalog/evidence pages. Polls only a user-started operation;
  * cancellation remains distinct from confirmed cleanup and stale responses cannot publish.
  */
-export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onStart, onBusy }: ScanPanelProps): ReactElement {
+export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onStart, onBusy, onReport }: ScanPanelProps): ReactElement {
   const [scan, setScan] = useState<ScanStatus | null>(null);
   const [working, setWorking] = useState(false);
   const [reconciling, setReconciling] = useState(false);
@@ -34,7 +36,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const generation = useRef(0);
   const requestIdentity = useRef<string | null>(null);
   const needsCatalog = catalog === null;
-  const locked = working || reconciling || scan?.cleanupPending === true;
+  const locked = disabled || working || reconciling || scan?.cleanupPending === true;
 
   useEffect(() => () => { generation.current++; }, []);
 
@@ -48,6 +50,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       setScan(snapshot);
       if (!publishable) {
         setCatalog(null); setDetails(null); setSession("");
+        onReport(null);
       }
       if (result.scan && !snapshot) {
         setError("The scan was not accepted or was superseded. Start a new scan explicitly.");
@@ -65,7 +68,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         setError(failure instanceof Error ? failure.message : "The source cleanup state could not be checked.");
       }
     }
-  }, [send, onBusy]);
+  }, [send, onBusy, onReport]);
 
   useEffect(() => {
     if (!working && !scan?.cleanupPending && !reconciling) return;
@@ -124,6 +127,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       const result = await send("/api/scan/cancel", scanEnvelopeSchema, {});
       if (current !== generation.current) return;
       generation.current++;
+      onReport(null);
       setWorking(false); setScan(result.scan); setCatalog(null); setDetails(null);
       setReconciling(result.scan?.cleanupPending === true);
       onBusy(result.scan?.cleanupPending === true);
@@ -142,6 +146,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       const page = await send("/api/scan/catalog", catalogPageSchema, { id: scan.id, cursor: catalog.next });
       if (current !== generation.current) return;
       setCatalog(page); setSession(""); setDetails(null);
+      onReport(null);
     } catch (failure) {
       if (current === generation.current) setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
     } finally {
@@ -235,7 +240,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     {catalog && <div>
       <p>Sessions in this page: {catalog.sessions.length}. Unassigned executions: {catalog.unassigned}.</p>
       <label htmlFor="scan-session">Scanned session</label>
-      <select id="scan-session" value={session} disabled={locked} onChange={(event) => { setSession(event.target.value); setDetails(null); }}>
+      <select id="scan-session" value={session} disabled={locked} onChange={(event) => { setSession(event.target.value); setDetails(null); onReport(null); }}>
         <option value="">Select a session</option>
         {catalog.sessions.map((entry) => <option key={entry.id} value={entry.id}>
           Session {entry.id.split(":").at(-1)} · {entry.executions} executions
@@ -243,6 +248,14 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         {catalog.unassigned > 0 && <option value="unassigned">Unassigned executions</option>}
       </select>
       <button type="button" disabled={locked || !catalog.next} onClick={() => void nextCatalog()}>Next session page</button>
+      <button type="button" disabled={locked || !session || session === "unassigned"} onClick={() => {
+        generation.current++;
+        onBusy(true);
+        onReport({ id: scan!.id, sessionId: session });
+        window.history.replaceState(null, "", "#session-report");
+      }}>Open session report</button>
+      <p>Reports cover the entire admitted session, not this evidence page or the optional time filter.
+        Unassigned executions cannot form a session report.</p>
       <label htmlFor="scan-from">Recorded start from (epoch ms, optional)</label>
       <input id="scan-from" value={from} disabled={locked} onChange={(event) => { setFrom(event.target.value); setDetails(null); }} />
       <label htmlFor="scan-to">Recorded start through (epoch ms, optional)</label>

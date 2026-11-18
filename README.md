@@ -48,7 +48,10 @@ definitions remain pending; unavailable capabilities do not show example data
 as real results.
 The [bounded JSONL scan](docs/local-runtime.md#scan-large-jsonl-captures-in-place)
 reads large extension exports in place, discovers sessions without returning
-payloads, and retrieves bounded original-evidence pages after selection.
+payloads, and opens whole-admitted-session reports without a whole-file read.
+Metrics drill down through bounded original-contributor pages; duplicate physical
+records never inflate totals. Report calculation has a separate explicit
+cardinality budget, so a valid catalog does not promise report availability.
 Metadata/work limits produce explicit coverage outcomes; no copied corpus or
 disk-backed index is used. Synthetic scale qualification does not establish
 real-producer compatibility.
@@ -85,7 +88,8 @@ Hooks rules. Generated build, native target and browser-report files are ignored
 Application continuous integration runs lint with zero warnings allowed.
 
 The large-file qualification generates owned synthetic inputs through 1 GiB,
-checks exact counts and original references, and gates peak resident-memory growth:
+checks exact counts, whole-session report totals and paged metric contributors,
+and gates peak resident-memory growth for that end-to-end report path:
 
 ```bash
 npm run qualify:streaming

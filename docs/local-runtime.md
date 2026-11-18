@@ -142,6 +142,22 @@ identities and unassigned executions reduce coverage. A metrics/log-only source
 reports telemetry but unavailable execution timing/tools/tokens, **not zero usage**.
 Messages/conversation coverage remains separate.
 
+Choose a **Scanned session**, then **Open session report**, without first using
+**Read source**. This report uses the same recorded timing, tool and per-call
+token definitions as the small-source report, over **all admitted contributing
+session records**, not an evidence page or the optional time filter. Unassigned
+executions cannot form a session report. Source identity, the admitted byte
+boundary, prefix fingerprint and coverage remain inspectable.
+
+Select any report metric, including **Unavailable**, to page its exact original
+physical contributors. Each page replaces the previous one; repeated physical
+records are inspectable but never added again. Measured-zero and missing-usage
+records are explicitly labeled **coverage witnesses**, not additive
+contributions. Tool-name measurements expose the original tool arguments/results
+as inert text. Back returns from a record to its current contributor page;
+Escape returns focus to the invoking metric. No source corpus enters browser
+storage and no model is called.
+
 Choose a **Scanned session** (or **Unassigned executions**), optionally enter
 inclusive recorded-start bounds in epoch milliseconds, then **Load original
 evidence**. Correlation uses the whole admitted source, including parents outside
@@ -159,7 +175,7 @@ Append beyond the boundary can be reported separately after continuity checking;
 **Rescan JSONL source** creates a new generation to include later bytes. Rotation,
 replacement, truncation or changed prefix bytes invalidate evidence. These checks
 are best-effort observations, **not an atomic snapshot of a live file**.
-Both scans and evidence pages rehash after a detected metadata change. A further
+Scans, reports and evidence pages rehash after a detected metadata change. A further
 change detected at final verification rejects publication with **source-changed**
 rather than serving unverified evidence or retrying indefinitely against a writer.
 If an evidence read invalidates its scan, the old session catalog, selection and
@@ -189,23 +205,37 @@ also reconcile final cleanup, including failed descriptor closure.
 | Catalog/evidence page | At most 20 entries |
 | Selected raw detail budget | 512 KiB of original record bytes per page, including whitespace/CR but excluding LF; a record that cannot fit is an explicit budget error |
 | Serialized detail response | 1 MiB maximum |
+| Report calculation | At most 512 retained execution identities across the admitted source and 128 measurements; over-budget reports are unavailable, never sampled |
+| Report transport | Numeric summaries only, at most 1 MiB; original contributors use the existing bounded physical pages |
 | Cumulative physical-read work | 8 GiB per generation, including continuity/detail passes |
 | Generation lifetime | 15 minutes, checked monotonically; expiration requires an explicit rescan |
 
 These are not a blanket input-size ceiling or an analysis model context allowance.
 A single giant session and very many sessions can both exhaust metadata before
 the file ends. Such a scan returns **budget-exceeded**, admitted/scanned bounds
-and unavailable totals, not a sampled complete catalog. No persistent cursor,
+and unavailable totals, not a sampled complete catalog. A catalog within scan
+budgets can still exceed the stricter report-calculation budget; this is an
+explicit **budget-exceeded** report outcome, not a partial-session success.
+No persistent cursor,
 session index, copied corpus, temporary disk spill or application database exists.
 Restarting loses the catalog and requires another scan. Cursors are signed,
 generation/selection-bound and expire; using them with another scan/source or
-changed time bounds is rejected.
+changed time bounds or report metric is rejected. Reports and contributor pages
+share the scan's work and lifetime limits; deep enumeration can exhaust work
+even when the first pages succeed. **Cancel report operation** acknowledges
+cancellation; **Retry source cleanup** retries an unconfirmed cleanup barrier.
 
 Large synthetic scale qualification is separate from real producer compatibility.
 Run `npm run qualify:streaming` from a clean committed checkout. Passed receipts
 are rejected if the working tree is dirty or HEAD changes during qualification.
+The scale path includes whole-session report calculation, exact expected timing
+and usage totals, two metric contributor pages and a repeat report, rather than
+only scanning. It enforces at most 256 MiB additional peak RSS at 1 GiB and at
+most 64 MiB peak-RSS growth from 128 MiB to 1 GiB.
 This implementation does not expand the schema mappings described below.
 No new private-source inspection or real-capture qualification is implied.
+Inspecting a user's real capture still requires a separate authorized manual
+smoke test. Synthetic success is not live-producer or Agent Host certification.
 
 ### Read an existing execution capture
 

@@ -12,6 +12,8 @@ export const STREAM_LIMITS = Object.freeze({
   pageRecords: 20,
   detailBytes: 512 * 1024,
   responseBytes: 1024 * 1024,
+  reportEvents: 512,
+  reportMeasurements: 128,
   workBytes: 8 * 1024 * 1024 * 1024,
   lifetimeMs: 15 * 60 * 1000,
 });
@@ -21,7 +23,7 @@ export type StreamLimits = { readonly [K in keyof typeof STREAM_LIMITS]: number 
 /** A deliberate stop, never a successful truncated catalog or exact zero. */
 export class ScanBudgetExceeded extends Error {
   /** Signal an explicit unavailable/partial outcome; callers must not publish the discarded assembly. */
-  constructor(readonly budget: "metadata" | "identities" | "references" | "detail" | "response" | "work" | "lifetime") {
+  constructor(readonly budget: "metadata" | "identities" | "references" | "detail" | "response" | "work" | "lifetime" | "report") {
     super(`The scan exceeded its ${budget} budget; results for this operation are unavailable.`);
     this.name = "ScanBudgetExceeded";
   }

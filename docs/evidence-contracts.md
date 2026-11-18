@@ -465,6 +465,36 @@ page authority. Pages accept a current server-issued generation, server-issued
 cursor and session/time selection, never an arbitrary path, schema or SQL query.
 Invalid/expired or selection-mismatched cursors are controlled failures.
 
+`POST /api/scan/report` accepts only the current scan `id` and an explicitly
+selected `sessionId`. The [report contract](../src/metrics/report.ts) returns
+bounded numeric summaries, source identity, admitted byte boundary and prefix
+SHA-256, not an all-event view or an anchor array. It uses the existing recorded
+calculator over the bounded scan's whole-source correlated facts. At most 512
+retained execution identities across the source and 128 measurements are
+admitted to calculation/publication; crossing either ceiling is an explicit
+unavailable report (`SCAN_BUDGET`), not sampling. Existing metadata, work,
+lifetime and response ceilings still apply. The 64 MiB whole-file read limit
+is unchanged.
+
+`POST /api/scan/metric` adds a server-owned `metricId` and optional signed cursor.
+It recomputes the same bounded metric selection and rescans the original prefix
+for its exact physical contributors, including replays without adding them again.
+Cursor authentication binds generation, session, metric and admitted scope.
+Source-only zero witnesses and selected-session records explaining unavailable
+usage are labeled `coverage-witnesses`; they are not additive contributions.
+Every published page retains original line/byte coordinates, record fingerprint
+and source identity. Calculator definitions, deduplication and non-additive
+native observation rules are not redefined by this transport.
+
+Reports, ordinary detail pages and metric pages share the runtime's owned
+descriptor, disconnect/cancel, cleanup and current-generation publication gate.
+Every report and page checks physical identity and the admitted prefix digest.
+Appends beyond admission require a new explicit scan to affect totals. Changed,
+truncated, replaced, cancelled, foreign or expired sources/selections cannot
+publish old numbers or substitute evidence. No model call, persistent corpus,
+disk index or source write is introduced; production Agent Host helper gates
+remain independent and unchanged.
+
 JSONL references may additionally carry original `byteOffset` and `byteLength`.
 Fingerprints cover the original record bytes, excluding LF and including CR.
 Before a detail response publishes, the original identity and full admitted-prefix

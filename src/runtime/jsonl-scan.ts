@@ -15,6 +15,8 @@ import {
 } from "../evidence/streaming.js";
 import { RuntimeError, cancelledRead } from "./errors.js";
 import { byteChunks, type FileState, type StreamedSource } from "./sources.js";
+import { recordedReport } from "./report.js";
+import { scanReportSchema, type ScanReportRequest, type ScanMetricRequest, type ScanReport, type ScanMetricPage, type ReportMeasurement } from "../metrics/report.js";
 
 /** Signing material is runtime-local and discarded with this instance, never persisted. */
 const cursorBody = z.strictObject({
@@ -285,6 +287,84 @@ export class JsonlScan {
     this.current(id).status.cleanupPending = true;
   }
 
+  /** Bound calculator amplification separately from scan metadata; never truncate a measurement list. */
+  private calculate(request: ScanReportRequest) {
+    const { view } = this.current(request.id);
+    if (!view.sessions.some((session) => session.id === request.sessionId))
+      throw new RuntimeError("SCAN_SELECTION", "Select a session in the current scan.", 400);
+    if (view.events.length > this.limits.reportEvents) throw new ScanBudgetExceeded("report");
+    const report = recordedReport(view, { readId: request.id, sessionId: request.sessionId });
+    if (report.measurements.length > this.limits.reportMeasurements) throw new ScanBudgetExceeded("report");
+    return report;
+  }
+
+  /** Check physical identity before every report/evidence pass, not only descriptor metadata at scan time. */
+  private sameSource(source: StreamedSource): void {
+    if (!this.identity || source.identity.dev !== this.identity.dev || source.identity.ino !== this.identity.ino)
+      throw new RuntimeError("SOURCE_CHANGED", "The source was replaced; rescan before retrieving a report or evidence.", 409);
+  }
+
+  /** Distinguish exact calculator contributors from records explaining absent or measured-zero fields. */
+  private evidenceKind(measurement: ReportMeasurement): ScanMetricPage["evidenceKind"] {
+    return measurement.contributorEventIds.length ? "contributors" : "coverage-witnesses";
+  }
+
+  /**
+   * Revalidate the entire admitted prefix before publishing whole-session numbers.
+   * Calculation uses the scan's bounded full-source correlation, never an evidence page;
+   * append-only growth stays outside this generation until an explicit new scan.
+   */
+  async report(request: ScanReportRequest, source: StreamedSource, signal: AbortSignal): Promise<ScanReport> {
+    const report = this.calculate(request);
+    const { view, status } = this.current(request.id);
+    this.sameSource(source);
+    const hash = createHash("sha256");
+    status.pass++;
+    for await (const bytes of this.prefix(source, signal, hash)) void bytes;
+    const digest = hash.digest("hex");
+    if (digest !== this.digest)
+      throw new RuntimeError("SOURCE_CHANGED", "The admitted source prefix changed; rescan before reporting.", 409);
+    const final = await this.verifyPrefix(source, signal, digest);
+    status.appended ||= final.appended || source.boundary > status.admittedBytes;
+    this.check(signal);
+    const result = scanReportSchema.parse({
+      id: request.id, sessionId: request.sessionId, source: view.sources[0],
+      admittedBytes: status.admittedBytes, prefixSha256: digest, observedAtMs: Date.now(),
+      appended: status.appended, issues: view.issues.map((issue) => issue.message),
+      measurements: report.measurements.map((entry) => ({
+        id: entry.id, label: entry.label, group: entry.group, display: entry.display,
+        definition: entry.definition, scope: entry.scope.kind,
+        value: entry.metric.value, unit: entry.metric.unit, coverage: entry.metric.coverage,
+        evidenceKind: this.evidenceKind(entry),
+      })),
+    });
+    if (Buffer.byteLength(JSON.stringify(result)) > this.limits.responseBytes) throw new ScanBudgetExceeded("response");
+    return result;
+  }
+
+  /** Recompute the same bounded selection, then page every physical replay of its exact contributors. */
+  async metricDetails(request: ScanMetricRequest, source: StreamedSource, signal: AbortSignal): Promise<ScanMetricPage> {
+    const report = this.calculate(request);
+    const measurement = report.measurements.find((entry) => entry.id === request.metricId);
+    if (!measurement) throw new RuntimeError("SCAN_SELECTION", "Select a measurement in this session's report.", 400);
+    const ids = new Set(measurement.contributorEventIds);
+    const anchors = new Set(measurement.metric.contributors.map((ref) => ref.recordId));
+    const { view } = this.current(request.id);
+    const explainUnavailable = !ids.size && !anchors.size && measurement.metric.value === null;
+    for (const event of view.events) {
+      if (event.sessionId !== request.sessionId) continue;
+      if (event.references.some((ref) => anchors.has(ref.recordId)) ||
+        explainUnavailable) ids.add(event.id);
+    }
+    const result = {
+      ...await this.details({ id: request.id, sessionId: request.sessionId, cursor: request.cursor, fromMs: null, toMs: null },
+        source, signal, { metricId: request.metricId, ids }),
+      sessionId: request.sessionId, metricId: request.metricId, evidenceKind: this.evidenceKind(measurement),
+    };
+    if (Buffer.byteLength(JSON.stringify(result)) > this.limits.responseBytes) throw new ScanBudgetExceeded("response");
+    return result;
+  }
+
   /**
    * Revalidate the full admitted prefix and return bounded original physical contributors.
    * Correlation is from the whole scan, even for time-window queries; duplicate
@@ -292,17 +372,18 @@ export class JsonlScan {
    * changes require continuity checking; new final-check changes reject the page.
    * Selected-byte charging uses original record lengths, including whitespace/CR but excluding LF.
    */
-  async details(request: DetailRequest, source: StreamedSource, signal: AbortSignal): Promise<z.infer<typeof detailPageSchema>> {
+  async details(request: DetailRequest, source: StreamedSource, signal: AbortSignal,
+    metric?: { readonly metricId: string; readonly ids: ReadonlySet<string> }): Promise<z.infer<typeof detailPageSchema>> {
     const { view, status } = this.current(request.id);
-    if (!this.identity || source.identity.dev !== this.identity.dev || source.identity.ino !== this.identity.ino)
-      throw new RuntimeError("SOURCE_CHANGED", "The source was replaced; refresh before retrieving evidence.", 409);
+    this.sameSource(source);
     if (request.sessionId !== null && !view.sessions.some((session) => session.id === request.sessionId))
       throw new RuntimeError("SCAN_SELECTION", "Select a session in the current scan.", 400);
-    const binding = createHash("sha256").update(JSON.stringify([request.sessionId, request.fromMs, request.toMs])).digest("hex");
+    const binding = createHash("sha256").update(JSON.stringify([request.sessionId, request.fromMs, request.toMs, metric?.metricId ?? null])).digest("hex");
     const offset = this.offset(request.id, "detail", request.cursor, binding);
     const selected = new Map<string, ReadView["events"][number]>();
     for (const event of view.events) {
       if (event.kind === "message" || event.sessionId !== request.sessionId) continue;
+      if (metric && !metric.ids.has(event.id)) continue;
       const time = event.startedAtMs;
       if ((request.fromMs !== null && (time === null || time < request.fromMs)) ||
         (request.toMs !== null && (time === null || time > request.toMs))) continue;
