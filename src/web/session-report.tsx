@@ -416,9 +416,7 @@ function SelectedReport({
   const session = view.sessions.find((item) => item.id === sessionId);
   const events = view.events.filter((event) => event.sessionId === sessionId);
   const tools = events.filter(
-    (
-      event,
-    ): event is Exclude<ReadView["events"][number], { kind: "message" }> =>
+    (event): event is ReadView["events"][number] & { kind: "tool-call" } =>
       event.kind === "tool-call",
   );
   const messages = events.filter((event) => event.kind === "message");

@@ -66,22 +66,14 @@ export function parseReportHash(hash: string): ReportRoute | null {
     throw new Error("This report link contains invalid controls.");
   const readId = query.get("read");
   const sessionId = query.get("session");
-  const panel = query.get("panel");
-  if (
-    !readId ||
-    !sessionId ||
-    !["metric", "event", "coverage", "activity"].includes(panel ?? "")
-  )
+  const parsedPanel = z
+    .enum(["metric", "event", "coverage", "activity"])
+    .safeParse(query.get("panel"));
+  if (!readId || !sessionId || !parsedPanel.success)
     throw new Error(
       "This report link is incomplete. Select a current session.",
     );
-  if (
-    panel !== "metric" &&
-    panel !== "event" &&
-    panel !== "coverage" &&
-    panel !== "activity"
-  )
-    throw new Error("This report panel is unavailable.");
+  const panel = parsedPanel.data;
   const id = query.get("id") ?? "";
   const from = query.get("from") ?? "";
   if (

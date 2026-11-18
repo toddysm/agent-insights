@@ -358,7 +358,7 @@ export function calculateRecordedMetrics(
   }
   const sources = new Map(view.sources.map((source) => [source.id, source]));
 
-  /** Retain contributing group IDs alongside eligible original references, never the entire selection scope. */
+  /** Emit dimension-available, uniquely owned references and exact contributing group IDs; missing numbers never acquire zeros. */
   const measurement = (
     key: string,
     dimension: Metric["dimension"],
