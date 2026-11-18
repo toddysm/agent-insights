@@ -93,7 +93,7 @@ export function parseReportHash(hash: string): ReportRoute | null {
   return { readId, sessionId, panel, id, from };
 }
 
-/** Enforce declared event scope before matching complete original anchors shared by distinct observations. */
+/** Enforce scope and timing eligibility before matching anchors shared by distinct observations. */
 export function contributingEvents(
   view: ReadView,
   sessionId: string,
@@ -110,6 +110,8 @@ export function contributingEvents(
     (event) =>
       event.sessionId === sessionId &&
       (!scope || scope.has(event.id)) &&
+      (measurement.metric.dimension !== "timing" ||
+        event.kind !== "usage-observation") &&
       event.references.some((reference) =>
         references.has(evidenceReferenceKey(reference)),
       ),

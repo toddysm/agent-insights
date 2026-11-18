@@ -89,6 +89,47 @@ test("Agent Host messages and executions flow through the real readers and calcu
   );
 });
 
+test("shared message anchors do not turn untimed usage observations into timing contributors", async () => {
+  const view = await nativeReportView();
+  const sessionId = view.sessions[0]!.id;
+  const message = view.events.find((event) => event.kind === "message")!;
+  const observation = view.events.find(
+    (event) => event.kind === "usage-observation",
+  )!;
+  const shared = {
+    ...observation,
+    id: "shared-message-observation",
+    references: message.references,
+  };
+  const expanded = parseReadView({ ...view, events: [...view.events, shared] });
+  const result = recordedReport(expanded, { readId: view.id, sessionId });
+  const start = result.measurements.find((entry) => entry.id === "start")!;
+  assert.deepEqual(
+    contributingEvents(expanded, sessionId, start).map((event) => event.id),
+    [message.id],
+  );
+  for (const entry of result.measurements.filter(
+    (entry) => entry.group === "Timing",
+  )) {
+    assert.ok(
+      contributingEvents(expanded, sessionId, entry).every(
+        (event) => event.kind !== "usage-observation",
+      ),
+    );
+  }
+  const usage = result.measurements.find(
+    (entry) =>
+      entry.group === "Usage observations" &&
+      entry.scope.eventIds.includes(shared.id),
+  )!;
+  assert.ok(usage);
+  assert.ok(
+    contributingEvents(expanded, sessionId, usage).some(
+      (event) => event.id === shared.id,
+    ),
+  );
+});
+
 test("partial, missing and wrong-runtime native sources never become complete reports or fabricated sessions", async () => {
   const raw = nativeReportRecords()
     .map((item) => JSON.stringify(item))
