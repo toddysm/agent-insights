@@ -59,6 +59,7 @@ export interface UsageObservation {
   readonly basis: NonNullable<Execution["usage"]>["basis"];
   readonly accountingScope:
     NonNullable<Execution["observation"]>["scope"] | "reported-only";
+  /** Explicit observation or responded/requested model identifier, never an operation name. */
   readonly model: string | null;
   readonly input: RecordedMetric;
   readonly output: RecordedMetric;
@@ -784,7 +785,10 @@ export function calculateRecordedMetrics(
             basis: event.usage.basis,
             accountingScope: event.observation?.scope ?? "reported-only",
             model:
-              event.observation?.model ?? event.model?.responded ?? event.name,
+              event.observation?.model ??
+              event.model?.responded ??
+              event.model?.requested ??
+              null,
             input: tokenTotal(
               "reported-input-tokens",
               [group],

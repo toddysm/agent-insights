@@ -626,6 +626,8 @@ another source's missing contributions or establish a source-anchored zero alone
   assistant-output reports and shutdown snapshots are not added to these
   totals or to one another. Each non-additive report remains inspectable in
   `tokens.observations`, with its own scope, model and original contributors.
+  Model identity requires explicit observation or responded/requested model
+  metadata; an agent, tool, hook or generic span name is not a model identity.
   Native-only evidence may therefore expose reported usage while per-call
   totals remain unavailable.
 - **Components** retain name, value and declared overlap relation separately.

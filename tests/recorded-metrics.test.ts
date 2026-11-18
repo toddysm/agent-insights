@@ -651,3 +651,41 @@ test("175,000 original session anchors preserve zero and unavailable metrics wit
   assert.equal(result.tokens.input.metric.value, null);
   assert.equal(result.tokens.input.metric.contributors.length, 175_000);
 });
+
+test("usage reports do not relabel tool, agent, hook or generic span names as model identities", () => {
+  const usage = {
+    basis: "unknown" as const,
+    input: 20,
+    output: 5,
+    components: [],
+  };
+  const kinds = [
+    "agent-span",
+    "tool-call",
+    "hook-execution",
+    "model-call",
+  ] as const;
+  const result = calculate(
+    read([
+      ...kinds.map((kind) =>
+        execution(kind, { kind, name: "operation-name", usage }),
+      ),
+      execution("reported-model", {
+        kind: "agent-span",
+        name: "worker",
+        usage,
+        model: { requested: "requested-model", responded: "responded-model" },
+      }),
+      execution("requested-model", {
+        kind: "agent-span",
+        name: "worker",
+        usage,
+        model: { requested: "requested-model", responded: null },
+      }),
+    ]),
+  );
+  assert.deepEqual(
+    result.tokens.observations.map((observation) => observation.model),
+    [null, null, null, null, "responded-model", "requested-model"],
+  );
+});
