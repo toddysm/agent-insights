@@ -21,7 +21,7 @@ import type { EvidenceReader } from "../evidence/contracts.js";
 import type { MultiSourceReader } from "../evidence/source-access.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
-import { readRequestSchema, readSetRequestSchema, discoveryRequestSchema } from "./protocol.js";
+import { readRequestSchema, readSetRequestSchema, discoveryRequestSchema, MAX_CONTROL_BODY_BYTES } from "./protocol.js";
 import { RuntimeService } from "./service.js";
 import { SourceAccess } from "./sources.js";
 import type { NativeHelperResolver } from "./sqlite.js";
@@ -158,7 +158,7 @@ async function controlBody(request: IncomingMessage): Promise<unknown> {
       );
     const bytes = chunk;
     length += bytes.length;
-    if (length > 8192)
+    if (length > MAX_CONTROL_BODY_BYTES)
       throw new RuntimeError(
         "REQUEST_TOO_LARGE",
         "The control request is too large.",

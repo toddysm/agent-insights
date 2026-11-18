@@ -419,6 +419,18 @@ export class SourceAccess {
     }
   }
 
+  /** Inspect an explicitly selected regular file/directory through the same confined admission checks as reads. */
+  async kind(sourceId: string, relativePath: string, signal: AbortSignal): Promise<"file" | "directory"> {
+    try {
+      await this.resolve(sourceId, relativePath, signal);
+      return "file";
+    } catch (error) {
+      if (!(error instanceof RuntimeError) || error.code !== "NOT_A_FILE") throw error;
+    }
+    await this.resolve(sourceId, relativePath, signal, "directory");
+    return "directory";
+  }
+
   /**
    * List one approved directory, never recursively or through child links.
    * Reject over 256 entries rather than silently truncating discovery. Revalidate

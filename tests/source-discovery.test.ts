@@ -26,6 +26,7 @@ import { startRuntime } from "../src/runtime/server.js";
 import {
   discoveryRequestSchema,
   discoveryResultSchema,
+  MAX_CONTROL_BODY_BYTES,
   type DiscoveryRequest,
 } from "../src/runtime/protocol.js";
 import { agentHostSessionReader } from "../src/evidence/readers/agent-host-session.js";
@@ -636,6 +637,132 @@ async function fixture(t: TestContext) {
 }
 
 test(
+  "native explicit roots use admitted path kinds instead of extensions",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const directory = path.join(data.root, "history-root.jsonl");
+    await mkdir(directory);
+    await writeFile(
+      path.join(directory, "events.jsonl"),
+      await readFile(data.historyPath),
+    );
+    await writeFile(
+      path.join(data.root, "extensionless-history"),
+      await readFile(data.historyPath),
+    );
+    await symlink(
+      path.join(data.root, "agentSessionData", "unrelated-storage-key"),
+      path.join(data.root, "overlay-root.db"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    for (const relativePath of [
+      "history-root.jsonl",
+      "extensionless-history",
+    ]) {
+      const result = await data.service.discover(
+        {
+          roots: [
+            ...data.selection.roots.filter(
+              (root) => root.layout === "settings",
+            ),
+            { sourceId: "source-1", relativePath, layout: "history" },
+            {
+              sourceId: "source-1",
+              relativePath: "overlay-root.db",
+              layout: "overlay",
+            },
+          ],
+        },
+        signal,
+      );
+      assert.equal(result.sessions[0]?.state, "ready");
+      assert.equal(result.sessions[0]?.selection?.sources.length, 3);
+      assert.ok(result.sessions[0]?.selection);
+      assert.equal(
+        (await data.service.readSet(result.sessions[0].selection, signal))
+          .sessions.length,
+        1,
+      );
+    }
+  },
+);
+
+test(
+  "native discovery accepts the exact reopen control byte limit and rejects one additional byte",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const original = (await data.service.discover(data.selection, signal))
+      .sessions[0]?.selection;
+    assert.ok(original);
+    const owner = original.expectedSession?.nativeIdentities.find(
+      (identity) => identity.namespace === "agent-host-session",
+    );
+    assert.ok(owner);
+    const runtime = "r".repeat(
+      MAX_CONTROL_BODY_BYTES -
+        Buffer.byteLength(JSON.stringify(original)) +
+        owner.value.length,
+    );
+    data.catalog.prepare("INSERT INTO metadata VALUES(?,?)").run(
+      `sessionStorageIdentity:${runtime}`,
+      JSON.stringify({
+        runtime,
+        storage: owner.value,
+        provider: "copilotcli",
+      }),
+    );
+    const exact = (await data.service.discover(data.selection, signal))
+      .sessions[0]?.selection;
+    assert.ok(exact);
+    assert.equal(
+      Buffer.byteLength(JSON.stringify(exact)),
+      MAX_CONTROL_BODY_BYTES,
+    );
+    assert.equal(
+      (await data.service.readSet(exact, signal)).sessions.length,
+      1,
+    );
+    const server = await startRuntime(data.config, {
+      multiSourceReaders: [agentHostSessionReader],
+      nativeHelper: testNativeHelper,
+      analysisProvider: syntheticProvider,
+    });
+    t.after(() => server.close());
+    for (const [body, status] of [
+      [JSON.stringify(exact), 200],
+      [`${JSON.stringify(exact)} `, 413],
+    ] as const) {
+      const response = await fetch(server.origin + "/api/read-set", {
+        method: "POST",
+        headers: {
+          Origin: server.origin,
+          "Content-Type": "application/json",
+          "X-Agent-Insights-Token": server.token,
+        },
+        body,
+      });
+      assert.equal(response.status, status);
+      await response.arrayBuffer();
+    }
+    data.catalog.prepare("UPDATE metadata SET key=?, value=? WHERE key=?").run(
+      `sessionStorageIdentity:${runtime}r`,
+      JSON.stringify({
+        runtime: `${runtime}r`,
+        storage: owner.value,
+        provider: "copilotcli",
+      }),
+      `sessionStorageIdentity:${runtime}`,
+    );
+    await assert.rejects(data.service.discover(data.selection, signal), {
+      code: "DISCOVERY_LIMIT",
+    });
+    assert.equal(data.service.view, null);
+  },
+);
+
+test(
   "native discovery qualifies all 64 translated chats within shared budgets, preserves suppression and rejects row 65",
   native,
   async (t) => {
@@ -799,6 +926,14 @@ test(
       '{"runtime":"runtime-owner-63","storage":"stored-owner-63","provider":"copilotcli"}',
       "sessionStorageIdentity:runtime-owner-63",
     );
+    data.catalog.exec(`UPDATE chats_v2 SET storage_resource=NULL,
+      provider_data='{"sdkSessionId":"sdk-fictional","sdkSessionId":"different"}'
+      WHERE chat_uri='stored-chat-0'`);
+    const firstMismatch = (
+      await data.service.discover(selection, signal)
+    ).sessions.find((session) => session.sdkSessionId === "different");
+    assert.equal(firstMismatch?.runtime, "unknown");
+    assert.equal(firstMismatch?.selection, null);
     data.catalog.exec(`UPDATE chats_v2 SET storage_resource=NULL,
       provider_data='{"sdkSessionId":"different","sdkSessionId":"sdk-fictional"}'
       WHERE chat_uri='stored-chat-0'`);

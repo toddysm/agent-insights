@@ -97,6 +97,9 @@ export const readRequestSchema = z.strictObject({
 /** Validated source selection passed to the source boundary. */
 export type ReadRequest = z.infer<typeof readRequestSchema>;
 
+/** Transport ceiling also bounds generated reopen controls before discovery can publish them. */
+export const MAX_CONTROL_BODY_BYTES = 8192;
+
 /** Composite controls bind explicit grants to code-owned roles; no SQL or schema is accepted. */
 export const readSetRequestSchema = z.strictObject({
   readerId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),

@@ -412,6 +412,8 @@ Use the corresponding per-user/custom roots from the harness configuration;
 the analyzer does not derive them from a working directory, SDK branding or
 timestamps. Named child links are excluded. Directory/file admission still uses
 the [approved source boundary](#source-selection-and-limits).
+Explicit roots use their admitted file/directory kind, not a filename extension;
+extensionless files and directories ending in `.jsonl` or `.db` remain usable.
 
 **Discover sessions** sends an authenticated `POST /api/discover` with
 `{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
@@ -448,7 +450,9 @@ These are not live verification.
 Discovery accepts at most 16 root selections, 256 entries in a directory,
 64 candidate files and 64 chat rows per catalog, and a 256-KiB first-line header.
 Shared SQLite/query limits and the runtime deadline also apply. Limits reject,
-never silently truncate. Large stores require narrower selections; integrated
+never silently truncate. Generated reopen controls must fit the same 8-KiB
+transport limit as submitted controls; oversized identities/paths reject discovery
+before a ready selection can be published. Large stores require narrower selections; integrated
 producer-generated and cross-platform qualification remains separate from the
 synthetic discovery tests.
 
@@ -456,6 +460,9 @@ Within one catalog connection, discovery reuses bounded chat/metadata projection
 for exact-key and first-JSON-member lookups, including whitespace, escaping and
 duplicate keys. JSON depth follows native admission; unsupported bindings retain
 native validation.
+Native predicate matching alone does not establish ownership: the decoded
+provider backing must also match the SDK. A first/last duplicate-member mismatch
+remains unqualified; lookup indexes do not relax reader admission.
 Original row witnesses and shared row/byte/query limits remain intact.
 JSON-BLOB rows and NUL-terminated JSON prefixes route their affected bindings
 through native predicates instead of being silently excluded or disabling all

@@ -22,6 +22,7 @@ import type {
 } from "../evidence/source-access.js";
 import {
   discoveryResultSchema,
+  MAX_CONTROL_BODY_BYTES,
   type DiscoveryRequest,
   type DiscoveryResult,
   type ReadSetRequest,
@@ -202,7 +203,6 @@ export class SourceDiscovery {
       DiscoveryRequest["roots"][number]["layout"],
       Location[]
     >();
-    const configured = await this.access.list();
     /** Candidate controls retain the grant, never a reconstructed absolute path. */
     const add = (
       kind: "catalog" | "history" | "overlay",
@@ -227,18 +227,10 @@ export class SourceDiscovery {
         relativePath: root.relativePath,
       };
       try {
-        const grant = configured.find((source) => source.id === root.sourceId);
-        if (!grant)
-          throw new RuntimeError(
-            "SOURCE_SCOPE",
-            "Select an explicitly approved source location.",
-            403,
-          );
+        const kind = await this.access.kind(root.sourceId, root.relativePath, this.signal);
         if (
           root.layout === "catalog" ||
-          grant.kind === "file" ||
-          (root.layout === "history" && root.relativePath.endsWith(".jsonl")) ||
-          (root.layout === "overlay" && root.relativePath.endsWith(".db"))
+          kind === "file"
         ) {
           if (root.layout === "settings")
             throw new RuntimeError(
@@ -562,6 +554,12 @@ export class SourceDiscovery {
                           ],
                         }
                       : null;
+                  if (selection && Buffer.byteLength(JSON.stringify(selection)) > MAX_CONTROL_BODY_BYTES)
+                    throw new RuntimeError(
+                      "DISCOVERY_LIMIT",
+                      "A discovered session exceeds the 8-KiB reopen control limit; no session list was published.",
+                      413,
+                    );
                   result.push({
                     id: `${this.id}:session:${this.sequence}:${result.length}`,
                     sdkSessionId: sdk,
