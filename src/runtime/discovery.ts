@@ -109,6 +109,7 @@ export class SourceDiscovery {
       !(error instanceof RuntimeError) ||
       [
         "SOURCE_CLEANUP_FAILED",
+        "SQLITE_CLEANUP_FAILED",
         "READ_CANCELLED",
         "READ_TIMEOUT",
         "READ_LIMIT",

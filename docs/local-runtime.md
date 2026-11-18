@@ -455,6 +455,8 @@ transport limit as submitted controls; oversized identities/paths reject discove
 before a ready selection can be published. Large stores require narrower selections; integrated
 producer-generated and cross-platform qualification remains separate from the
 synthetic discovery tests.
+Native cleanup failures abort discovery, not just the affected source, even if a
+subsequent cleanup retry confirms resource release.
 
 Within one catalog connection, discovery reuses bounded chat/metadata projections
 for exact-key and first-JSON-member lookups, including whitespace, escaping and

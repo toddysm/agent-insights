@@ -396,7 +396,11 @@ test("production discovery keeps the helper gate and never turns inaccessible se
   assert.equal(service.view, null);
 });
 
-for (const code of ["SQLITE_LIMIT", "SOURCE_TOO_LARGE"]) {
+for (const code of [
+  "SQLITE_LIMIT",
+  "SOURCE_TOO_LARGE",
+  "SQLITE_CLEANUP_FAILED",
+]) {
   test(`discovery rejects ${code} instead of publishing an incomplete correlation set`, async (t) => {
     const root = await temporary(t);
     await writeFile(path.join(root, "catalog.db"), "");
