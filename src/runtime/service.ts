@@ -568,7 +568,7 @@ export class RuntimeService {
 
   /**
    * Execute an installed composite reader over explicit, immutable role bindings.
-   * @param selection - Reader identity and authorized grant/relative-path bindings only.
+   * @param selection - Reader/grant bindings and optional discovered identities to revalidate before publication.
    * @param externalSignal - Caller cancellation; no source content or SQL arrives in controls.
    * @returns Validated in-memory view after all owned database processes have exited.
    */
@@ -578,6 +578,13 @@ export class RuntimeService {
   ): Promise<ReadView> {
     const request = Object.freeze({
       readerId: selection.readerId,
+      ...(selection.expectedSession ? {
+        expectedSession: Object.freeze({
+          nativeIdentities: Object.freeze(selection.expectedSession.nativeIdentities.map(
+            (identity) => Object.freeze({ ...identity }),
+          )),
+        }),
+      } : {}),
       sources: Object.freeze(
         selection.sources.map((binding) => Object.freeze({ ...binding })),
       ),
@@ -606,6 +613,15 @@ export class RuntimeService {
           ensureCurrent();
           const view = parseReadView(await abortable(reader.read(set), signal));
           ensureCurrent();
+          if (request.expectedSession && (view.sessions.length !== 1 ||
+              !request.expectedSession.nativeIdentities.every((expected) =>
+                view.sessions[0]?.nativeIdentities?.some((identity) =>
+                  identity.namespace === expected.namespace && identity.value === expected.value))))
+            throw new RuntimeError(
+              "SOURCE_CHANGED",
+              "The discovered session identity changed; refresh discovery before opening it.",
+              409,
+            );
           const observations = await set.finish();
           set.validate(view);
           return {

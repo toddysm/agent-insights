@@ -226,6 +226,11 @@ export function SourceDiscoveryPanel({
               {result.issues.map((issue, index) => (
                 <li key={index}>
                   <strong>{issue.code}</strong>: {issue.message}
+                  {issue.sourceId && (
+                    <code>
+                      {issue.sourceId}: {issue.relativePath}
+                    </code>
+                  )}
                 </li>
               ))}
             </ul>
@@ -255,6 +260,22 @@ export function SourceDiscoveryPanel({
                     {session.state}: {session.reason}
                   </p>
                   <p>{session.references.length} original source references</p>
+                  <ul aria-label="Referenced sources">
+                    {result.locators
+                      .filter((locator) =>
+                        session.references.some(
+                          (reference) =>
+                            reference.sourceId === locator.evidenceSourceId,
+                        ),
+                      )
+                      .map((locator) => (
+                        <li key={locator.evidenceSourceId}>
+                          <code>
+                            {locator.sourceId}: {locator.relativePath}
+                          </code>
+                        </li>
+                      ))}
+                  </ul>
                   <button
                     type="button"
                     disabled={disabled || !session.selection}

@@ -19,6 +19,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { SourceAccess } from "../src/runtime/sources.js";
 import { SourceDiscovery } from "../src/runtime/discovery.js";
+import { SourceReadSet } from "../src/runtime/source-read.js";
+import { RuntimeError } from "../src/runtime/errors.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { startRuntime } from "../src/runtime/server.js";
 import {
@@ -27,10 +29,12 @@ import {
   type DiscoveryRequest,
 } from "../src/runtime/protocol.js";
 import { agentHostSessionReader } from "../src/evidence/readers/agent-host-session.js";
+import { prepareAgentHostDiscoveryCatalog } from "../src/evidence/readers/agent-host-catalog.js";
 import { productionMultiSourceReaders } from "../src/evidence/readers/index.js";
 import type {
   MultiSourceInput,
   SqliteRow,
+  SqliteInput,
 } from "../src/evidence/source-access.js";
 import { testNativeHelper } from "./fixtures/native-helper.js";
 import { syntheticProvider } from "./fixtures/analysis.js";
@@ -220,6 +224,69 @@ test("combined session reads frame history and resolve catalog once without merg
   assert.equal(view.sources[2]?.coverage.tokens.status, "unavailable");
 });
 
+test("discovery preserves native JSON predicates for duplicate or noncanonical keys and original metadata witnesses", async () => {
+  const chats = catalogRows()
+    .filter((row) => row.table === "chats_v2")
+    .map((row) => ({
+      ...row,
+      values: {
+        ...row.values,
+        provider_data:
+          '{"sdkSessionId":"other","sdkSessionId":"sdk-fictional"}',
+      },
+    }));
+  const metadata: SqliteRow = {
+    table: "metadata",
+    key: [
+      { column: "key", type: "text", value: "sessionStorageIdentity:runtime" },
+    ],
+    fingerprint: "b".repeat(64),
+    values: {
+      key: "sessionStorageIdentity:runtime",
+      value: '{"storage":"other","storage":"copilotcli:/host"}',
+    },
+  };
+  const calls: string[] = [];
+  const catalog: SqliteInput = {
+    available: true,
+    kind: "sqlite",
+    sourceId: "catalog",
+    userVersion: 22,
+    snapshotScope: "connection",
+    async query(id) {
+      calls.push(id);
+      return id === "discovery_metadata" ? [metadata] : [];
+    },
+  };
+  const prepared = await prepareAgentHostDiscoveryCatalog(
+    catalog,
+    chats,
+    signal,
+  );
+  assert.deepEqual(
+    await prepared.query("sdk_chats", { sdk: "sdk-fictional" }),
+    [],
+  );
+  assert.deepEqual(
+    await prepared.query("storage_identity", {
+      prefix: "sessionStorageIdentity:",
+      storage: "copilotcli:/host",
+    }),
+    [],
+  );
+  assert.deepEqual(
+    await prepared.query("metadata_key", {
+      key: "sessionStorageIdentity:runtime",
+    }),
+    [metadata],
+  );
+  assert.deepEqual(calls, [
+    "discovery_metadata",
+    "sdk_chats",
+    "storage_identity",
+  ]);
+});
+
 test("directory discovery is bounded, excludes child links, rejects traversal and reports permission failures", async (t) => {
   const root = await temporary(t);
   const inside = path.join(root, "approved");
@@ -297,6 +364,35 @@ test("production discovery keeps the helper gate and never turns inaccessible se
   assert.deepEqual(await readdir(root), []);
   assert.equal(service.view, null);
 });
+
+for (const code of ["SQLITE_LIMIT", "SOURCE_TOO_LARGE"]) {
+  test(`discovery rejects ${code} instead of publishing an incomplete correlation set`, async (t) => {
+    const root = await temporary(t);
+    await writeFile(path.join(root, "catalog.db"), "");
+    t.mock.method(SourceReadSet.prototype, "prepare", async () => {
+      throw new RuntimeError(code, "Synthetic source budget exceeded.", 413);
+    });
+    const discovery = new SourceDiscovery(
+      await SourceAccess.create([root]),
+      testNativeHelper,
+      "limited",
+      signal,
+    );
+    t.after(() => discovery.dispose());
+    await assert.rejects(
+      discovery.run({
+        roots: [
+          {
+            sourceId: "source-1",
+            relativePath: "catalog.db",
+            layout: "catalog",
+          },
+        ],
+      }),
+      { code },
+    );
+  });
+}
 
 test("superseded discovery cannot publish after delayed cleanup, and replacement waits for ownership", async (t) => {
   const root = await temporary(t);
@@ -510,6 +606,98 @@ async function fixture(t: TestContext) {
 }
 
 test(
+  "native discovery qualifies all 64 translated chats within shared budgets, preserves suppression and rejects row 65",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    data.catalog.exec(
+      "DELETE FROM chats_v2; DELETE FROM sessions_v2; DELETE FROM session_chat_catalogs;",
+    );
+    const chat = data.catalog.prepare(
+      "INSERT INTO chats_v2 VALUES(?,?,?,NULL,?,0,0,NULL)",
+    );
+    const owner = data.catalog.prepare(
+      "INSERT INTO sessions_v2 VALUES(?,'copilotcli','g1',1,0)",
+    );
+    const authority = data.catalog.prepare(
+      "INSERT INTO session_chat_catalogs VALUES(?,2,'g1',1,1)",
+    );
+    const metadata = data.catalog.prepare("INSERT INTO metadata VALUES(?,?)");
+    for (let index = 0; index < 64; index++) {
+      const sdk = index === 0 ? "sdk-fictional" : `sdk-${index}`;
+      const storedOwner = `stored-owner-${index}`;
+      const storedChat = `stored-chat-${index}`;
+      chat.run(
+        storedChat,
+        storedOwner,
+        `copilotcli:/${sdk}`,
+        JSON.stringify({ sdkSessionId: sdk }),
+      );
+      owner.run(storedOwner);
+      authority.run(storedOwner);
+      metadata.run(
+        `sessionStorageIdentity:runtime-owner-${index}`,
+        JSON.stringify({
+          runtime: `runtime-owner-${index}`,
+          storage: storedOwner,
+          provider: "copilotcli",
+        }),
+      );
+      metadata.run(
+        `chatStorageIdentity:runtime-chat-${index}`,
+        JSON.stringify({
+          runtime: `runtime-chat-${index}`,
+          storage: storedChat,
+        }),
+      );
+    }
+    const selection = {
+      roots: data.selection.roots.filter((root) => root.layout !== "overlay"),
+    };
+    const result = await data.service.discover(selection, signal);
+    assert.equal(result.sessions.length, 64);
+    assert.ok(
+      result.sessions.every(
+        (session) => session.runtime === "copilot-agent-host",
+      ),
+    );
+    assert.equal(
+      result.sessions.filter((session) => session.state === "ready").length,
+      1,
+    );
+    assert.equal(
+      result.sessions.filter((session) => session.state === "unavailable")
+        .length,
+      63,
+    );
+    metadata.run("sessionHidden:runtime-owner-63", "false");
+    const hidden = (
+      await data.service.discover(selection, signal)
+    ).sessions.find((session) => session.sdkSessionId === "sdk-63");
+    assert.equal(hidden?.state, "ambiguous");
+    assert.match(hidden?.reason ?? "", /hidden/);
+    assert.ok(
+      hidden?.references.some(
+        (reference) =>
+          reference.location.kind === "sqlite" &&
+          reference.location.key.some(
+            (part) => part.value === "sessionHidden:runtime-owner-63",
+          ),
+      ),
+    );
+    chat.run(
+      "row-65",
+      "owner-65",
+      "copilotcli:/sdk-65",
+      '{"sdkSessionId":"sdk-65"}',
+    );
+    await assert.rejects(data.service.discover(selection, signal), {
+      code: "DISCOVERY_LIMIT",
+    });
+  },
+);
+
+test(
   "native discovery correlates by authoritative IDs, deduplicates aliases and opens both readers without source writes",
   native,
   async (t) => {
@@ -556,6 +744,13 @@ test(
         (reference) => reference.location.kind === "jsonl",
       ),
     );
+    assert.ok(
+      session.references.every((reference) =>
+        result.locators.some(
+          (locator) => locator.evidenceSourceId === reference.sourceId,
+        ),
+      ),
+    );
     assert.ok(session.selection);
     const view = await data.service.readSet(session.selection, signal);
     assert.equal(view.sessions.length, 1);
@@ -581,6 +776,69 @@ test(
         immutable.map((file) => readFile(path.join(data.root, file))),
       ),
       before,
+    );
+  },
+);
+
+test(
+  "native discovered opens reject replacement SDK histories and reassigned host chats at unchanged paths",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const selected = (await data.service.discover(data.selection, signal))
+      .sessions[0]?.selection;
+    assert.ok(selected?.expectedSession);
+    data.catalog
+      .prepare(
+        "INSERT INTO chats_v2 SELECT 'copilotcli:/host/other', owner_session_uri, 'copilotcli:/sdk-other', NULL, ?, 0, 0, NULL FROM chats_v2",
+      )
+      .run('{"sdkSessionId":"sdk-other"}');
+    await writeFile(
+      data.historyPath,
+      records("sdk-other")
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n",
+    );
+    await assert.rejects(data.service.readSet(selected, signal), {
+      code: "SOURCE_CHANGED",
+    });
+    assert.equal(data.service.view, null);
+    await writeFile(
+      data.historyPath,
+      records()
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n",
+    );
+    data.catalog.exec(
+      "UPDATE chats_v2 SET chat_uri='copilotcli:/host/reassigned' WHERE chat_uri='copilotcli:/host/chat'",
+    );
+    await assert.rejects(data.service.readSet(selected, signal), {
+      code: "SOURCE_CHANGED",
+    });
+    assert.equal(data.service.view, null);
+  },
+);
+
+test(
+  "native discovery reports overlays whose retained owner matches no selected chat",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    data.overlay.exec(
+      "UPDATE session_metadata SET value='copilotcli:/unassigned/chat' WHERE key='agentHost.rowOwnerChat'",
+    );
+    const result = await data.service.discover(data.selection, signal);
+    assert.equal(result.sessions[0]?.state, "ready");
+    assert.equal(result.sessions[0]?.selection?.sources.length, 2);
+    assert.ok(
+      result.issues.some(
+        (issue) =>
+          issue.code === "OVERLAY_UNASSIGNED" &&
+          issue.sourceId === "source-1" &&
+          issue.relativePath.endsWith(
+            path.join("unrelated-storage-key", "session.db"),
+          ),
+      ),
     );
   },
 );
@@ -678,6 +936,23 @@ test(
         (session) =>
           session.state === "ambiguous" && session.selection === null,
       ),
+    );
+    assert.ok(
+      competing.sessions.every((session) =>
+        session.references.every((reference) =>
+          competing.locators.some(
+            (locator) => locator.evidenceSourceId === reference.sourceId,
+          ),
+        ),
+      ),
+    );
+    assert.equal(
+      new Set(
+        competing.locators
+          .filter((locator) => locator.relativePath.endsWith("agent-host.db"))
+          .map((locator) => locator.relativePath),
+      ).size,
+      2,
     );
     const exact: DiscoveryRequest = {
       roots: [

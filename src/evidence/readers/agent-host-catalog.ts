@@ -50,6 +50,12 @@ export const agentHostCatalogDefinition = sqliteDefinitionSchema.parse({
       filters: [],
     },
     {
+      id: "discovery_metadata",
+      table: "metadata",
+      columns: ["key", "value"],
+      filters: [],
+    },
+    {
       id: "sdk_chats",
       table: "chats_v2",
       columns: [
@@ -127,6 +133,73 @@ function jsonObject(value: unknown): Record<string, unknown> | null {
 /** Only SQLite INTEGER cells (bigint), never exact-valued REAL cells, can establish integer flags. */
 function integer(value: unknown, expected: number): boolean {
   return value === BigInt(expected);
+}
+
+/**
+ * Reuse bounded discovery projections only within this connection snapshot.
+ * Exact metadata keys already require binary equality in the resolver. JSON
+ * lookups are indexed only for canonical objects: other encodings (including
+ * duplicate keys) retain native JSON predicates, never JSON.parse substitutes.
+ * Original rows/fingerprints survive unchanged; native owner/storage lookups
+ * retain their SQLite affinity/collation behavior and all shared budgets.
+ */
+export async function prepareAgentHostDiscoveryCatalog(
+  catalog: SqliteInput,
+  chats: readonly SqliteRow[],
+  signal: AbortSignal,
+): Promise<SqliteInput> {
+  if (catalog.userVersion !== 22 || catalog.snapshotScope !== "connection") return catalog;
+  signal.throwIfAborted();
+  const metadata = await catalog.query("discovery_metadata", {});
+  const sdkRows = new Map<string, SqliteRow[]>();
+  const metadataRows = new Map<string, SqliteRow[]>();
+  const storageRows = new Map<string, SqliteRow[]>();
+  const nativePrefixes = new Set<string>();
+  let nativeSdk = false;
+  /** Group original witnesses without reconstructing rows or their SQLite identities. */
+  const append = (index: Map<string, SqliteRow[]>, key: string, row: SqliteRow): void => {
+    const rows = index.get(key) ?? [];
+    rows.push(row);
+    index.set(key, rows);
+  };
+  for (const row of chats) {
+    signal.throwIfAborted();
+    const value = jsonObject(row.values.provider_data);
+    if (!value) continue;
+    if (JSON.stringify(value) !== row.values.provider_data) nativeSdk = true;
+    if (typeof value.sdkSessionId === "string") append(sdkRows, value.sdkSessionId, row);
+  }
+  for (const row of metadata) {
+    signal.throwIfAborted();
+    const key = row.values.key;
+    if (typeof key !== "string") continue;
+    append(metadataRows, key, row);
+    for (const prefix of ["sessionStorageIdentity:", "chatStorageIdentity:"]) {
+      if (!key.startsWith(prefix)) continue;
+      const value = jsonObject(row.values.value);
+      if (!value) continue;
+      if (JSON.stringify(value) !== row.values.value) nativePrefixes.add(prefix);
+      if (typeof value.storage === "string")
+        append(storageRows, JSON.stringify([prefix, value.storage]), row);
+    }
+  }
+  return {
+    ...catalog,
+    async query(queryId, bindings) {
+      signal.throwIfAborted();
+      const keys = Object.keys(bindings);
+      if (queryId === "sdk_chats" && keys.length === 1 && typeof bindings.sdk === "string" && !nativeSdk)
+        return sdkRows.get(bindings.sdk) ?? [];
+      if (queryId === "metadata_key" && keys.length === 1 && typeof bindings.key === "string")
+        return metadataRows.get(bindings.key) ?? [];
+      if (queryId === "storage_identity" && keys.length === 2 &&
+          typeof bindings.prefix === "string" && typeof bindings.storage === "string" &&
+          ["sessionStorageIdentity:", "chatStorageIdentity:"].includes(bindings.prefix) &&
+          !nativePrefixes.has(bindings.prefix))
+        return storageRows.get(JSON.stringify([bindings.prefix, bindings.storage])) ?? [];
+      return catalog.query(queryId, bindings);
+    },
+  };
 }
 
 /**

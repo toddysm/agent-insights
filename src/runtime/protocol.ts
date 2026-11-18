@@ -11,7 +11,7 @@
  * in the source service and analysis runner, beyond these structural schemas.
  */
 import { z } from "zod";
-import { sourceFormatSchema, referenceSchema } from "../evidence/contracts.js";
+import { sourceFormatSchema, referenceSchema, nativeIdentitySchema } from "../evidence/contracts.js";
 import { analysisRunSchema } from "../analysis/contracts.js";
 import { sourceObservationSchema } from "../evidence/source-access.js";
 
@@ -100,6 +100,9 @@ export type ReadRequest = z.infer<typeof readRequestSchema>;
 /** Composite controls bind explicit grants to code-owned roles; no SQL or schema is accepted. */
 export const readSetRequestSchema = z.strictObject({
   readerId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+  expectedSession: z.strictObject({
+    nativeIdentities: z.array(nativeIdentitySchema).min(1).max(8).readonly(),
+  }).readonly().optional(),
   sources: z
     .array(
       z
@@ -168,6 +171,11 @@ export const discoveryResultSchema = z.strictObject({
     message: z.string(),
   }).readonly()).readonly(),
   observations: z.array(sourceObservationSchema).readonly(),
+  locators: z.array(z.strictObject({
+    evidenceSourceId: z.string().min(1),
+    sourceId: z.string().min(1),
+    relativePath: z.string(),
+  }).readonly()).readonly(),
 }).readonly();
 /** Current manual discovery response; callers drop it on refresh/selection changes. */
 export type DiscoveryResult = z.infer<typeof discoveryResultSchema>;

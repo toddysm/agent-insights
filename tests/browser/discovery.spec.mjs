@@ -78,6 +78,7 @@ test("discovery preserves production gates, exposes explicit roots and drops sta
           finishedAtMs: 2,
           issues: [],
           observations: [],
+          locators: [],
           sessions: [
             {
               id: "fictional-chat",

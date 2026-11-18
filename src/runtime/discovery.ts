@@ -7,6 +7,7 @@ import path from "node:path";
 import type { EvidenceReference } from "../evidence/contracts.js";
 import {
   agentHostCatalogDefinition,
+  prepareAgentHostDiscoveryCatalog,
   resolveAgentHostOwnership,
 } from "../evidence/readers/agent-host-catalog.js";
 import { agentHostOverlayDefinition } from "../evidence/readers/agent-host-usage.js";
@@ -55,6 +56,7 @@ interface OverlayCandidate {
 export class SourceDiscovery {
   private readonly sets = new Set<SourceReadSet>();
   private readonly observations: DiscoveryResult["observations"][number][] = [];
+  private readonly locators: DiscoveryResult["locators"][number][] = [];
   private readonly issues: DiscoveryResult["issues"][number][] = [];
   private sequence = 0;
   private candidates = 0;
@@ -77,6 +79,8 @@ export class SourceDiscovery {
         "READ_TIMEOUT",
         "READ_LIMIT",
         "DISCOVERY_LIMIT",
+        "SQLITE_LIMIT",
+        "SOURCE_TOO_LARGE",
       ].includes(error.code) ||
       this.signal.aborted
     )
@@ -133,6 +137,7 @@ export class SourceDiscovery {
           "The selected discovery database is unavailable.",
           422,
         );
+      this.locators.push({ evidenceSourceId: input.sourceId, ...location });
       const result = await read(input);
       const observations = await set.finish();
       this.observations.push(...observations);
@@ -279,6 +284,7 @@ export class SourceDiscovery {
           if (newline >= 0) break;
         }
         const sourceId = `${this.id}:header:${++this.sequence}`;
+        this.locators.push({ evidenceSourceId: sourceId, ...location });
         const history = await readNativeHistory(
           {
             available: true,
@@ -335,6 +341,7 @@ export class SourceDiscovery {
         finishedAtMs: Date.now(),
         sessions: [],
         observations: [],
+        locators: [],
         issues: request.roots.map((root) => ({
           sourceId: root.sourceId,
           relativePath: root.relativePath,
@@ -345,6 +352,7 @@ export class SourceDiscovery {
     const locations = await this.locations(request);
     const histories: HistoryCandidate[] = [];
     const overlays: OverlayCandidate[] = [];
+    const assignedOverlays = new Set<OverlayCandidate>();
     const sessions: DiscoveryResult["sessions"][number][] = [];
     const physical = new Set<string>();
     for (const role of ["history", "overlay", "catalog"] as const) {
@@ -402,6 +410,11 @@ export class SourceDiscovery {
                     "A catalog exceeds 64 chat rows; select a narrower catalog.",
                     413,
                   );
+                const ownershipCatalog = await prepareAgentHostDiscoveryCatalog(
+                  catalog,
+                  rows,
+                  this.signal,
+                );
                 const backings = new Set<string>();
                 for (const row of rows) {
                   let sdk: string | null = null;
@@ -435,7 +448,7 @@ export class SourceDiscovery {
                   if (backings.has(sdk)) continue;
                   backings.add(sdk);
                   const ownership = await resolveAgentHostOwnership(
-                    catalog,
+                    ownershipCatalog,
                     sdk,
                     this.signal,
                   );
@@ -455,15 +468,23 @@ export class SourceDiscovery {
                       )
                     : [];
                   const ready = ownership.ok && matches.length === 1;
+                  for (const match of overlayMatches)
+                    assignedOverlays.add(match);
                   const history = matches[0];
                   const overlay =
                     overlayMatches.length === 1
                       ? overlayMatches[0]?.location
                       : null;
-                  const selection =
-                    ready && history
+                  const selection: DiscoveryResult["sessions"][number]["selection"] =
+                    ready && history && ownership.ok
                       ? {
                           readerId: "agent-host-sessions",
+                          expectedSession: {
+                            nativeIdentities: [
+                              { namespace: "copilot-sdk-session", value: sdk },
+                              ...ownership.value.identities,
+                            ],
+                          },
                           sources: [
                             { ...history.location, key: "history" },
                             { ...location, key: "catalog" },
@@ -546,6 +567,14 @@ export class SourceDiscovery {
           message:
             "Native SDK history has no matching selected Agent Host catalog backing; runtime identity remains unknown.",
         });
+    for (const overlay of overlays)
+      if (!assignedOverlays.has(overlay))
+        this.issues.push({
+          ...overlay.location,
+          code: "OVERLAY_UNASSIGNED",
+          message:
+            "Overlay ownership matches no qualified selected catalog chat; no substitute was selected.",
+        });
     if (!locations.get("catalog")?.length)
       this.issues.push({
         sourceId: "",
@@ -569,6 +598,7 @@ export class SourceDiscovery {
       sessions: correlated,
       issues: this.issues,
       observations: this.observations,
+      locators: this.locators,
     });
   }
 

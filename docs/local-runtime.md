@@ -428,12 +428,18 @@ overlay usage unavailable. Selecting one exact catalog resolves profile scope
 without silently choosing a winner. Opening a result reopens and revalidates the
 selected sources through `agent-host-sessions`, framing the full native history
 and checking catalog ownership once for both conversation and execution readers.
+The open request also retains the discovered SDK and host identities: replacing
+history or ownership at the same path rejects with `SOURCE_CHANGED`, not another
+chat's successful read.
 
 The list separates runtime from mode, execution location and analysis provider.
 Unknown mode/location stays unknown. Missing or rotated history, permission errors,
 unsupported sources, ambiguous ownership and archived retention are explicit;
 they never become a successful empty session. Each response includes read-time
-bounds, original references and per-input observations, not live verification.
+bounds, original references, per-input observations and a transient `locators`
+map from every evidence source ID to its approved grant/relative path, including
+ambiguous or unavailable selections. Unmatched overlays remain explicit issues.
+These are not live verification.
 
 Discovery accepts at most 16 root selections, 256 entries in a directory,
 64 candidate files and 64 chat rows per catalog, and a 256-KiB first-line header.
@@ -441,6 +447,11 @@ Shared SQLite/query limits and the runtime deadline also apply. Limits reject,
 never silently truncate. Large stores require narrower selections; integrated
 producer-generated and cross-platform qualification remains separate from the
 synthetic discovery tests.
+
+Within one catalog connection, discovery reuses bounded chat/metadata projections
+for exact-key and canonical-JSON lookups; noncanonical JSON retains native
+predicates. Original row witnesses and shared row/byte/query limits remain intact.
+This lookup state is discarded after discovery, not a copied application catalog.
 
 ### Agent Host execution availability
 
