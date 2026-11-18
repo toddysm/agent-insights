@@ -86,9 +86,10 @@ These are supporting components, not a complete production analysis workflow.
 
 The prototype demonstrates navigation, numeric summaries, evidence drill-down
 and illustrative prompt coaching with fictional data. It does not read real
-sessions or call a model. Its revision-1 editing controls are superseded by
-the current read-only design. Removing those controls and reviewing the
-aligned experience remain work in
+sessions or call a model. This revision-2 alignment removes the historical
+editing controls and adds explicit synthetic refresh, source-unavailability
+and analysis-lifecycle states. It is not production reporting or user approval.
+Reviewing and explicitly approving the aligned experience remain work in
 [#3](https://github.com/toddysm/agent-insights/issues/3).
 Prototype tests are not validation of production source readers or analysis.
 
@@ -265,6 +266,6 @@ remains the selected testing mode.
 | Gap                                                                                                                 | Evidence and next work                                                                                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Native foundations and runtime integration are merged; public distribution and Agent Host readers remain incomplete | #41 completed #36/#42, #43 completed #37, #44 completed #38 and [#35](https://github.com/toddysm/agent-insights/pull/35) completed #33. Release #39 needs separate permission. Source qualification and Agent Host readers remain separate; optional telemetry remains #34. #10/#29 resumes as the dependency for the approved extension-reader refinements #46-#49, not as Agent Host support. |
-| Current prototype still contains superseded editing flows                                                           | Align the historical prototype with experience revision 2 through [#3](https://github.com/toddysm/agent-insights/issues/3); do not treat those controls as product requirements                                                                                                                                                                                                                 |
+| Read-only prototype still requires user experience approval                                                        | Revision-2 synthetic flows remove editing controls; [#3](https://github.com/toddysm/agent-insights/issues/3) stays open for S1-S6/S8 walkthrough, feedback and explicit sign-off. Prototype validation is not production report or source-reader qualification. |
 | Conversation readers, reports and interpretation definitions remain incomplete                                      | The execution reader and transport are available; missing consumers are reported explicitly. Delivery remains In progress under [#2](https://github.com/toddysm/agent-insights/issues/2)                                                                                                                                                                                                        |
 | End-user capture and usage documentation is not complete                                                            | The [capture setup guide](capture-setup.md) documents the Agent Host-first baseline, optional exports and verification limits. [#1](https://github.com/toddysm/agent-insights/issues/1) still needs authorized tool-bearing/two-project capture acceptance; [#21](https://github.com/toddysm/agent-insights/issues/21) owns the broader usage guide. Production native-reader gates and integrated verification remain incomplete. |

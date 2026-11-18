@@ -1,4 +1,4 @@
-/** Synthetic evidence and in-memory interpretation edits; never reads captures or contacts a provider. */
+/** Synthetic read-only evidence and explicit in-memory source/analysis lifecycles; no capture access or provider calls. */
 const InsightsModel = (() => {
   const taskSeeds = [
     {
@@ -13,7 +13,7 @@ const InsightsModel = (() => {
       id: "t2",
       title: "Fix date filtering",
       status: "Completed",
-      evidence: "User-confirmed",
+      evidence: "Source acceptance",
       prompt: "Next, fix date filtering so the end date is included.",
       range: [15, 22],
     },
@@ -60,6 +60,35 @@ const InsightsModel = (() => {
     [2, 3, 3, 4, 6, 7, 8, 9, 10, 10, 11, 12, 13, 14],
     [16, 16, 17, 18, 19, 20, 20, 21, 22],
     [24, 25, 26, 27],
+  ];
+  const toolInputs = [
+    { path: "src/table.ts", startLine: 1, endLine: 160 },
+    { path: "src", pattern: "export.*csv|filteredRows", regex: true },
+    { path: "src/utils" },
+    { path: "src/utils/csv.ts", startLine: 1, endLine: 120 },
+    { patch: "*** Begin Patch\n*** Add File: src/export.ts\n+import { toCsv } from './utils/csv';\n+export const exportRows = (rows) => toCsv(rows);\n*** End Patch" },
+    { command: "npm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "Export tests: 1 failed, 7 passed.", stderr: "Expected filtered rows; received all rows.", exitCode: 1 },
+    { path: "src/table.ts", startLine: 80, endLine: 140 },
+    { patch: "*** Begin Patch\n*** Update File: src/export.ts\n@@\n-export const exportRows = (rows) => toCsv(rows);\n+export const exportRows = (table) => toCsv(table.filteredRows);\n*** Add File: tests/export.test.ts\n+import { test, expect } from 'vitest';\n+import { exportRows } from '../src/export';\n+test('exports filtered rows', () => {\n+  expect(exportRows({ filteredRows: [['visible']] })).toContain('visible');\n+});\n*** End Patch" },
+    { command: "mkdir -p temp\nprintf '%s\\n' 'print(\"name,value\")' 'print(\"sample,1\")' > temp/make-fixtures.py\npython3 temp/make-fixtures.py\nnpm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "name,value\nsample,1\nExport tests: 8 passed, 0 failed.", stderr: "", exitCode: 0 },
+    { prompt: "Check filtered-row handling and CSV escaping. Inspect src/export.ts and tests/export.test.ts. Remaining instructions were not captured." },
+    { path: "tests/export.test.ts", startLine: 1, endLine: 120 },
+    { path: "src/utils", pattern: "toCsv", regex: false },
+    { question: "Can I use the existing CSV utility and remove the temporary fixture helper?", choices: ["Use existing utility", "Explain the alternative"] },
+    { command: "npm test -- --run tests/export.test.ts && rm temp/make-fixtures.py", workingDirectory: "/workspace/sample-reports", stdout: "CSV export filtered-row and escaping tests: 8 passed, 0 failed (synthetic).\nDeleted: temp/make-fixtures.py", stderr: "", exitCode: 0 },
+    { path: "src/date-filter.ts", startLine: 1, endLine: 100 },
+    { path: "src", pattern: "endDate", regex: false },
+    { patch: "*** Begin Patch\n*** Update File: src/date-filter.ts\n@@\n-return date < end;\n+return date <= end;\n*** End Patch" },
+    { command: "npm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "Date-filter checks passed; end-date boundary case not yet covered.", stderr: "", exitCode: 0 },
+    { path: "tests/export.test.ts", startLine: 1, endLine: 160 },
+    { patch: "*** Begin Patch\n*** Update File: src/date-filter.ts\n@@\n-return date <= end;\n+return date >= start && date <= end;\n*** Update File: tests/export.test.ts\n@@\n import { test, expect } from 'vitest';\n+import { includesDate } from '../src/date-filter';\n+test('includes the end date', () => {\n+  expect(includesDate('2026-10-29', '2026-10-01', '2026-10-29')).toBe(true);\n+});\n*** End Patch" },
+    { command: "npm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "Date-filter boundary tests passed, including the selected end date.", stderr: "", exitCode: 0 },
+    null,
+    { path: "src/date-filter.ts", startLine: 1, endLine: 100 },
+    { path: "docs/README.md", startLine: 1, endLine: 120 },
+    { url: "https://example.invalid/csv-reference", headers: { Authorization: "[REDACTED BY HARNESS / SYNTHETIC]" } },
+    { patch: "*** Begin Patch\n*** Add File: docs/export.md\n+# CSV export\n+Export uses the visible filtered rows and the existing CSV utility.\n+Usage example remains unfinished.\n*** End Patch" },
+    { command: "mkdir -p temp\nprintf '%s\\n' 'Export <filtered> rows & preserve \"quotes\".' > temp/session-notes.md\ncat temp/session-notes.md\nrm temp/session-notes.md", workingDirectory: "/workspace/sample-reports", stdout: "Export <filtered> rows & preserve \"quotes\".\nCreated and deleted: temp/session-notes.md", stderr: "", exitCode: 0 },
   ];
   const usage = [
     [
@@ -199,24 +228,38 @@ const InsightsModel = (() => {
     },
   ];
   const intervals = [
-    { taskId: "t1", turn: 6, start: 2, end: 8 },
-    { taskId: "t1", turn: 12, start: 12, end: 16 },
-    { taskId: "t2", turn: 17, start: 22, end: 26 },
-    { taskId: "t2", turn: 20, start: 30, end: 32 },
-    { taskId: "t3", turn: 26, start: 36, end: 38 },
-    { taskId: "t1", turn: 6, start: 4, end: 6 },
+    { taskId: "t1", turn: 2, start: 2, end: 8, kind: "model", sourceId: "m1" },
+    { taskId: "t1", turn: 14, start: 12, end: 16, kind: "model", sourceId: "m6" },
+    { taskId: "t2", turn: 18, start: 22, end: 26, kind: "model", sourceId: "m8" },
+    { taskId: "t2", turn: 20, start: 30, end: 32, kind: "work", sourceId: "c21" },
+    { taskId: "t3", turn: 26, start: 36, end: 38, kind: "work", sourceId: "c26" },
+    { taskId: "t1", turn: 7, start: 4, end: 6, kind: "work", sourceId: "c6" },
+  ];
+  const stateIntervals = [
+    { kind: "waiting", start: 8, end: 12, evidence: [
+      { id: "H01", text: "Approval requested at 09:08: may I continue with the filtered-row approach?" },
+      { id: "H02", text: "Human response at 09:12: continue with that approach." },
+    ] },
+    { kind: "quiet", start: 0, end: 2, evidence: [
+      { id: "L01", text: "Session open at 09:00; no pending execution or input request." },
+      { id: "L02", text: "Model execution starts at 09:02; complete lifecycle coverage between these records." },
+    ] },
+    { kind: "quiet", start: 26, end: 30, evidence: [
+      { id: "L03", text: "Session open at 09:26; no pending execution or input request." },
+      { id: "L04", text: "Tool execution starts at 09:30; complete lifecycle coverage between these records." },
+    ] },
   ];
   const steeringCategories = [
     "Correction",
     "Repeated requirement",
     "Rejected approach",
   ];
-  const categories = [
-    ...steeringCategories,
-    "Requested clarification",
-    "New requirement",
-    "Routine approval",
-  ];
+
+  /** Attach the fixture's recorded minute offsets to its source record; other invocations have no captured boundaries. */
+  function sourceTiming(id) {
+    const span = intervals.find((item) => item.sourceId === id);
+    return span ? { startMinute: span.start, endMinute: span.end } : null;
+  }
 
   /** Return a fresh synthetic capture; modes deliberately remove evidence rather than replace missing values with zero. */
   function createState(mode = "complete") {
@@ -234,9 +277,14 @@ const InsightsModel = (() => {
       content: mode !== "partial",
       telemetry: mode !== "transcript",
       analyzed: !["partial", "analysis-off", "empty"].includes(mode),
-      revision: 0,
-      analysisStale: false,
-      nextTask: 1,
+      readId: 1,
+      sourceState: "ready",
+      runSequence: 0,
+      run: null,
+      sourceAcceptance: Object.freeze({
+        id: "C02",
+        text: "Date filtering now includes the end date; that is what I needed.",
+      }),
       sessionInstruction: Object.freeze({
         id: "session-opening",
         turn: 0,
@@ -258,26 +306,30 @@ const InsightsModel = (() => {
         evidence: task.evidence,
         range: [...task.range],
         instructionIds: Object.freeze([`prompt-${task.id}`]),
-        excluded: false,
-        corrected: false,
       })),
-      signals: structuredClone(signalSeeds).map((signal) => ({
-        ...signal,
-        confirmed: false,
-      })),
-      artifacts: structuredClone(artifactSeeds).map((artifact) => ({
-        ...artifact,
-        confirmed: false,
-      })),
+      signals: structuredClone(signalSeeds),
+      artifacts: structuredClone(artifactSeeds),
       intervals: structuredClone(intervals),
+      stateIntervals: ["partial", "transcript"].includes(mode) ? null : structuredClone(stateIntervals),
+      observedMinutes: 42,
       tools: toolNames.flatMap((names, group) =>
         names.map((name, index) => ({
           id: `c${++toolIndex}`,
           name,
           taskId: `t${group + 1}`,
           turn: toolTurns[group][index],
-          durationMs: name === "terminal" ? 1400 + index * 80 : 40 + index * 17,
+          timing: mode === "transcript" ? null : sourceTiming(`c${toolIndex}`),
+          durationMs: [6, 21, 26].includes(toolIndex) ? 120000 : name === "terminal" ? 1400 + index * 80 : 40 + index * 17,
           status: toolIndex === 6 ? "Failed, recovered later" : "Succeeded",
+          input: mode === "partial" ? null : name === "terminal"
+            ? { command: toolInputs[toolIndex - 1].command, workingDirectory: toolInputs[toolIndex - 1].workingDirectory }
+            : structuredClone(toolInputs[toolIndex - 1]),
+          output: mode === "partial" || name !== "terminal" ? null
+            : { stdout: toolInputs[toolIndex - 1].stdout, stderr: toolInputs[toolIndex - 1].stderr, exitCode: toolInputs[toolIndex - 1].exitCode },
+          inputStatus: mode === "partial" || toolIndex === 22 ? "missing" : toolIndex === 10 ? "truncated" : toolIndex === 25 ? "redacted" : "complete",
+          testResult: toolIndex === 14
+            ? "CSV export filtered-row and escaping tests: 8 passed, 0 failed (synthetic)."
+            : null,
         })),
       ),
       requests: usage.flatMap((rows, group) =>
@@ -288,6 +340,7 @@ const InsightsModel = (() => {
           input,
           output,
           model: requestIndex < 9 ? "Example model A" : "Example model B",
+          timing: mode === "transcript" ? null : sourceTiming(`m${requestIndex}`),
         })),
       ),
     };
@@ -303,17 +356,17 @@ const InsightsModel = (() => {
     return state;
   }
 
-  /** Resolve a known task, including excluded tasks; invalid deep links are errors, not a different task. */
+  /** Resolve a known inferred task; invalid deep links never substitute a different record. */
   function taskById(state, id) {
     const task = state.tasks.find((item) => item.id === id);
     if (!task)
       throw new RangeError(
-        "That task is not present in this demo. It may have been reset or merged.",
+        "That task is not present in this source read.",
       );
     return task;
   }
 
-  /** Resolve preserved source instructions independently of editable task ranges or titles. */
+  /** Resolve original source instructions independently of inferred task boundaries. */
   function instructionsForTask(state, id) {
     return taskById(state, id).instructionIds.map((sourceId) => {
       const source = state.instructions.find((item) => item.id === sourceId);
@@ -323,15 +376,15 @@ const InsightsModel = (() => {
     });
   }
 
-  /** Label missing, unallocated, or excluded attribution without inventing an active task interpretation. */
+  /** Label unallocated or unanalyzed attribution without inventing a task interpretation. */
   function taskLabel(state, id) {
     if (!id) return "Unallocated";
     const task = taskById(state, id);
     if (!state.analyzed) return "Not analyzed";
-    return task.excluded ? `Unallocated / ${task.title} excluded` : task.title;
+    return task.title;
   }
 
-  /** Calculate unique task associations from the artifact's recorded operations after interpretation edits. */
+  /** Calculate unique task associations from the artifact's recorded operations. */
   function artifactTasks(state, artifact) {
     return [
       ...new Set(
@@ -354,8 +407,42 @@ const InsightsModel = (() => {
     return total;
   }
 
+  /** Separate evidence-backed timeline lanes; missing state coverage stays unknown, and overlapping execution counts once overall. */
+  function activitySummary(state) {
+    const totals = metrics(state);
+    const execution = state.telemetry ? state.intervals : [];
+    const lifecycle = state.telemetry ? state.stateIntervals : null;
+    const known = [...execution, ...(lifecycle || [])].toSorted((a, b) => a.start - b.start);
+    const unknown = [];
+    let end = 0;
+    for (const interval of known) {
+      if (interval.start > end) unknown.push({ start: end, end: interval.start });
+      end = Math.max(end, interval.end);
+    }
+    if (end < state.observedMinutes) unknown.push({ start: end, end: state.observedMinutes });
+    const definitions = [
+      ["model", "Model processing / thinking", "Recorded", "Model-request boundaries include queueing, network and generation; they do not measure private reasoning.", state.telemetry ? execution.filter((item) => item.kind === "model") : null],
+      ["work", "Executing work", "Recorded", "Recorded tool spans, including time a tool spends waiting. Background work can overlap model processing.", state.telemetry ? execution.filter((item) => item.kind === "work") : null],
+      ["waiting", "Waiting for you", "Recorded", "An explicit input/approval request through its response or cancellation; silence between messages is insufficient.", lifecycle ? lifecycle.filter((item) => item.kind === "waiting") : null],
+      ["quiet", "Session quiet / idle", "Inferred", "An open session with complete lifecycle coverage and no pending execution or input request. Not a measurement of human inactivity.", lifecycle ? lifecycle.filter((item) => item.kind === "quiet") : null],
+      ["unknown", "Unknown / unobserved", "Unavailable", "These intervals lack enough evidence to classify. They may include unrecorded work, reading, thinking or absence.", unknown],
+    ];
+    return {
+      observedMinutes: state.observedMinutes,
+      executionMinutes: totals.activeMinutes,
+      outsideExecutionMinutes: state.telemetry ? state.observedMinutes - totals.activeMinutes : null,
+      lanes: definitions.map(([id, label, basis, explanation, spans]) => ({
+        id, label, basis, explanation,
+        spans: spans === null ? null : structuredClone(spans).toSorted((a, b) => a.start - b.start),
+        minutes: spans === null ? null : unionMinutes(spans),
+      })),
+    };
+  }
+
   /** Derive recorded metrics for the whole capture or an event-attributed task; null denotes unavailable coverage. */
   function metrics(state, taskId = null) {
+    if (!state.imported || state.sourceState !== "ready")
+      throw new RangeError("Source evidence is unavailable for this read.");
     if (taskId) taskById(state, taskId);
     const tools = state.tools.filter(
       (item) => !taskId || item.taskId === taskId,
@@ -378,10 +465,10 @@ const InsightsModel = (() => {
       !state.telemetry ||
       requests.some((item) => item.input === null || item.output === null);
     return {
-      tasks: state.tasks.filter((item) => !item.excluded),
-      completed: state.tasks.filter(
-        (item) => !item.excluded && item.status === "Completed",
-      ).length,
+      tasks: state.analyzed ? state.tasks : [],
+      completed: state.analyzed
+        ? state.tasks.filter((item) => item.status === "Completed").length
+        : null,
       steering: state.analyzed ? signals.length : null,
       artifacts: state.content && state.telemetry ? artifacts.length : null,
       deliverables:
@@ -416,213 +503,49 @@ const InsightsModel = (() => {
     };
   }
 
-  /** Mark interpretation edits as requiring a new assessment, without running a model or changing source usage. */
-  function changed(state) {
-    state.revision += 1;
-    state.analysisStale = true;
+  /** Reread only the selected synthetic source; discard interpretations and supersede any old run, never analyze automatically. */
+  function refreshSource(state, sourceState = "ready") {
+    if (!["ready", "changed", "unavailable"].includes(sourceState))
+      throw new RangeError("Unknown source-read result.");
+    if (!state.imported)
+      throw new RangeError("Select a source before refreshing.");
+    state.readId += 1;
+    state.sourceState = sourceState;
+    state.analyzed = false;
+    if (state.run) state.run.status = "superseded";
   }
 
-  /** Reject empty task names instead of silently saving an unusable interpretation. */
-  function validatedTitle(title) {
-    const trimmed = title.trim();
-    if (!trimmed || trimmed.length > 120)
-      throw new RangeError("Use a task title between 1 and 120 characters.");
-    return trimmed;
-  }
-
-  /** Save a user-supplied task label in this page's memory. */
-  function renameTask(state, id, title) {
-    const value = validatedTitle(title);
-    const task = taskById(state, id);
-    task.title = value;
-    task.corrected = true;
-    changed(state);
-  }
-
-  /** Reassign all evidence collections together so task edits cannot leave contradictory resource counts. */
-  function reassign(state, predicate, destination) {
-    [state.tools, state.requests, state.signals, state.intervals].forEach(
-      (collection) => {
-        collection.forEach((record) => {
-          if (predicate(record)) record.taskId = destination;
-        });
-      },
-    );
-  }
-
-  /** Validate and sort adjacent active ranges before either previewing or mutating a single-range merge. */
-  function mergeSelection(state, ids) {
-    const selected = [...new Set(ids)]
-      .map((id) => taskById(state, id))
-      .sort((a, b) => a.range[0] - b.range[0]);
-    if (selected.length < 2 || selected.some((task) => task.excluded))
-      throw new RangeError("Select at least two active tasks to merge.");
-    if (
-      selected.some(
-        (task, index) =>
-          index > 0 && selected[index - 1].range[1] + 1 !== task.range[0],
-      )
-    )
-      throw new RangeError(
-        "This single-range mockup can merge only adjacent task ranges. Select contiguous tasks without gaps.",
-      );
-    return selected;
-  }
-
-  /** Merge adjacent active tasks; keep every source record and derive completion from their outcomes. */
-  function mergeTasks(state, ids, title) {
-    const selected = mergeSelection(state, ids);
-    const value = validatedTitle(title);
-    const id = `merged-${state.nextTask++}`;
-    const merged = {
-      id,
-      title: value,
-      status: selected.every((task) => task.status === "Completed")
-        ? "Completed"
-        : "Partial",
-      evidence: "Derived from merged outcomes",
-      instructionIds: Object.freeze([
-        ...new Set(selected.flatMap((task) => task.instructionIds)),
-      ]),
-      range: [
-        Math.min(...selected.map((task) => task.range[0])),
-        Math.max(...selected.map((task) => task.range[1])),
-      ],
-      corrected: true,
-      excluded: false,
+  /** Start one acknowledged, content-bearing fixture run; reject missing evidence or overlapping runs without changing state. */
+  function beginAnalysis(state, acknowledged) {
+    if (acknowledged !== true)
+      throw new RangeError("Acknowledge the selected scope and destination first.");
+    if (!state.imported || state.sourceState !== "ready" || !state.content)
+      throw new RangeError("Available message content is required for analysis.");
+    if (state.run?.status === "running")
+      throw new RangeError("Cancel or finish the running analysis first.");
+    state.analyzed = false;
+    state.run = {
+      id: ++state.runSequence,
+      readId: state.readId,
+      status: "running",
     };
-    reassign(state, (record) => ids.includes(record.taskId), id);
-    state.tasks = [
-      ...state.tasks.filter((task) => !ids.includes(task.id)),
-      merged,
-    ].sort((a, b) => a.range[0] - b.range[0]);
-    changed(state);
-    return id;
+    return state.run.id;
   }
 
-  /** Split one active task at a user-selected turn; preserve usage and mark the new outcome as uncertain. */
-  function splitTask(state, id, turn, title) {
-    const task = taskById(state, id);
-    const value = validatedTitle(title);
+  /** Settle only a still-running run for this exact source read; reject late/cancelled results and never attach them to a newer view. */
+  function finishAnalysis(state, runId, status) {
+    if (!["complete", "failed", "cancelled"].includes(status))
+      throw new RangeError("Unknown analysis result.");
     if (
-      !Number.isInteger(turn) ||
-      turn <= task.range[0] ||
-      turn > task.range[1] ||
-      task.excluded
+      !state.run ||
+      state.run.id !== runId ||
+      state.run.status !== "running" ||
+      state.run.readId !== state.readId ||
+      state.sourceState !== "ready"
     )
-      throw new RangeError(
-        "Choose a split turn inside the selected active task.",
-      );
-    const nextId = `split-${state.nextTask++}`;
-    const next = {
-      ...task,
-      id: nextId,
-      title: value,
-      range: [turn, task.range[1]],
-      status: "Uncertain",
-      evidence: "Needs outcome review",
-      corrected: true,
-    };
-    reassign(
-      state,
-      (record) => record.taskId === id && record.turn >= turn,
-      nextId,
-    );
-    task.range = [task.range[0], turn - 1];
-    task.corrected = true;
-    task.status = "Uncertain";
-    task.evidence = "Needs outcome review";
-    state.tasks.push(next);
-    state.tasks.sort((a, b) => a.range[0] - b.range[0]);
-    changed(state);
-    return nextId;
-  }
-
-  /** Adjust a non-overlapping active range; reject conflicts atomically and leave displaced records unallocated. */
-  function adjustRange(state, id, start, end) {
-    const task = taskById(state, id);
-    if (
-      !Number.isInteger(start) ||
-      !Number.isInteger(end) ||
-      start < 1 ||
-      end > 28 ||
-      start > end
-    )
-      throw new RangeError("Use an inclusive turn range between 1 and 28.");
-    if (task.excluded)
-      throw new RangeError("Restore this task before changing its segment.");
-    const overlap = state.tasks.find(
-      (other) =>
-        other.id !== id && start <= other.range[1] && end >= other.range[0],
-    );
-    if (overlap)
-      throw new RangeError(
-        `This range overlaps "${overlap.title}". Keep task ranges separate, including excluded tasks.`,
-      );
-    reassign(
-      state,
-      (record) =>
-        record.taskId === id && (record.turn < start || record.turn > end),
-      null,
-    );
-    reassign(state, (record) => record.turn >= start && record.turn <= end, id);
-    task.range = [start, end];
-    task.corrected = true;
-    task.status = "Uncertain";
-    task.evidence = "Needs outcome review";
-    changed(state);
-  }
-
-  /** Exclude or restore an interpretation without deleting its original events or session totals. */
-  function excludeTask(state, id, excluded) {
-    taskById(state, id).excluded = excluded;
-    changed(state);
-  }
-
-  /** Save a human correction to one interaction's category; tags do not multiply the counted message. */
-  function classifySignal(state, id, category) {
-    const signal = state.signals.find((item) => item.id === id);
-    if (!signal || !categories.includes(category))
-      throw new RangeError(
-        "Select a known interaction and involvement category.",
-      );
-    signal.category = category;
-    signal.tags = [category];
-    signal.confirmed = true;
-    changed(state);
-  }
-
-  /** Update an artifact's reviewable purpose; unknown remains a valid, explicit classification. */
-  function classifyArtifact(state, id, purpose) {
-    const artifact = state.artifacts.find((item) => item.id === id);
-    if (
-      !artifact ||
-      ![
-        "Deliverable",
-        "Temporary helper",
-        "Supporting artifact",
-        "Unknown",
-      ].includes(purpose)
-    )
-      throw new RangeError("Select a known artifact and purpose.");
-    artifact.purpose = purpose;
-    artifact.confirmed = true;
-    changed(state);
-  }
-
-  /** Record an explicit user outcome correction without presenting it as tool-verified evidence. */
-  function setOutcome(state, id, status) {
-    if (
-      !["Completed", "Partial", "Blocked", "Abandoned", "Uncertain"].includes(
-        status,
-      )
-    )
-      throw new RangeError("Choose a supported outcome.");
-    const task = taskById(state, id);
-    task.status = status;
-    task.evidence = "User-confirmed";
-    task.corrected = true;
-    changed(state);
+      throw new RangeError("This result is no longer current; nothing was applied.");
+    state.run.status = status;
+    state.analyzed = status === "complete";
   }
 
   return {
@@ -632,17 +555,11 @@ const InsightsModel = (() => {
     taskLabel,
     artifactTasks,
     unionMinutes,
+    activitySummary,
     metrics,
-    renameTask,
-    mergeSelection,
-    mergeTasks,
-    splitTask,
-    adjustRange,
-    excludeTask,
-    classifySignal,
-    classifyArtifact,
-    setOutcome,
-    categories,
+    refreshSource,
+    beginAnalysis,
+    finishAnalysis,
     steeringCategories,
   };
 })();

@@ -1,4 +1,4 @@
-/** Render the synthetic walkthrough using local assets, hash navigation, and in-memory edits only. */
+/** Render the read-only synthetic walkthrough; source refresh and analysis are explicit in-memory simulations only. */
 /* global InsightsModel */
 (() => {
   const M = InsightsModel;
@@ -10,32 +10,33 @@
   let lastOpener = null;
   let dirty = true;
   const scrollPositions = new Map();
-  let selectedTasks = new Set();
-  const filters = { search: "", purpose: "All", artifactTask: "All" };
+  const filters = { search: "", purpose: "All", artifactTask: "All", tool: "All" };
   let noticeTimer;
   const scenarioDescriptions = {
     report: "Start with outcomes. Every metric leads to its evidence.",
     empty:
-      "Import a synthetic example. No file picker or real session access is used.",
+      "Open selected synthetic harness evidence. No real file access is used.",
     steering:
-      "Follow a count to a message, inspect its context, then correct its classification.",
+      "Follow a count to a message, inspect context and inferred classification rationale.",
     artifacts:
       "Separate unique outputs from repeated operations and temporary helpers.",
     usage:
       "Inspect model-call usage and the difference between elapsed and cumulative activity.",
     prompts:
       "Review a prompt in its original context and inspect a suggested rewrite.",
-    review:
-      "Try a rename, merge, split, or boundary adjustment. Source totals are preserved.",
     partial:
       "Notice what stays useful when content and some token usage are missing.",
     "analysis-off":
       "Recorded metrics remain available before model-based interpretation.",
     unsupported:
       "An unsupported example must produce an explicit error, not empty success.",
+    "source-changed":
+      "A changed source invalidates the report. Retry explicitly; no archive fills the gap.",
+    "source-unavailable":
+      "Removed harness evidence is unavailable. No application replica is retained.",
   };
 
-  /** Escape every dynamic text/attribute value, including names entered in correction forms. */
+  /** Escape dynamic evidence as text/attributes, never executable captured markup. */
   function h(value) {
     return String(value ?? "").replace(
       /[&<>"']/g,
@@ -84,7 +85,7 @@
   function openPanel(panel, taskId = "", extras = {}) {
     if (!dialog.contains(document.activeElement))
       lastOpener = document.activeElement;
-    const params = new URLSearchParams({ panel, ...extras });
+    const params = new URLSearchParams({ panel, read: String(state.readId), ...extras });
     if (taskId) params.set("task", taskId);
     navigate(`${route().base}?${params}`);
   }
@@ -139,16 +140,35 @@
       .join("");
   }
 
-  /** Describe incomplete evidence and edited interpretations without overwriting available metrics. */
+  /** Describe coverage and explicit run state without fabricating missing metrics. */
   function coverageNotice() {
     let markup = "";
     if (!state.content)
       markup += `<div class="callout"><strong>Partial capture.</strong> Message content is missing, and 3 of 12 model calls lack usage. Timing and tool counts remain available. <button class="text-button" data-action="metric" data-metric="coverage">Inspect coverage</button></div>`;
     if (!state.telemetry)
       markup += `<div class="callout"><strong>Transcript only.</strong> Tool activity, token totals, and artifact operations were not captured. Completion claims are not tool-verified.</div>`;
-    if (state.analysisStale)
-      markup += `<div class="callout info"><strong>Interpretations changed.</strong> Recorded totals are preserved; affected prompt assessments need refresh. No model call ran. <span class="badge neutral">Edit revision ${state.revision}</span></div>`;
+    markup += `<div class="callout info">Read-only view / source: selected synthetic sample-reports harness evidence / source read ${state.readId}: ${h(readTime())}. Report and interpretations describe this read only. <button class="text-button" data-action="metric" data-metric="coverage">Inspect source coverage</button></div>`;
+    if (state.run)
+      markup += `<div class="callout" role="status">Analysis: ${h(state.run.status)} / run ${state.run.id}, source read ${state.run.readId}. ${state.run.status === "running" ? '<button class="text-button" data-action="analysis">Inspect or cancel running simulation</button>' : state.run.status === "failed" ? 'No interpretations were produced. Retry is an explicit action and may incur additional usage in the product.' : state.run.status === "superseded" ? 'Older results are discarded, not mixed into this read.' : 'Actual model calls made by this prototype: 0.'}</div>`;
     return markup;
+  }
+
+  /** Display deterministic synthetic UTC read times, not a claim about a real capture clock. */
+  function readTime() {
+    return new Date(Date.UTC(2026, 9, 29, 9, 42 + state.readId))
+      .toISOString()
+      .replace("T", " ")
+      .replace(".000Z", " UTC (synthetic)");
+  }
+
+  /** Show failed-read recovery, optionally beneath an existing page heading; never resurrect cached evidence. */
+  function sourceUnavailable(withHeading = true) {
+    const title = state.sourceState === "changed" ? "Source changed during a read" : "Source unavailable";
+    const scope = `Selected synthetic source / read ${state.readId} / ${readTime()}`;
+    return (withHeading
+      ? heading(title, "NO REPORT FOR THIS READ", scope)
+      : `<h2>${h(title)}</h2><p class="meta">${h(scope)}</p>`) +
+      `<div class="callout error" role="alert">${state.sourceState === "changed" ? "This view could not establish the needed source coverage." : "The harness removed, rotated, or no longer exposes this evidence."} No successful totals or older interpretations are shown.</div><p>There is no application archive, saved analysis history, or source replica to fall back to.</p><div class="actions"><button class="button" data-action="refresh">Retry synthetic read</button><button class="secondary" data-action="import">Choose another example</button></div><p class="small muted">Retry illustrates a harness source becoming available again; it does not restore an application copy.</p>`;
   }
 
   /** Offer a useful path forward when synthetic content or analysis is unavailable. */
@@ -157,34 +177,35 @@
       action === "analysis"
         ? "Review analysis setup"
         : action === "import"
-          ? "Import a synthetic example"
+          ? "Open a synthetic example"
           : "Open capture help";
     return `<section class="empty"><div class="empty-symbol" aria-hidden="true">...</div><h2>${h(title)}</h2><p class="muted">${h(explanation)}</p>
       <div class="actions"><button class="button" data-action="${h(action)}">${label}</button><a class="secondary" href="#report">Back to recorded metrics</a></div></section>`;
   }
 
-  /** Show an opt-in synthetic import surface; it never reads files or scans the user's computer. */
+  /** Show selected synthetic harness sources without reading files or scanning the computer. */
   function sessionsPage() {
     const intro = heading(
       "Your sessions",
       "THE STARTING POINT",
       "Choose a conversation. Understand the work behind it.",
-      `<button class="button" data-action="import">Import demo evidence</button><button class="secondary" data-action="discover">Find demo sessions</button>`,
+      `<button class="button" data-action="import">Open demo source</button><button class="secondary" data-action="discover">Find demo sessions</button>${state.imported && state.sourceState === "ready" ? '<button class="secondary" data-action="refresh">Refresh selected source</button>' : ""}`,
     );
     if (!state.imported)
       return (
         intro +
-        `<section class="empty"><div class="empty-symbol" aria-hidden="true">01</div><h2>A report starts with evidence.</h2><p class="muted">No sessions are imported in this scenario. Try the sample import, or inspect the capture prerequisites.</p><div class="actions"><button class="button" data-action="import">Import a synthetic example</button><button class="secondary" data-action="capture-help">Capture prerequisites</button></div><p class="small muted">This prototype does not open a file picker, scan directories, or read real conversations.</p></section>`
+        `<section class="empty"><div class="empty-symbol" aria-hidden="true">01</div><h2>A report starts with evidence.</h2><p class="muted">No supported harness source is selected. Choose existing evidence; capture setup cannot recover historical content.</p><div class="actions"><button class="button" data-action="import">Open a synthetic example</button><button class="secondary" data-action="capture-help">Capture prerequisites</button></div><p class="small muted">This prototype does not open a file picker, scan directories, or read real conversations.</p></section>`
       );
+    if (state.sourceState !== "ready") return intro + sourceUnavailable(false);
     return (
       intro +
       `<div class="filter-bar"><label>Search sessions<input id="session-search" type="search" value="${h(filters.search)}" placeholder="Session or project"></label></div>
       <div class="table-wrap"><table><thead><tr><th>Session</th><th>Project</th><th>Source</th><th>Evidence</th><th></th></tr></thead><tbody>
-      <tr data-search="reporting improvements sample-reports"><td><a class="task-link" href="#report">Reporting improvements</a><small>Observed 09:00-09:42 / synthetic local time</small></td><td>sample-reports</td><td>VS Code Copilot</td><td>${badge(state.content && state.telemetry ? "Content + traces" : state.content ? "Transcript only" : "Partial capture", state.mode === "complete" ? "" : "warning")}</td><td><a href="#report" aria-label="Open Reporting improvements">Open</a></td></tr>
+      <tr data-search="reporting improvements sample-reports"><td><a class="task-link" href="#report">Reporting improvements</a><small>Observed 09:00-09:42 UTC / synthetic</small></td><td>sample-reports</td><td>VS Code Copilot</td><td>${badge(state.content && state.telemetry ? "Content + traces" : state.content ? "Transcript only" : "Partial capture", state.mode === "complete" ? "" : "warning")}</td><td><a href="#report" aria-label="Open Reporting improvements">Open</a></td></tr>
       <tr data-search="investigate test failures sample-tools"><td><button class="text-button" data-action="transcript-demo">Investigate test failures</button><small>Alternate evidence-coverage demonstration</small></td><td>sample-tools</td><td>VS Code Copilot</td><td>${badge("Transcript only", "warning")}</td><td><button class="text-button" data-action="transcript-demo" aria-label="Open transcript-only demonstration">Open</button></td></tr>
       </tbody></table></div><p id="search-empty" class="callout" hidden>No matching demo sessions.</p>
       <p class="table-note">The second row loads a transcript-only variation of the same synthetic evidence, not a second real capture.</p>
-      <div class="two-column"><section class="panel"><p class="eyebrow">YOU CHOOSE THE SCOPE</p><h3>Import is not permission to analyze.</h3><p class="small muted">Recorded metrics and source inspection are separate from model-based interpretation. The production consent flow is still a design decision.</p></section><section class="panel"><p class="eyebrow">A PRIVATE PER-USER LOCATION</p><h3>Across projects, not inside them.</h3><p class="small muted">Capture setup belongs in the user profile. The prototype only illustrates the resulting report.</p><button class="text-button" data-action="capture-help">See capture help</button></section></div>`
+      <div class="two-column"><section class="panel"><p class="eyebrow">YOU CHOOSE THE SCOPE</p><h3>Opening is not permission to analyze.</h3><p class="small muted">Recorded metrics and source inspection are separate from model interpretation. Source selection and refresh never transmit content. Copilot is the approved first remote analysis executor; acknowledgment is required before a product model run.</p></section><section class="panel"><p class="eyebrow">HARNESS-OWNED EVIDENCE</p><h3>Read in place, not into another store.</h3><p class="small muted">No application-owned session database, source replica or saved report history. Capture retention remains the harness's responsibility.</p><button class="text-button" data-action="capture-help">See capture help</button></section></div>`
     );
   }
 
@@ -201,25 +222,24 @@
       heading(
         "Reporting improvements",
         "SESSION INSIGHTS",
-        "sample-reports / VS Code Copilot Chat / observed 09:00-09:42, local time",
-        `<a class="secondary" href="#review">Review tasks</a><button class="button" data-action="analysis">Analysis setup</button>`,
+        "sample-reports / VS Code Copilot Chat / observed 09:00-09:42 UTC (synthetic)",
+        `<a class="secondary" href="#tools">Tools &amp; commands</a><button class="secondary" data-action="refresh">Refresh source</button><button class="button" data-action="analysis">Analysis setup</button>`,
       ) +
-      `<div class="badge-row">${badge(state.content && state.telemetry ? "Captured content + execution" : "Limited evidence", state.mode === "complete" ? "" : "warning")}${badge(state.analyzed ? "Task interpretations: review suggested" : "Interpretations: not analyzed", "neutral")}${badge("Synthetic example", "neutral")}</div>` +
+      `<div class="badge-row">${badge(state.content && state.telemetry ? "Captured content + execution" : "Limited evidence", state.mode === "complete" ? "" : "warning")}${badge(state.analyzed ? "Task interpretations: inferred" : "Interpretations: not analyzed", "neutral")}${badge("Synthetic example", "neutral")}</div>` +
       coverageNotice() +
-      `<section class="hero"><div class="hero-story"><p class="eyebrow">WHAT MOVED FORWARD</p><h2>${state.analyzed ? outcomeTitle : "Your recorded activity is ready.<br>Interpretation is a separate step."}</h2><p class="muted">${state.analyzed ? `${number(totals.steering)} messages classified as steering; ${tasks.length} active task interpretations. Inspect the work behind each number before drawing a conclusion.` : "Time and tool evidence can be useful without assigning a task or rating a prompt. Nothing here contacts a model."}</p><a class="text-button" href="${state.analyzed ? "#review" : "#report?panel=coverage"}">${state.analyzed ? "Review the task map" : "Understand this capture"} <span aria-hidden="true">+</span></a></div>
+      `<section class="hero"><div class="hero-story"><p class="eyebrow">WHAT MOVED FORWARD</p><h2>${state.analyzed ? outcomeTitle : "Your recorded activity is ready.<br>Interpretation is a separate step."}</h2><p class="muted">${state.analyzed ? `${number(totals.steering)} messages classified as steering; ${tasks.length} inferred tasks. Inspect the work behind each number before drawing a conclusion.` : "Time and tool evidence can be useful without assigning a task or rating a prompt. Nothing here contacts a model."}</p><button class="text-button" data-action="metric" data-metric="tasks">${state.analyzed ? `Inspect ${tasks.length} inferred tasks` : "Understand task availability"} <span aria-hidden="true">+</span></button></div>
       <div class="hero-aside"><p class="eyebrow">OUTCOMES, NOT A GRADE</p><div class="hero-number">${state.analyzed ? totals.completed : "--"} <span>/ ${state.analyzed ? tasks.length : "--"} tasks</span></div><p class="small muted">Completion evidence is shown per task. An agent's claim is not the same as a verified result.</p><button class="text-button" data-action="metric" data-metric="completed">Inspect completion evidence</button></div></section>
       <div class="metrics">
       ${metric("Human steering", totals.steering, state.analyzed ? "Distinct messages / inferred categories" : "Not analyzed", "steering")}
       ${metric("Unique artifacts", totals.artifacts, totals.deliverables === null ? "Purpose assessment unavailable" : `${totals.deliverables} deliverables / ${totals.helpers} temporary helpers`, "artifacts")}
-      ${metric("Tool activity", totals.toolCalls, totals.distinctTools === null ? "Execution records unavailable" : `${totals.distinctTools} distinct tools / recorded`, "tools")}
+      ${metric("Tools & commands", totals.toolCalls, totals.distinctTools === null ? "Execution records unavailable" : `${totals.distinctTools} distinct tools / inspect full inputs`, "tools")}
       ${metric("Model tokens", totals.input === null ? null : `${(totals.input / 1000).toFixed(1)}k / ${(totals.output / 1000).toFixed(1)}k`, "Input / output / recorded usage", "tokens")}
       </div>
-      <div class="section-heading"><h2>The task story</h2><a class="text-button" href="#review">Correct an interpretation</a></div>
+      <div class="section-heading"><h2>The task story</h2><span class="small muted">Read-only / inspect evidence and uncertainty</span></div>
       ${state.analyzed ? taskTable(tasks) : `<div class="panel"><h3>Tasks have not been analyzed.</h3><p class="small muted">${state.content ? "Enable the simulated analysis to explore task interpretations. Recorded metrics above remain available." : "Message content is missing, so this example cannot support task or steering analysis."}</p><button class="text-button" data-action="${state.content ? "analysis" : "capture-help"}">${state.content ? "Review analysis setup" : "Inspect capture prerequisites"}</button></div>`}
-      <div class="two-column"><section class="panel"><div class="section-heading"><div><p class="eyebrow">42 MINUTES OBSERVED</p><h3>Activity is not the whole story.</h3></div><button class="text-button" data-action="metric" data-metric="time">Inspect time</button></div>
-      ${timeline()}<div class="legend"><span><i></i>${state.telemetry ? `${totals.activeMinutes}m recorded agent activity` : "Agent activity unavailable"}</span><span><i class="gap"></i>${state.telemetry ? "24m unobserved gaps" : "No execution trace"}</span></div>
-      <p class="small muted">Gaps may include thinking, reviewing, or being away. <button class="text-button" data-action="metric" data-metric="typing">Human typing: unavailable</button></p></section>
-      <section class="panel"><p class="eyebrow">A BETTER NEXT INSTRUCTION</p><h3>What would you ask differently?</h3><p class="small muted">Review the initial prompt and each task prompt in context. Ratings are model judgments; suggestions are grounded in visible evidence.</p><a class="button" href="#prompts">Explore prompt coaching</a><p class="small muted">No overall productivity score. No invented time saved.</p></section></div>`
+      <section class="panel activity-panel"><div class="section-heading"><div><p class="eyebrow">42 MINUTES OBSERVED / SYNTHETIC</p><h3>Where did the time go?</h3></div><button class="text-button" data-action="metric" data-metric="time">Inspect time</button></div>
+      ${timeline()}<p class="small muted">${state.telemetry ? `${totals.activeMinutes}m recorded agent activity / ${totals.cumulativeMinutes}m cumulative spans. 24m outside recorded execution, not 24m of human inactivity. Lanes can overlap; do not add their durations.` : "Execution and lifecycle timing unavailable. Conversation duration is not agent runtime."} <button class="text-button" data-action="metric" data-metric="typing">Human typing: unavailable</button></p></section>
+      <section class="panel"><p class="eyebrow">A BETTER NEXT INSTRUCTION</p><h3>What would you ask differently?</h3><p class="small muted">Review the initial prompt and each task prompt in context. Ratings are model judgments; suggestions are grounded in visible evidence.</p><a class="button" href="#prompts">Explore prompt coaching</a><p class="small muted">No overall productivity score. No invented time saved.</p></section>`
     );
   }
 
@@ -228,31 +248,51 @@
     return `<div class="table-wrap"><table><thead><tr><th>Requested outcome</th><th>Status &amp; basis</th><th>Steering</th><th>Artifacts</th><th>In / out tokens</th></tr></thead><tbody>${tasks
       .map((task) => {
         const values = M.metrics(state, task.id);
-        return `<tr><td><a class="task-link" href="#task/${h(task.id)}">${h(task.title)}</a><small>Turns U${task.range[0]}-U${task.range[1]} / ${task.corrected ? "user-corrected grouping" : "inferred grouping"}</small></td><td>${badge(task.status, task.status === "Completed" ? "" : "warning")}<small>${h(task.evidence)}</small></td><td>${countLink(values.steering, "steering", task.id)}</td><td>${countLink(values.artifacts, "artifacts", task.id)}</td><td>${countLink(values.input, "tokens", task.id)}<small>${number(values.output)} output</small></td></tr>`;
+        return `<tr><td><a class="task-link" href="#task/${h(task.id)}">${h(task.title)}</a><small>Turns U${task.range[0]}-U${task.range[1]} / inferred grouping</small></td><td>${badge(task.status, task.status === "Completed" ? "" : "warning")}<small>${h(task.evidence)}</small></td><td>${countLink(values.steering, "steering", task.id)}</td><td>${countLink(values.artifacts, "artifacts", task.id)}</td><td>${countLink(values.input, "tokens", task.id)}<small>${number(values.output)} output</small></td></tr>`;
       })
       .join(
         "",
-      )}</tbody></table></div><p class="table-note">A shared artifact can appear under more than one task, but counts once for the session. Excluded task evidence remains in session totals.</p>`;
+      )}</tbody></table></div><p class="table-note">A shared artifact can appear under more than one task, but counts once for the session. Task grouping is inferred; capture coverage is not interpretation confidence.</p>`;
   }
 
-  /** Draw the exact synthetic active/gap intervals; the time drawer provides the accessible record table. */
+  /** Draw evidence-labeled, overlapping session lanes; every recorded segment opens its supporting records. */
   function timeline() {
+    const summary = M.activitySummary(state);
+    return `<div class="activity-lanes">${summary.lanes.map((lane) => {
+      let end = 0;
+      const segments = (lane.spans || []).map((span) => {
+        const gap = '<span aria-hidden="true"></span>'.repeat(span.start - end);
+        end = span.end;
+        return gap + `<button class="span-${span.end - span.start}" data-action="activity" data-id="${h(lane.id)}" aria-label="${h(lane.label)}: minutes ${span.start}-${span.end}; ${h(lane.basis)}. Inspect evidence."></button>`;
+      }).join("");
+      return `<section class="activity-lane lane-${h(lane.id)}"><div class="activity-label"><button class="text-button" data-action="activity" data-id="${h(lane.id)}">${h(lane.label)}</button><span>${lane.minutes === null ? "Unavailable" : `${lane.minutes}m`} / ${h(lane.basis)}</span></div><div class="timeline" role="group" aria-label="${h(lane.label)} timeline">${segments}</div></section>`;
+    }).join("")}</div><div class="timeline-labels"><span>09:00</span><span>09:21</span><span>09:42 UTC</span></div>`;
+  }
+
+  /** Explain a selected lane with source boundaries; quiet is inferred and unknown time never becomes measured idle. */
+  function activityPanel(id) {
+    const lane = M.activitySummary(state).lanes.find((item) => item.id === id);
+    if (!lane) throw new RangeError("That activity lane does not exist.");
+    return panelShell(lane.label, `${lane.basis} / ${lane.minutes === null ? "TIMING UNAVAILABLE" : `${lane.minutes}m`} / SYNTHETIC`,
+      `<p>${h(lane.explanation)}</p>${lane.spans === null ? '<div class="callout">Required timing/state records were not captured. This is unavailable, not zero.</div>' :
+        lane.spans.map((span) => `<section class="context-block"><h3>Minutes ${span.start}-${span.end} from session start</h3>${span.sourceId ? `<p>Recorded start/end boundaries for ${h(span.sourceId.toUpperCase())}.</p><button class="text-button" data-action="${lane.id === "model" ? "request" : "tool"}" data-id="${h(span.sourceId)}">Inspect ${h(span.sourceId.toUpperCase())}</button>` : span.evidence ? `<ul>${span.evidence.map((record) => `<li><strong>${h(record.id)}</strong>: ${h(record.text)}</li>`).join("")}</ul>` : '<p>No sufficient execution or lifecycle records cover this interval. No human activity is inferred.</p>'}</section>`).join("")}
+        <button class="text-button" data-action="metric" data-metric="time">Back to time overview</button>`);
+  }
+
+  /** Share the session/task invocation ledger without reconstructing missing arguments or treating programs as extra tool calls. */
+  function toolsTable(taskId = "", toolName = "All") {
+    const tools = state.tools.filter((item) => (!taskId || item.taskId === taskId) && (toolName === "All" || item.name === toolName));
+    return `<p class="small muted">${tools.length} recorded invocations in this view. A shell invocation can contain several commands; it still counts once.</p><div class="table-wrap"><table><thead><tr><th>Invocation / tool</th><th>Duration</th><th>Outcome</th><th>Input</th></tr></thead><tbody>${tools.map((item) => `<tr><td><button class="text-button" data-action="tool" data-id="${h(item.id)}">${h(item.id.toUpperCase())} / ${h(item.name)}</button><small>${h(M.taskLabel(state, item.taskId))} / U${item.turn}</small></td><td>${number(item.durationMs)} ms</td><td>${h(item.status)}</td><td>${h(item.inputStatus)}<br><button class="text-button" data-action="tool" data-id="${h(item.id)}" aria-label="Inspect full input for ${h(item.id.toUpperCase())}">Inspect full input</button></td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  /** Make all recorded tools and full captured inputs discoverable at session scope, independent of analysis. */
+  function toolsPage() {
+    const intro = heading("Tools & commands", "RECORDED EXECUTION", "Reporting improvements / inspect captured inputs, results and source references.");
     if (!state.telemetry)
-      return `<div class="callout">No execution intervals were captured. Elapsed conversation time is not agent runtime.</div>`;
-    const spans = [
-      [2, false],
-      [6, true],
-      [4, false],
-      [4, true],
-      [6, false],
-      [4, true],
-      [4, false],
-      [2, true],
-      [4, false],
-      [2, true],
-      [4, false],
-    ];
-    return `<div class="timeline" role="group" aria-label="Recorded agent activity and unobserved gaps">${spans.map(([minutes, active]) => `<button class="span-${minutes} ${active ? "active" : ""}" data-action="metric" data-metric="time" aria-label="${minutes} minutes ${active ? "recorded agent activity" : "unobserved gap"}"></button>`).join("")}</div><div class="timeline-labels"><span>09:00</span><span>09:21</span><span>09:42 local time</span></div>`;
+      return intro + '<div class="callout">No execution records were captured. Tool names, commands and arguments cannot be reconstructed from transcript text.</div>';
+    const names = [...new Set(state.tools.map((item) => item.name))].toSorted();
+    return intro + coverageNotice() +
+      `<p>${state.tools.length} invocations / ${names.length} distinct tools. Display only: no command or tool input on this page is executed.</p><div class="badge-row">${names.map((name) => badge(`${name}: ${state.tools.filter((tool) => tool.name === name).length}`, "neutral")).join("")}</div><div class="filter-bar"><div class="filter-control"><label for="tool-filter">Tool</label><select id="tool-filter">${["All", ...names].map((name) => `<option ${filters.tool === name ? "selected" : ""}>${h(name)}</option>`).join("")}</select></div></div>${toolsTable("", filters.tool)}`;
   }
 
   /** Show a task's original request and outcome basis before any inferred explanation. */
@@ -269,14 +309,14 @@
       heading(
         task.title,
         "TASK DETAIL",
-        `Turns U${task.range[0]}-U${task.range[1]} / ${task.excluded ? "excluded interpretation" : "active interpretation"}`,
-        `<a class="secondary" href="#report">Back to report</a><a class="button" href="#review">Review this task</a>`,
+        `Turns U${task.range[0]}-U${task.range[1]} / inferred task segment`,
+        `<a class="secondary" href="#report">Back to report</a>`,
       ) +
-      `<div class="badge-row">${badge(task.status, task.status === "Completed" ? "" : "warning")}${badge(task.evidence, "neutral")}${badge(task.corrected ? "User-corrected grouping" : "Inferred boundaries", "neutral")}</div>` +
+      `<div class="badge-row">${badge(task.status, task.status === "Completed" ? "" : "warning")}${badge(task.evidence, "neutral")}${badge("Inferred boundaries", "neutral")}</div>` +
       coverageNotice() +
       `<div class="panel"><p class="eyebrow">REQUESTED OUTCOME / SOURCE INSTRUCTIONS</p>${instructionBlocks(M.instructionsForTask(state, id))}<button class="text-button" data-action="origin" data-task="${h(id)}">Inspect originating instruction and interpretation</button></div>
       <div class="metrics">${metric("Human steering", values.steering, "Distinct messages, not tags", "steering", id)}${metric("Artifacts", values.artifacts, "Unique within this task", "artifacts", id)}${metric("Tool calls", values.toolCalls, "Recorded invocations", "tools", id)}${metric("Input tokens", values.input, `${number(values.output)} output tokens`, "tokens", id)}</div>
-      <div class="two-column"><section class="panel"><p class="eyebrow">OUTCOME BASIS</p><h2>Why this status?</h2><p class="small muted">${task.status === "Completed" ? "Inspect the evidence or confirmation behind this outcome. The label is scoped to what is captured, not a guarantee of perfect correctness." : "An artifact or an agent's statement does not prove that the requested outcome is complete."}</p><ul class="evidence-list"><li>Recorded artifacts<button class="text-button" data-action="metric" data-metric="artifacts" data-task="${h(id)}">Inspect</button></li><li>Recorded tool results<button class="text-button" data-action="metric" data-metric="tools" data-task="${h(id)}">Inspect</button></li><li>Outcome interpretation<button class="text-button" data-action="edit-one" data-op="outcome" data-task="${h(id)}">Correct outcome</button></li></ul></section><section class="panel"><p class="eyebrow">KEEP THE CONTEXT</p><h2>Learn from the instruction.</h2><p class="small muted">The task inherits earlier context. Review the prompt with that context, not as an isolated sentence.</p><a class="button" href="#prompts/${h(id)}">Review task prompt</a></section></div>`
+      <div class="two-column"><section class="panel"><p class="eyebrow">OUTCOME BASIS</p><h2>Why this status?</h2><p class="small muted">${task.status === "Completed" ? "Inspect the captured evidence or original acceptance message. This scoped assessment is not a correctness guarantee." : "An artifact or an agent's statement does not prove that the requested outcome is complete."}</p><ul class="evidence-list"><li>Recorded artifacts<button class="text-button" data-action="metric" data-metric="artifacts" data-task="${h(id)}">Inspect</button></li><li>Recorded tool results<button class="text-button" data-action="metric" data-metric="tools" data-task="${h(id)}">Inspect</button></li><li>Outcome assessment<button class="text-button" data-action="outcome" data-task="${h(id)}">Inspect outcome evidence</button></li></ul></section><section class="panel"><p class="eyebrow">KEEP THE CONTEXT</p><h2>Learn from the instruction.</h2><p class="small muted">The task inherits earlier context. Review the prompt with that context, not as an isolated sentence.</p><a class="button" href="#prompts/${h(id)}">Review task prompt</a></section></div>`
     );
   }
 
@@ -285,7 +325,7 @@
     const intro = heading(
       "What the work produced",
       "ARTIFACT INVENTORY",
-      "Unique outputs, recorded operations, and reviewable purpose labels.",
+      "Unique outputs, recorded operations, and inferred read-only purpose labels.",
       `<a class="secondary" href="#report">Back to report</a>`,
     );
     if (!state.content || !state.telemetry)
@@ -299,20 +339,22 @@
       );
     const artifacts = state.artifacts.filter(
       (item) =>
-        (filters.purpose === "All" || item.purpose === filters.purpose) &&
-        (filters.artifactTask === "All" ||
-          M.artifactTasks(state, item).includes(filters.artifactTask)),
+        !state.analyzed ||
+        ((filters.purpose === "All" || item.purpose === filters.purpose) &&
+          (filters.artifactTask === "All" ||
+            M.artifactTasks(state, item).includes(filters.artifactTask))),
     );
     return (
       intro +
       coverageNotice() +
-      `<div class="badge-row">${badge(`${state.artifacts.length} unique artifacts`)}${badge(state.analyzed ? "Purpose labels: reviewable" : "Purpose: not analyzed", "neutral")}${badge("Files: 6 / pull requests: 0 / issues: 0", "neutral")}</div>
-      <div class="filter-bar"><div class="filter-control"><label for="purpose-filter">Purpose</label><select id="purpose-filter" ${!state.analyzed ? "disabled" : ""}>${["All", "Deliverable", "Temporary helper", "Supporting artifact", "Unknown"].map((value) => `<option ${filters.purpose === value ? "selected" : ""}>${h(value)}</option>`).join("")}</select></div><div class="filter-control"><label for="artifact-task-filter">Task</label><select id="artifact-task-filter" ${!state.analyzed ? "disabled" : ""}><option value="All">${state.analyzed ? "All tasks" : "Attribution not analyzed"}</option>${(state.analyzed ? state.tasks : []).map((task) => `<option value="${h(task.id)}" ${filters.artifactTask === task.id ? "selected" : ""}>${h(task.title)}</option>`).join("")}</select></div></div>
+      `<div class="badge-row">${badge(`${state.artifacts.length} unique artifacts`)}${badge(state.analyzed ? "Purpose labels: model-inferred" : "Purpose: not analyzed", "neutral")}${badge("Files: 6 / pull requests: 0 / issues: 0", "neutral")}</div>
+      <div class="filter-bar"><div class="filter-control"><label for="purpose-filter">Purpose</label><select id="purpose-filter" ${!state.analyzed ? "disabled" : ""}>${["All", "Deliverable", "Temporary helper", "Supporting artifact", "Unknown"].map((value) => `<option ${(state.analyzed ? filters.purpose : "All") === value ? "selected" : ""}>${h(value)}</option>`).join("")}</select></div><div class="filter-control"><label for="artifact-task-filter">Task</label><select id="artifact-task-filter" ${!state.analyzed ? "disabled" : ""}><option value="All">${state.analyzed ? "All tasks" : "Attribution not analyzed"}</option>${(state.analyzed ? state.tasks : []).map((task) => `<option value="${h(task.id)}" ${filters.artifactTask === task.id ? "selected" : ""}>${h(task.title)}</option>`).join("")}</select></div></div>
+      ${!state.analyzed ? '<p class="small muted">All recorded identities are shown while purpose and task interpretation are unavailable. Previous filters return only after successful analysis.</p>' : ""}
       <div class="table-wrap"><table><thead><tr><th>Artifact / observed action</th><th>Purpose</th><th>Associated tasks</th><th>Evidence</th></tr></thead><tbody>${
         artifacts
           .map(
             (artifact) =>
-              `<tr><td><code>${h(artifact.path)}</code><small>${h(artifact.operations.map(([, action]) => action).join(", "))}</small></td><td>${state.analyzed ? badge(artifact.purpose, artifact.purpose === "Temporary helper" ? "warning" : "neutral") : "Not analyzed"}<small>${state.analyzed ? (artifact.confirmed ? "User-confirmed" : "Model-inferred") : "No model assessment"}</small></td><td>${
+              `<tr><td><code>${h(artifact.path)}</code><small>${h(artifact.operations.map(([, action]) => action).join(", "))}</small></td><td>${state.analyzed ? badge(artifact.purpose, artifact.purpose === "Temporary helper" ? "warning" : "neutral") : "Not analyzed"}<small>${state.analyzed ? "Model-inferred" : "No model assessment"}</small></td><td>${
                 M.artifactTasks(state, artifact)
                   .map((id) => h(M.taskLabel(state, id)))
                   .join("<br>") || "Unallocated"
@@ -322,7 +364,7 @@
         `<tr><td colspan="4">No artifacts match these filters.</td></tr>`
       }</tbody></table></div>
       <p class="table-note">${artifacts.length} shown. The test file is associated with two original tasks but counts once in the session. Deleted helpers remain visible.</p>
-      <div class="callout info">The complete example contains six files and no recorded pull requests or issues. The production design also supports those artifact types; this prototype does not create external items.</div>`
+      <div class="callout info">The complete example contains six files and no recorded pull requests or issues. A mention alone is not confirmed creation. No live filesystem, Git or GitHub state is used as evidence; deleted helpers remain inspectable only while the harness retains their lifecycle records.</div>`
     );
   }
 
@@ -372,7 +414,6 @@
         `<a class="secondary" href="#report">Back to report</a>`,
       ) +
       `<nav class="tabs" aria-label="Prompt selection"><a href="#prompts" ${!id ? 'aria-current="page"' : ""}>Initial session prompt</a>${state.tasks
-        .filter((item) => !item.excluded)
         .map(
           (item) =>
             `<a href="#prompts/${h(item.id)}" ${id === item.id ? 'aria-current="page"' : ""}>${h(item.title)}</a>`,
@@ -382,40 +423,11 @@
       `<div class="prompt-grid"><section class="panel"><p class="eyebrow">ORIGINAL INSTRUCTION EVIDENCE</p><h2>${task ? h(task.title) : "Initial session prompt"}</h2>${instructionBlocks(sourceInstructions)}
       <details><summary>What context was available?</summary><p>The synthetic session concerns an existing reporting table. Earlier accepted instructions remain relevant; a short reference to an agreed design can be sufficient.</p><p>Assessment uses submission-time context. Later clarifications can inform a rewrite but do not establish that the original prompt caused an error.</p></details>
       <p class="eyebrow">ILLUSTRATIVE ASSESSMENT</p><div class="rating">3 / 5 <span>clarity</span> &nbsp; 4 / 5 <span>usefulness</span></div>${badge("Model judgment / illustrative", "warning")}
-      <p class="small muted">Example evaluator / draft rubric 1. No model has actually evaluated this page. These are canned ratings, not computed scores for edited prompts.</p></section>
+      <p class="small muted">Example evaluator / draft rubric 1. No model has actually evaluated this page. These are canned ratings, not computed scores. Assessments are transient for source read ${state.readId}.</p></section>
       <section class="panel"><p class="eyebrow">KEEP WHAT WORKED</p><h3>A recognizable outcome.</h3><p class="small muted">The request identifies a capability and connects it to the ongoing work.</p><p class="eyebrow">MAKE THE BOUNDARIES CLEARER</p><h3>${isCsv ? "Which rows should be exported?" : "What would count as complete?"}</h3><p class="small muted">${isCsv ? "All rows versus filtered rows is a meaningful ambiguity. Inspect the later clarification without assuming the prompt caused the agent's decision." : "Make the expected output and verification explicit when they are not already established in the conversation."}</p>
       <div class="actions">${task ? `<button class="text-button" data-action="origin" data-task="${h(id)}">Original instruction</button>` : `<button class="text-button" data-action="session-origin">Original session instruction</button>`}${isCsv ? `<button class="text-button" data-action="signal" data-id="u08">Later clarification / U08</button>` : ""}</div>
       <label for="rewrite">Suggested rewrite / synthetic example</label><textarea id="rewrite" readonly>${h(rewrite)}</textarea><div class="actions"><button class="button" data-action="copy-rewrite">Copy suggested rewrite</button></div>
-      <p class="small muted">${isCsv ? "This rewrite includes the later filtered-row and utility clarifications." : "Review the suggested constraints before reusing them; they are recommendations, not new requirements."} Copying does not execute the prompt or change source evidence.</p></section></div>`
-    );
-  }
-
-  /** Expose genuine in-memory correction controls while preserving original session-level usage. */
-  function reviewPage() {
-    const intro = heading(
-      "Review the interpretation",
-      "YOUR INTENT IS THE AUTHORITY",
-      "Correct the map, not the original evidence.",
-      `<a class="secondary" href="#report">Back to report</a>`,
-    );
-    if (!state.analyzed)
-      return (
-        intro +
-        unavailable(
-          "There are no task interpretations to review.",
-          state.content
-            ? "Load the simulated analysis to explore corrections."
-            : "Task interpretation needs message content.",
-          state.content ? "analysis" : "capture-help",
-        )
-      );
-    return (
-      intro +
-      coverageNotice() +
-      `<div class="callout info">Edits are kept only in this page. Session token/tool totals remain recorded; task associations and interpreted counts recalculate. No model call runs automatically.</div>
-      <div class="table-wrap"><table><thead><tr><th><span class="sr-only">Select</span></th><th>Task / segments</th><th>Outcome</th><th>Review actions</th></tr></thead><tbody>${state.tasks.map((task) => `<tr><td><input type="checkbox" class="task-selection" value="${h(task.id)}" aria-label="Select ${h(task.title)}" ${selectedTasks.has(task.id) ? "checked" : ""} ${task.excluded ? "disabled" : ""}></td><td><strong>${h(task.title)}</strong><small>U${task.range[0]}-U${task.range[1]} / ${task.excluded ? "excluded; evidence retained" : task.corrected ? "user-corrected" : "inferred grouping"}</small></td><td>${badge(task.status, task.status === "Completed" ? "" : "warning")}<small>${h(task.evidence)}</small></td><td><div class="actions"><button class="text-button" data-action="edit-one" data-op="rename" data-task="${h(task.id)}">Rename</button><button class="text-button" data-action="edit-one" data-op="outcome" data-task="${h(task.id)}">Outcome</button><button class="text-button" data-action="${task.excluded ? "restore" : "edit-one"}" data-op="exclude" data-task="${h(task.id)}">${task.excluded ? "Restore" : "Exclude"}</button></div></td></tr>`).join("")}</tbody></table></div>
-      <div class="actions section-heading"><div class="actions"><button class="secondary" data-action="edit-selected" data-op="merge">Merge selected</button><button class="secondary" data-action="edit-selected" data-op="split">Split selected</button><button class="secondary" data-action="edit-selected" data-op="range">Adjust segments</button></div><span class="small muted">Merge: select adjacent tasks. Split/segments: select one.</span></div>
-      <section class="panel"><p class="eyebrow">BEFORE YOU SAVE</p><h3>See what changes.</h3><p class="small muted">Each edit opens a preview. Excluded or displaced evidence remains available in the session and is identified as unallocated. Changed boundaries require outcome review; affected prompt assessments become stale.</p></section>`
+      <p class="small muted">${isCsv ? "Learned context: filtered rows (U08) and existing utility (U14). Suggested assumptions: preserve row order, include headers and verify escaping in tests; these are not recorded requirements." : "Review the suggested constraints before reusing them; they are recommendations, not new requirements."} Copying does not execute the prompt or change source evidence.</p></section></div>`
     );
   }
 
@@ -451,7 +463,7 @@
       `${messages.length} steering messages`,
       taskId ? M.taskLabel(state, taskId) : "WHOLE SESSION",
       `<p class="small muted">One row per distinct human message. Corrections, routine approvals, and new requirements are not interchangeable.</p>
-      ${messages.map((signal) => `<button class="signal-card" data-action="signal" data-id="${h(signal.id)}"><span class="badge-row">${badge(signal.id.toUpperCase(), "neutral")}${signal.tags.map((tag) => badge(tag, "warning")).join("")}</span><strong>${h(signal.text)}</strong><small>${h(M.taskLabel(state, signal.taskId))} / ${signal.confirmed ? "user-confirmed category" : "model-inferred category"}</small></button>`).join("") || `<div class="callout info">No messages currently have a corrective-steering classification in this scope.</div>`}
+      ${messages.map((signal) => `<button class="signal-card" data-action="signal" data-id="${h(signal.id)}"><span class="badge-row">${badge(signal.id.toUpperCase(), "neutral")}${signal.tags.map((tag) => badge(tag, "warning")).join("")}</span><strong>${h(signal.text)}</strong><small>${h(M.taskLabel(state, signal.taskId))} / model-inferred category</small></button>`).join("") || `<div class="callout info">No messages currently have a corrective-steering classification in this scope.</div>`}
       <details><summary>Other human involvement</summary>${
         state.signals
           .filter(
@@ -468,7 +480,7 @@
     );
   }
 
-  /** Show exact fictional before/human/after context and a reviewable classification. */
+  /** Show exact fictional before/human/after context and a read-only classification rationale. */
   function interactionPanel(id) {
     if (!state.content)
       return panelShell(
@@ -481,7 +493,7 @@
         "Session opening instruction",
         "ORIGINAL SESSION SOURCE / SYNTHETIC",
         instructionBlocks([state.sessionInstruction]) +
-          `<p class="small muted">This is the session's opening prompt, not a fallback to any task. Task corrections do not change it.</p>`,
+          `<p class="small muted">This is the session's opening prompt, not a fallback to any task.</p>`,
       );
     }
     if (id.startsWith("origin:")) {
@@ -489,7 +501,7 @@
       return panelShell(
         "The requested outcome",
         "ORIGINAL INSTRUCTION / SYNTHETIC",
-        `${instructionBlocks(M.instructionsForTask(state, task.id))}<div class="context-block"><h3>Agent interpretation</h3><p>The agent outlines an approach to this requested outcome. Later instructions and recorded actions belong in the same context, not in isolated prompt scoring.</p></div><p class="small muted">Task boundaries ${task.corrected ? "were corrected by you" : "are inferred"}. A split can inherit an earlier source instruction; a merge retains distinct original messages rather than inventing a combined human turn.</p>`,
+        `${instructionBlocks(M.instructionsForTask(state, task.id))}<div class="context-block"><h3>Agent interpretation</h3><p>The agent outlines an approach to this requested outcome. Later instructions and recorded actions belong in the same context, not in isolated prompt scoring.</p></div><p class="small muted">Task boundaries are inferred from the request and subsequent behavior. This synthetic task has one segment, U${task.range[0]}-U${task.range[1]}. Interrupted work can have multiple inferred segments; no instruction is invented at a segment boundary.</p>`,
       );
     }
     const signal = state.signals.find((item) => item.id === id);
@@ -500,8 +512,8 @@
       M.taskLabel(state, signal.taskId),
       `<button class="text-button" data-action="metric" data-metric="steering" data-task="${h(route().params.get("task") || "")}">Back to contributors</button>
       <div class="context-block"><h3>Before / agent</h3><p>${h(signal.before)}</p></div><div class="context-block human"><h3>Human / exact synthetic message</h3><blockquote class="quote">${h(signal.text)}</blockquote></div><div class="context-block"><h3>After / agent</h3><p>${h(signal.after)}</p></div>
-      <div class="callout info">Count contribution: ${M.steeringCategories.includes(signal.category) ? "1 steering message, regardless of tag count" : "not counted as corrective steering"}. ${signal.confirmed ? "Category confirmed by you." : "Category is a model-inferred example."}</div>
-      <form class="form-stack" data-form="signal"><input type="hidden" name="id" value="${h(id)}"><label>Interpretation category<select name="category">${M.categories.map((category) => `<option ${category === signal.category ? "selected" : ""}>${h(category)}</option>`).join("")}</select></label><button class="button" type="submit">Save classification</button><p class="form-error" role="alert"></p></form>
+      <div class="callout info">Count contribution: ${M.steeringCategories.includes(signal.category) ? "1 steering message, regardless of tag count" : "not counted as corrective steering"}. Category is a model-inferred example, not an editable fact.</div>
+      <details><summary>Why this category?</summary><p>${h(signal.category)} / inferred from the original message and the preceding/following agent behavior shown above. ${signal.id === "u08" ? "The human redirects an all-rows approach toward the requested filtered rows; two tags still describe one message." : "This is an illustrative assessment; inspect the surrounding context rather than treating the label as certain."} Capture coverage is separate from interpretation confidence.</p></details>
       <details><summary>Related execution evidence</summary><button class="text-button" data-action="tool" data-id="${h(signal.toolId)}">Inspect tool ${h(signal.toolId.toUpperCase())}</button><p>All content is fictional. Captured instructions are treated as evidence, not commands to execute.</p></details>`,
     );
   }
@@ -526,7 +538,7 @@
           .join("; ") || "Unallocated"
       }.</p>
       <ul class="evidence-list">${artifact.operations.map(([event, action]) => `<li><span>${h(action)} / ${h(event.toUpperCase())}</span><button class="text-button" data-action="tool" data-id="${h(event)}">Recorded result</button></li>`).join("")}</ul>
-      ${state.analyzed ? `<form class="form-stack" data-form="purpose"><input type="hidden" name="id" value="${h(id)}"><label>Artifact purpose<select name="purpose">${["Deliverable", "Temporary helper", "Supporting artifact", "Unknown"].map((value) => `<option ${artifact.purpose === value ? "selected" : ""}>${h(value)}</option>`).join("")}</select></label><p class="small muted">${artifact.confirmed ? "Current label is user-confirmed." : "Current label is model-inferred; file extension alone does not determine purpose."}</p><button class="button" type="submit">Save purpose</button><p class="form-error" role="alert"></p></form>` : `<div class="callout">Purpose has not been analyzed. Recorded identity and lifecycle are still inspectable.</div>`}`,
+      ${state.analyzed ? `<h3>Purpose: ${h(artifact.purpose)} / model-inferred</h3><details><summary>Inspect purpose rationale</summary><p>${h(artifact.note)} This read-only assessment uses captured lifecycle and task context, not file extension or current filesystem verification. Ambiguous purpose remains unknown; complete capture does not guarantee a correct interpretation.</p></details>` : `<div class="callout">Purpose has not been analyzed. Recorded identity and lifecycle are still inspectable.</div>`}`,
     );
   }
 
@@ -545,13 +557,35 @@
         .filter(([event]) => event === id)
         .map(([, action]) => `${action}: ${artifact.path}`),
     );
+    const result = tool.testResult ?? (
+      operations.length
+        ? "Operation result recorded."
+        : tool.status.startsWith("Failed")
+          ? "Expected filtered rows; received all rows.\nThis check failed. A later invocation records recovery."
+          : tool.name === "terminal"
+            ? "Synthetic test/check completed successfully."
+            : "Synthetic tool result for the selected task."
+    );
     return panelShell(
       `${tool.name} / ${tool.id.toUpperCase()}`,
       M.taskLabel(state, tool.taskId),
       `<div class="badge-row">${badge(tool.status, tool.status.startsWith("Failed") ? "danger" : "")}${badge(`${tool.durationMs} ms`, "neutral")}${badge(`Turn U${tool.turn}`, "neutral")}</div>
       <p class="small muted">This is one recorded tool invocation. Durations include waiting; they are not processor time.</p>
-      ${state.content ? `<h3>Recorded result / synthetic</h3><pre>${h(operations.length ? operations.join("\n") + "\nOperation result recorded." : tool.status.startsWith("Failed") ? "Expected filtered rows; received all rows.\nThis check failed. A later invocation records recovery." : tool.name === "terminal" ? "Synthetic test/check completed successfully." : "Synthetic tool result for the selected task.")}</pre><details><summary>Arguments and source anchor</summary><p>Example reference: ${h(tool.id)} / turn U${tool.turn}. No command on this page is executed.</p><code>${h(tool.name)}(synthetic task context)</code></details>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}`,
+      <p>Source ${h(tool.id.toUpperCase())} / read ${state.readId} / synthetic. Display only; nothing is executed.</p>
+      ${timingDetails(tool)}
+      <h3>${tool.name === "terminal" ? "Full captured command" : "Captured arguments"} / synthetic</h3>
+      ${tool.inputStatus !== "complete" ? `<div class="callout">Input ${h(tool.inputStatus)} in the source. ${tool.inputStatus === "missing" ? "Arguments are unavailable, not an empty invocation." : tool.inputStatus === "truncated" ? "Only the captured portion is shown; the remainder is unavailable." : "Redacted values are not recoverable or reconstructed."}</div>` : ""}
+      ${tool.input === null ? "" : `<pre id="tool-input">${h(tool.name === "terminal" ? tool.input.command : JSON.stringify(tool.input, null, 2))}</pre>${tool.name === "terminal" ? `<p class="small">Working directory: <code>${h(tool.input.workingDirectory)}</code></p>` : ""}`}
+      ${state.content ? `<h3>Recorded result / synthetic</h3><pre id="tool-result">${h(tool.output ? `stdout:\n${tool.output.stdout}\n\nstderr:\n${tool.output.stderr || "(empty)"}\n\nExit code: ${tool.output.exitCode}` : [...operations, result].join("\n"))}</pre>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}
+      <button class="text-button" data-action="metric" data-metric="tools" data-task="${h(route().params.get("task") || "")}">Back to tool calls</button>`,
     );
+  }
+
+  /** Show captured source offsets, not a timestamp inferred from an invocation's duration. */
+  function timingDetails(record) {
+    return record.timing
+      ? `<p class="small">Recorded boundaries / synthetic: minute ${record.timing.startMinute} to minute ${record.timing.endMinute} from the 09:00 UTC session start. Elapsed: ${record.timing.endMinute - record.timing.startMinute}m.</p>`
+      : '<p class="small muted">Start/end timing unavailable. Duration or token counts alone cannot place this record on the timeline.</p>';
   }
 
   /** Expose individual recorded requests, with missing usage and analysis overhead separated. */
@@ -590,7 +624,8 @@
       `${item.id.toUpperCase()} / usage record`,
       M.taskLabel(state, item.taskId),
       `<p>Recorded model: ${h(item.model)}. Associated interaction: U${item.turn}.</p>
-      <pre>${h(JSON.stringify({ request: item.id, inputTokens: item.input, outputTokens: item.output, source: "synthetic fixture", unit: "tokens" }, null, 2))}</pre>
+      ${timingDetails(item)}
+      <pre>${h(JSON.stringify({ request: item.id, inputTokens: item.input, outputTokens: item.output, source: "synthetic fixture", unit: "tokens", timing: item.timing, timingUnit: "minutes from 09:00 UTC session start" }, null, 2))}</pre>
       <p class="small muted">Cache and reasoning breakdowns are not supplied in this example; no additional tokens are invented.</p><button class="text-button" data-action="metric" data-metric="tokens" data-task="${h(route().params.get("task") || "")}">Back to request ledger</button>`,
     );
   }
@@ -603,9 +638,10 @@
     );
     return panelShell(
       "Time, with the gaps left honest",
-      taskId ? M.taskLabel(state, taskId) : "OBSERVED 09:00-09:42 / LOCAL TIME",
+      taskId ? M.taskLabel(state, taskId) : "OBSERVED 09:00-09:42 UTC / SYNTHETIC",
       `<p>The session spans <strong>42 minutes</strong> between captured boundaries. This is not a claim of 42 minutes of productive work.</p>
       ${state.telemetry ? `<div class="badge-row">${badge(`${values.activeMinutes}m interval-union activity`)}${badge(`${values.cumulativeMinutes}m cumulative spans`, "neutral")}</div><div class="table-wrap"><table><thead><tr><th>Recorded span</th><th>Minutes from start</th><th>Task</th></tr></thead><tbody>${intervals.map((item, index) => `<tr><td>A${index + 1}${item.start === 4 ? " / overlapping child" : ""}</td><td>${item.start}-${item.end}</td><td>${h(M.taskLabel(state, item.taskId))}</td></tr>`).join("")}</tbody></table></div><p class="small muted">The overlapping child adds to cumulative duration, not elapsed activity. Model/tool durations can include waiting.</p>` : `<div class="callout">No execution intervals were captured. Agent runtime is unavailable.</div>`}
+      ${taskId ? '<p>Waiting, quiet and unknown intervals are not attributed to an inferred task. Inspect the session timeline for those states.</p>' : timeline()}
       <div class="callout"><strong>Human typing: unavailable.</strong> Message submission is not typing start. Unobserved gaps may include reading, thinking, other work, or absence. They are not labeled exact idle time.</div>`,
     );
   }
@@ -616,29 +652,35 @@
       "What this report can support",
       "CAPTURE COVERAGE",
       `<ul class="evidence-list"><li>Conversation content<span>${state.content ? "Available" : "Missing"}</span></li><li>Execution records<span>${state.telemetry ? "Available" : "Missing"}</span></li><li>Usage records<span>${!state.telemetry ? "Unavailable" : state.mode === "partial" ? "9 of 12 complete" : "12 of 12 complete"}</span></li><li>Task / steering interpretation<span>${state.analyzed ? "Synthetic proposals" : "Not analyzed"}</span></li><li>Exact typing and true idle time<span>Unavailable</span></li></ul>
-      <p class="small muted">Coverage belongs to the source, runtime, and selected scope. Complete recorded telemetry does not make inferred task boundaries certain.</p><button class="button" data-action="capture-help">Read capture prerequisites</button>`,
+      <p class="small muted">Selected synthetic source: sample-reports / VS Code Copilot Chat / capture bounds 09:00-09:42 UTC. Source read ${state.readId}: ${h(readTime())}. Complete telemetry does not make inferred task boundaries certain.</p><p>No application-owned session database, normalized replica, annotations, archive or saved analysis history. Refresh rereads the source and discards older interpretations without a model call. Restarting loses transient results; the harness controls retention.</p><button class="button" data-action="capture-help">Read capture prerequisites</button>`,
     );
   }
 
-  /** Preview a simulated analysis separately from capture, with an explicit no-network boundary. */
+  /** Show the remote-processing policy without connecting to a provider; explicit buttons settle the synthetic run. */
   function analysisPanel() {
+    if (state.run?.status === "running")
+      return panelShell(
+        "Analysis running / simulation",
+        `RUN ${state.run.id} / SOURCE READ ${state.run.readId}`,
+        `<p role="status">Recorded metrics remain accessible. Close this panel without cancelling, or choose a simulation result below. No automatic completion or model request occurs.</p><div class="actions"><button class="button" data-action="settle-analysis" data-result="complete">Show synthetic completion</button><button class="secondary" data-action="settle-analysis" data-result="failed">Simulate analysis failure</button><button class="secondary" data-action="settle-analysis" data-result="cancelled">Cancel analysis</button></div><p class="small muted">Refreshing supersedes this run. Late results cannot attach to a newer source read.</p>`,
+      );
     return panelShell(
       "Before an interpretation",
       "SIMULATED ANALYSIS SETUP",
-      `<p>The product should show what is selected and where it would be analyzed before any model request.</p><ul class="evidence-list"><li>Scope<span>Reporting improvements</span></li><li>Content<span>Prompts, replies, recorded tool results</span></li><li>Destination<span>This browser / synthetic fixtures</span></li><li>Data transmitted<span>None</span></li></ul>
-      <div class="callout info">This is not a provider configuration screen. No API key, model connection, or external transmission is implemented. The production privacy/provider decision remains open.</div>
-      ${!state.content ? `<div class="callout">Message content is missing. Load a complete example or inspect capture help; this mock cannot fabricate an assessment.</div><button class="button" data-action="capture-help">Capture help</button>` : `<form class="form-stack" data-form="analysis"><label><input type="checkbox" name="acknowledge" required> Show canned example interpretations; do not make a model call.</label><div class="actions"><button class="button" type="submit">Show simulated analysis</button><button class="secondary" type="button" data-action="close">Cancel</button></div></form>`}`,
+      `<p>The local product uses Copilot CLI as its first analysis executor, with remote model processing. A loopback dashboard is not on-device inference.</p><ul class="evidence-list"><li>Scope<span>Reporting improvements / source read ${state.readId}</span></li><li>Content<span>Prompts, replies, recorded tool results</span></li><li>Product destination<span>Copilot / remote model service</span></li><li>This prototype sends<span>Nothing / bundled fixtures only</span></li></ul>
+      <div class="callout info">No API key, model connection, or external transmission is implemented here. Evidence is not executable instructions. In the product, retries may use additional analysis tokens, reported separately from this subject session.</div>
+      ${!state.content ? `<div class="callout">Message content is missing. Load a complete example or inspect capture help; this mock cannot fabricate an assessment.</div><button class="button" data-action="capture-help">Capture help</button>` : `<form class="form-stack" data-form="analysis" novalidate><label><input type="checkbox" name="acknowledge" required> I reviewed the scope and remote destination; run only a synthetic simulation here.</label><p class="form-error" role="alert"></p><div class="actions"><button class="button" type="submit">Start simulated analysis</button><button class="secondary" type="button" data-action="close">Cancel</button></div></form>`}`,
     );
   }
 
-  /** Synthetic import preview deliberately avoids a file picker or a misleading claim of real ingestion. */
+  /** Preview explicit source selection, not ingestion into an application-owned session store. */
   function importPanel(discover = false) {
     return panelShell(
-      discover ? "Preview demo discovery" : "Import a synthetic export",
+      discover ? "Preview demo discovery" : "Open synthetic harness evidence",
       "NO REAL FILES ARE READ",
       `<p>${discover ? "A production discovery flow would ask you to select locations first. This prototype only offers its bundled example." : "Choose the coverage you want to explore. These buttons load bundled fixtures, not a file from your computer."}</p>
       <div class="form-stack"><button class="secondary" data-action="load-import" data-mode="complete">Load content + traces example</button><button class="secondary" data-action="load-import" data-mode="partial">Load incomplete capture example</button><button class="secondary" data-action="load-import" data-mode="transcript">Load transcript-only example</button><button class="secondary" data-action="unsupported">Try unsupported-format error</button></div>
-      <div class="callout info">Importing evidence is not permission to send it to a model. Historical captures cannot gain missing fields retroactively.</div>`,
+      <div class="callout info">Opening evidence is not permission to send it to a model. Historical captures cannot gain missing fields retroactively. A product source is read in place; no copy or archive is created.</div>`,
     );
   }
 
@@ -647,55 +689,23 @@
     return panelShell(
       "Capture is a prerequisite",
       "HELP / NO SETTINGS ARE CHANGED",
-      `<p>The complete setup guide is tracked in <a href="https://github.com/toddysm/agent-insights/issues/1" target="_blank" rel="noopener noreferrer">issue #1</a>.</p>
-      <ul><li>Enable the debug-log setting for the actual Local or Agent Host runtime.</li><li>Reload as required and verify a new test session.</li><li>For the extension file exporter, use a resolved private per-user path outside repositories.</li><li>Inspect the effective destination before enabling full-content capture.</li></ul>
-      <details><summary>Why does the reload notice mention localhost:4318?</summary><p>The endpoint-change notice can appear even with file export selected. Verify the active exporter and output file; the notification alone does not prove network export or require a collector.</p></details>
+      `<p>Consult the <a href="../../docs/capture-setup.md">capture setup guide</a> and its supported-source boundaries. Remaining live qualification is tracked in <a href="https://github.com/toddysm/agent-insights/issues/1" target="_blank" rel="noopener noreferrer">issue #1</a>.</p>
+      <p>Copilot Agent Host is the primary workflow. An enabled Local exporter does not prove Agent Host coverage; Copilot CLI executes analysis, not the subject conversation. Choose supported sources explicitly and inspect coverage before drawing conclusions.</p>
       <p class="small muted">Settings cannot recover missing historical content or measure exact human typing time. Full captures can contain source code and secrets; never publish them with this design prototype.</p>`,
     );
   }
 
-  /** Preview interpretation changes with source totals explicitly preserved; forms delegate validation to the model. */
-  function editPanel(params) {
-    const operation = params.get("op");
-    const ids = (params.get("ids") || params.get("task") || "")
-      .split(",")
-      .filter(Boolean);
-    const task = ids.length ? M.taskById(state, ids[0]) : null;
-    if (!task) throw new RangeError("Select a task before editing.");
-    if (operation === "merge") M.mergeSelection(state, ids);
-    const title = {
-      rename: "Rename the requested outcome",
-      merge: "Merge task interpretations",
-      split: "Split at an interaction",
-      range: "Adjust the task's segment",
-      exclude: "Exclude an interpretation",
-      outcome: "Correct the outcome",
-    }[operation];
-    if (!title) throw new RangeError("Unknown interpretation edit.");
-    let fields = `<input type="hidden" name="operation" value="${h(operation)}"><input type="hidden" name="ids" value="${h(ids.join(","))}">`;
-    if (["rename", "merge", "split"].includes(operation))
-      fields += `<label>Task title<input name="title" maxlength="120" required value="${h(operation === "merge" ? ids.map((id) => M.taskById(state, id).title).join(" + ") : operation === "split" ? `Continue ${task.title}` : task.title)}"></label>`;
-    if (operation === "split")
-      fields += `<label>New task starts at turn<input name="turn" type="number" min="${task.range[0] + 1}" max="${task.range[1]}" value="${Math.ceil((task.range[0] + task.range[1]) / 2)}" required></label><p class="small muted">Records at or after this turn move to the new task. Both outcomes become uncertain until reviewed.</p>`;
-    if (operation === "range")
-      fields += `<label>First turn<input type="number" name="start" min="1" max="28" value="${task.range[0]}" required></label><label>Last turn, inclusive<input type="number" name="end" min="1" max="28" value="${task.range[1]}" required></label><p class="small muted">The range must not overlap any other task, including excluded tasks. Records outside the new range become unallocated; no source record is deleted.</p>`;
-    if (operation === "outcome")
-      fields += `<label for="task-outcome">Outcome</label><select id="task-outcome" name="status">${["Completed", "Partial", "Blocked", "Abandoned", "Uncertain"].map((value) => `<option ${value === task.status ? "selected" : ""}>${value}</option>`).join("")}</select><p class="small muted">This will be labeled user-confirmed, not tool-verified.</p>`;
-    if (operation === "exclude")
-      fields += `<p>Exclude <strong>${h(task.title)}</strong> from the active task map? Its recorded evidence remains in session totals and is labeled unallocated. You can restore it later.</p>`;
-    const activeCount = M.metrics(state).tasks.length;
-    const nextCount =
-      operation === "merge"
-        ? activeCount - ids.length + 1
-        : operation === "split"
-          ? activeCount + 1
-          : operation === "exclude"
-            ? activeCount - 1
-            : activeCount;
+  /** Show scoped completion evidence, keeping original acceptance separate from agent claims and inferred correctness. */
+  function outcomePanel(taskId) {
+    const task = M.taskById(state, taskId);
     return panelShell(
-      title,
-      "REVIEW BEFORE SAVING",
-      `<form class="form-stack" data-form="task">${fields}<div class="callout info"><strong>Change preview</strong><br>Active tasks: ${activeCount} to ${nextCount}.<br>Session tool/token totals: unchanged.<br>Affected prompt assessments: need refresh; no model call runs.</div><p class="form-error" role="alert"></p><div class="actions"><button class="button" type="submit">Save corrections</button><button class="secondary" type="button" data-action="close">Cancel</button></div></form>`,
+      `${task.title} / outcome basis`,
+      `${task.status} / ${task.evidence}`,
+      taskId === "t2"
+        ? `<p>Acceptance recorded in the original harness conversation, not entered in this dashboard:</p><section class="source-instruction"><p class="eyebrow">Human / source ${h(state.sourceAcceptance.id)}</p><blockquote class="quote">${h(state.sourceAcceptance.text)}</blockquote></section><p>This acceptance supports the scoped outcome, not a guarantee of perfect correctness.</p>`
+        : taskId === "t1" && state.telemetry
+          ? `<p>Inferred evidence-backed completion: export changes and passing export tests were captured. Agent completion statements alone would not establish this.</p><div class="actions"><button class="text-button" data-action="artifact" data-id="a1">Inspect export changes</button><button class="text-button" data-action="tool" data-id="c14">Inspect recorded test result</button></div>`
+          : `<p>Agent claim / synthetic source U${task.range[1]}:</p><blockquote class="quote">${taskId === "t3" ? "The guide is drafted; the usage example remains unfinished." : "The CSV export is done."}</blockquote><p>${taskId === "t3" ? "The original request requires a usage example. The task remains partial despite an existing guide artifact." : "No captured test result supports verification in this transcript-only scenario. Outcome stays uncertain."}</p>`,
     );
   }
 
@@ -708,12 +718,28 @@
       !["capture", "import", "discover", "unsupported"].includes(panel)
     )
       return panelShell(
-        "No session imported",
+        "No source selected",
         "EVIDENCE REQUIRED",
-        `<p>Load a synthetic example before inspecting evidence or running the simulated analysis.</p><button class="button" data-action="import">Import a synthetic example</button>`,
+        `<p>Open a synthetic source before inspecting evidence or running analysis.</p><button class="button" data-action="import">Open a synthetic example</button>`,
       );
+    if (
+      state.sourceState !== "ready" &&
+      !["capture", "import", "discover", "unsupported"].includes(panel)
+    )
+      return panelShell(
+        "Source evidence unavailable",
+        `SOURCE READ ${state.readId}`,
+        `<p role="alert">This source is ${h(state.sourceState)}. The original evidence is not available; no older result or unrelated record is substituted.</p><button class="button" data-action="refresh">Retry synthetic read</button>`,
+      );
+    if (params.has("read") && params.get("read") !== String(state.readId))
+      throw new RangeError("The source read changed. This older evidence link is unavailable; reopen contributors from the current report.");
     if (taskId) M.taskById(state, taskId);
-    if (!state.analyzed && (taskId || ["interaction", "edit"].includes(panel)))
+    if (
+      !state.analyzed &&
+      (taskId ||
+        panel === "outcome" ||
+        (panel === "interaction" && params.get("event") !== "session-origin"))
+    )
       return panelShell(
         "Task attribution is not analyzed",
         "INTERPRETATION UNAVAILABLE",
@@ -727,12 +753,13 @@
     if (panel === "request") return requestPanel(params.get("id"));
     if (panel === "tokens") return tokensPanel(taskId);
     if (panel === "time" || panel === "typing") return timePanel(taskId);
+    if (panel === "activity") return activityPanel(params.get("id"));
     if (panel === "coverage") return coveragePanel();
     if (panel === "analysis") return analysisPanel();
+    if (panel === "outcome") return outcomePanel(taskId);
     if (panel === "capture") return capturePanel();
     if (panel === "import" || panel === "discover")
       return importPanel(panel === "discover");
-    if (panel === "edit") return editPanel(params);
     if (panel === "unsupported")
       return panelShell(
         "Unsupported example format",
@@ -762,13 +789,11 @@
           "TRANSCRIPT ONLY",
           "<p>No execution records were captured. Transcript text is not an authoritative invocation log.</p>",
         );
-      const tools = state.tools.filter(
-        (item) => !taskId || item.taskId === taskId,
-      );
+      const tools = state.tools.filter((item) => !taskId || item.taskId === taskId);
       return panelShell(
         `${tools.length} recorded tool calls`,
         taskId ? M.taskLabel(state, taskId) : "WHOLE SESSION",
-        `<p class="small muted">${new Set(tools.map((item) => item.name)).size} distinct tools. Open a row for its exact synthetic result.</p><div class="table-wrap"><table><thead><tr><th>Invocation</th><th>Duration</th><th>Outcome</th></tr></thead><tbody>${tools.map((item) => `<tr><td><button class="text-button" data-action="tool" data-id="${h(item.id)}">${h(item.id.toUpperCase())} / ${h(item.name)}</button><small>${h(M.taskLabel(state, item.taskId))}</small></td><td>${item.durationMs} ms</td><td>${h(item.status)}</td></tr>`).join("")}</tbody></table></div>`,
+        `<p class="small muted">${new Set(tools.map((item) => item.name)).size} distinct tools. Inspect full captured inputs and results; missing, truncated and redacted content stays explicit.</p>${toolsTable(taskId)}`,
       );
     }
     if (panel === "completed" || panel === "tasks")
@@ -776,16 +801,16 @@
         "Outcomes and their basis",
         "INTERPRETATION, NOT AN OVERALL GRADE",
         state.analyzed
-          ? `<p class="small muted">Completion claims, direct evidence, and user confirmations remain distinguishable.</p><ul class="evidence-list">${M.metrics(
+          ? `<p class="small muted">Agent claims, inferred evidence-backed assessments, and human acceptance actually recorded in the source remain distinguishable.</p><ul class="evidence-list">${M.metrics(
               state,
             )
               .tasks.map(
                 (task) =>
-                  `<li><span><a href="#task/${h(task.id)}">${h(task.title)}</a><br><span class="small">${h(task.status)} / ${h(task.evidence)}</span></span></li>`,
+                  `<li><span><a href="#task/${h(task.id)}">${h(task.title)}</a><br><span class="small">${h(task.status)} / ${h(task.evidence)}</span></span><button class="text-button" data-action="outcome" data-task="${h(task.id)}">Inspect basis</button></li>`,
               )
               .join(
                 "",
-              )}</ul><a class="text-button" href="#review">Review the task map</a>`
+              )}</ul>`
           : "<p>Task outcomes have not been analyzed. Recorded usage remains available.</p>",
       );
     throw new RangeError("That detail view is not part of this prototype.");
@@ -802,15 +827,16 @@
         if (!state.imported && view !== "sessions")
           main.innerHTML = unavailable(
             "Load an example first.",
-            "This scenario has no imported sessions.",
+            "This scenario has no selected harness evidence.",
             "import",
           );
         else if (view === "sessions") main.innerHTML = sessionsPage();
+        else if (state.sourceState !== "ready") main.innerHTML = sourceUnavailable();
         else if (view === "report") main.innerHTML = reportPage();
         else if (view === "task") main.innerHTML = taskPage(id);
         else if (view === "artifacts") main.innerHTML = artifactsPage();
+        else if (view === "tools") main.innerHTML = toolsPage();
         else if (view === "prompts") main.innerHTML = promptsPage(id);
-        else if (view === "review") main.innerHTML = reviewPage();
         else
           throw new RangeError(
             "Unknown mockup screen. Return to the session report.",
@@ -869,18 +895,28 @@
     }
   }
 
-  /** Load a fresh walkthrough fixture, explicitly discarding only synthetic in-page edits. */
+  /** Replace the fixture without reusing read or run identities within this page. */
+  function replaceSource(mode) {
+    const nextState = M.createState(mode);
+    nextState.readId = state.readId + 1;
+    nextState.runSequence = state.runSequence;
+    state = nextState;
+  }
+
+  /** Load a fresh synthetic fixture; missing/changed-source scenarios invalidate its report rather than showing cached results. */
   function loadScenario(name) {
     const mode = ["empty", "partial", "analysis-off"].includes(name)
       ? name
       : name === "unsupported"
         ? "empty"
         : "complete";
-    state = M.createState(mode);
-    selectedTasks = new Set();
+    replaceSource(mode);
+    if (name === "source-changed" || name === "source-unavailable")
+      M.refreshSource(state, name === "source-changed" ? "changed" : "unavailable");
     filters.search = "";
     filters.purpose = "All";
     filters.artifactTask = "All";
+    filters.tool = "All";
     dirty = true;
     document.getElementById("scenario").value = name;
     document.getElementById("scenario-note").textContent =
@@ -892,15 +928,16 @@
       artifacts: "artifacts",
       usage: "report?panel=tokens",
       prompts: "prompts/t1",
-      review: "review",
       partial: "report",
       "analysis-off": "report",
       unsupported: "sessions?panel=unsupported",
+      "source-changed": "report",
+      "source-unavailable": "report",
     }[name];
     if (!destination) throw new RangeError("Unknown walkthrough scenario.");
     navigate(destination);
     announce(
-      "Fresh synthetic scenario loaded. Previous demo edits were reset.",
+      "Fresh synthetic scenario loaded. Previous transient results were discarded.",
     );
   }
 
@@ -949,106 +986,55 @@
       openPanel("interaction", "", { event: `origin:${task}` });
     else if (action === "session-origin")
       openPanel("interaction", "", { event: "session-origin" });
+    else if (action === "outcome") openPanel("outcome", task);
+    else if (action === "activity") openPanel("activity", "", { id });
     else if (["artifact", "tool", "request"].includes(action))
       openPanel(action, contextTask, { id });
     else if (action === "capture-help") openPanel("capture");
     else if (["analysis", "import", "discover", "unsupported"].includes(action))
       openPanel(action);
     else if (action === "reset") loadScenario("report");
-    else if (action === "transcript-demo" || action === "load-import") {
-      state = M.createState(
-        action === "transcript-demo" ? "transcript" : button.dataset.mode,
-      );
-      selectedTasks.clear();
+    else if (action === "refresh") {
+      const restoreFocus = !dialog.open && main.contains(document.activeElement);
+      M.refreshSource(state);
       filters.purpose = "All";
       filters.artifactTask = "All";
+      filters.tool = "All";
+      dirty = true;
+      navigate(route().base);
+      if (restoreFocus)
+        (main.querySelector('[data-action="refresh"]') || main.querySelector("h1"))?.focus({ preventScroll: true });
+      announce("Synthetic source reread. Older interpretations discarded; no analysis started.");
+    } else if (action === "settle-analysis") {
+      M.finishAnalysis(state, state.run?.id, button.dataset.result);
+      dirty = true;
+      closePanel();
+      announce(`Synthetic analysis ${state.run.status}. No model request was made.`);
+    }
+    else if (action === "transcript-demo" || action === "load-import") {
+      replaceSource(
+        action === "transcript-demo" ? "transcript" : button.dataset.mode,
+      );
+      filters.purpose = "All";
+      filters.artifactTask = "All";
+      filters.tool = "All";
       dirty = true;
       navigate("report");
-      announce("Bundled example loaded. No real file was imported.");
-    } else if (action === "edit-one")
-      openPanel("edit", task, { op: button.dataset.op });
-    else if (action === "edit-selected") {
-      const ids = [...selectedTasks];
-      if (
-        (button.dataset.op === "merge" && ids.length < 2) ||
-        (button.dataset.op !== "merge" && ids.length !== 1)
-      )
-        throw new RangeError(
-          button.dataset.op === "merge"
-            ? "Select at least two active tasks to merge."
-            : "Select exactly one active task.",
-        );
-      if (button.dataset.op === "merge") M.mergeSelection(state, ids);
-      openPanel("edit", "", { op: button.dataset.op, ids: ids.join(",") });
-    } else if (action === "restore") {
-      M.excludeTask(state, task, false);
-      dirty = true;
-      render();
-      announce(
-        "Task interpretation restored. Original evidence was never removed.",
-      );
+      announce("Bundled example opened. No real source was accessed or copied.");
     } else if (action === "copy-rewrite") await copyRewrite();
     else
       throw new RangeError("That action is not implemented in this prototype.");
   }
 
-  /** Save correction forms atomically through the model; unexpected failures remain visible in console and UI. */
+  /** Validate acknowledgment in the model and start a simulation; inline errors avoid native validation popovers trapping dialog controls. */
   function handleForm(form) {
     const data = new FormData(form);
-    if (form.dataset.form === "signal")
-      M.classifySignal(
-        state,
-        String(data.get("id")),
-        String(data.get("category")),
-      );
-    else if (form.dataset.form === "purpose")
-      M.classifyArtifact(
-        state,
-        String(data.get("id")),
-        String(data.get("purpose")),
-      );
-    else if (form.dataset.form === "analysis") {
-      state.analyzed = true;
-      state.analysisStale = false;
-    } else if (form.dataset.form === "task") {
-      const ids = String(data.get("ids")).split(",");
-      const operation = data.get("operation");
-      if (operation === "rename")
-        M.renameTask(state, ids[0], String(data.get("title")));
-      else if (operation === "merge")
-        M.mergeTasks(state, ids, String(data.get("title")));
-      else if (operation === "split")
-        M.splitTask(
-          state,
-          ids[0],
-          Number(data.get("turn")),
-          String(data.get("title")),
-        );
-      else if (operation === "range")
-        M.adjustRange(
-          state,
-          ids[0],
-          Number(data.get("start")),
-          Number(data.get("end")),
-        );
-      else if (operation === "exclude") M.excludeTask(state, ids[0], true);
-      else if (operation === "outcome")
-        M.setOutcome(state, ids[0], String(data.get("status")));
-      else throw new RangeError("Unknown task correction.");
-      selectedTasks.clear();
-      if (
-        filters.artifactTask !== "All" &&
-        !state.tasks.some((task) => task.id === filters.artifactTask)
-      )
-        filters.artifactTask = "All";
-    } else throw new RangeError("Unknown prototype form.");
+    if (form.dataset.form !== "analysis")
+      throw new RangeError("Unknown prototype form.");
+    M.beginAnalysis(state, data.get("acknowledge") === "on");
     dirty = true;
-    closePanel();
-    announce(
-      form.dataset.form === "analysis"
-        ? "Canned interpretations shown. No model request was made."
-        : "Synthetic interpretation saved. Recorded session usage is unchanged.",
-    );
+    render();
+    announce("Synthetic analysis running. Recorded metrics remain available; no model call was made.");
   }
 
   document.addEventListener("click", (event) => {
@@ -1088,7 +1074,7 @@
       if (!(error instanceof RangeError)) {
         console.error(error);
         announce(
-          "Unexpected error while saving. See the browser console.",
+          "Unexpected error starting analysis. See the browser console.",
           true,
         );
         throw error;
@@ -1102,14 +1088,12 @@
     const element = event.target;
     if (!(element instanceof HTMLElement)) return;
     if (element.id === "scenario") loadScenario(element.value);
-    else if (element.classList.contains("task-selection")) {
-      if (element.checked) selectedTasks.add(element.value);
-      else selectedTasks.delete(element.value);
-    } else if (
+    else if (
       element.id === "purpose-filter" ||
-      element.id === "artifact-task-filter"
+      element.id === "artifact-task-filter" ||
+      element.id === "tool-filter"
     ) {
-      filters[element.id === "purpose-filter" ? "purpose" : "artifactTask"] =
+      filters[element.id === "purpose-filter" ? "purpose" : element.id === "tool-filter" ? "tool" : "artifactTask"] =
         element.value;
       dirty = true;
       render();
