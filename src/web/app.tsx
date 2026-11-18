@@ -28,9 +28,11 @@ import {
   errorSchema,
   statusSchema,
   type RuntimeStatus,
+  type ReadSetRequest,
 } from "../runtime/protocol.js";
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
+import { SourceDiscoveryPanel } from "./source-discovery.js";
 
 /**
  * Read bootstrap access from the initial URL fragment and remove that fragment from history.
@@ -171,6 +173,7 @@ function App(): ReactElement {
   const [view, setView] = useState<ReadView | null>(null);
   const [sessionId, setSessionId] = useState("");
   const [scanReset, setScanReset] = useState(0);
+  const [discoveryReset, setDiscoveryReset] = useState(0);
   const [operationId, setOperationId] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
   const generation = useRef(0);
@@ -231,7 +234,10 @@ function App(): ReactElement {
     setBusy(true);
     setError("");
     setReadNotice("");
-    if (refresh) clearView();
+    if (refresh) {
+      clearView();
+      setDiscoveryReset((previous) => previous + 1);
+    }
     try {
       const result = await request(
         refresh ? "/api/refresh" : "/api/status",
@@ -426,14 +432,14 @@ function App(): ReactElement {
    * error. This resets analysis acknowledgement and does not invoke a model.
    * The backend owns parsing; absent readers are not replaced with synthetic evidence.
    */
-  async function read(): Promise<void> {
+  async function read(selection?: ReadSetRequest): Promise<void> {
     const current = ++generation.current;
     setBusy(true);
     setError("");
     setReadNotice("");
     clearView();
     try {
-      const view = await request("/api/read", readViewSchema, {
+      const view = await request(selection ? "/api/read-set" : "/api/read", readViewSchema, selection ?? {
         sourceId,
         relativePath,
         format,
@@ -525,6 +531,19 @@ function App(): ReactElement {
                 )}
               </div>
             )}
+            {status && <SourceDiscoveryPanel
+              key={discoveryReset}
+              status={status}
+              disabled={busy || analysisLocked}
+              send={request}
+              onStart={() => {
+                generation.current++;
+                clearView();
+                setReadNotice("");
+              }}
+              onBusy={setBusy}
+              onRead={read}
+            />}
             <section
               id="sources"
               className="panel"

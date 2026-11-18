@@ -11,7 +11,7 @@
  * in the source service and analysis runner, beyond these structural schemas.
  */
 import { z } from "zod";
-import { sourceFormatSchema } from "../evidence/contracts.js";
+import { sourceFormatSchema, referenceSchema, nativeIdentitySchema } from "../evidence/contracts.js";
 import { analysisRunSchema } from "../analysis/contracts.js";
 import { sourceObservationSchema } from "../evidence/source-access.js";
 
@@ -97,15 +97,23 @@ export const readRequestSchema = z.strictObject({
 /** Validated source selection passed to the source boundary. */
 export type ReadRequest = z.infer<typeof readRequestSchema>;
 
+/** Transport ceiling also bounds generated reopen controls before discovery can publish them. */
+export const MAX_CONTROL_BODY_BYTES = 8192;
+
 /** Composite controls bind explicit grants to code-owned roles; no SQL or schema is accepted. */
 export const readSetRequestSchema = z.strictObject({
   readerId: z.string().regex(/^[A-Za-z0-9._-]{1,64}$/),
+  expectedSession: z.strictObject({
+    nativeIdentities: z.array(nativeIdentitySchema).min(1).max(8).readonly(),
+  }).readonly().optional(),
   sources: z
     .array(
       z
         .strictObject({
           key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
           sourceId: z.string().min(1),
+          /** Generated paths stay link-free below this explicitly selected directory. */
+          discoveryRoot: z.string().max(4096).refine((value) => !value.includes("\0")).optional(),
           relativePath: z
             .string()
             .max(4096)
@@ -123,6 +131,59 @@ export const readSetRequestSchema = z.strictObject({
 });
 /** Immutable selection for one installed multi-source adapter. */
 export type ReadSetRequest = z.infer<typeof readSetRequestSchema>;
+
+/** A discovery root is relative to a startup grant; its role never grants access to neighbors. */
+const discoveryRootSchema = z.strictObject({
+  sourceId: z.string().min(1),
+  relativePath: z.string().max(4096).refine((value) => !value.includes("\0")),
+  layout: z.enum(["catalog", "settings", "history", "overlay"]),
+}).readonly();
+
+/**
+ * Explicitly selected profile/per-user/custom locations. Settings expands only
+ * globalStorage and profiles; history/overlay inspect one storage-directory level.
+ */
+export const discoveryRequestSchema = z.strictObject({
+  roots: z.array(discoveryRootSchema).min(1).max(16).readonly(),
+}).readonly();
+/** Validated manual discovery controls; no home/profile inference is implied. */
+export type DiscoveryRequest = z.infer<typeof discoveryRequestSchema>;
+
+/** One discovered chat, with catalog witnesses and an optional exact composite selection. */
+const discoveredSessionSchema = z.strictObject({
+  id: z.string(),
+  sdkSessionId: z.string(),
+  runtime: z.enum(["copilot-agent-host", "unknown"]),
+  mode: z.null(),
+  executionLocation: z.literal("unknown"),
+  archived: z.boolean().nullable(),
+  state: z.enum(["ready", "unavailable", "ambiguous"]),
+  reason: z.string(),
+  references: z.array(referenceSchema),
+  selection: readSetRequestSchema.nullable(),
+}).readonly();
+
+/** Transient discovery output is distinct from a successful session read or saved catalog. */
+export const discoveryResultSchema = z.strictObject({
+  id: z.string(),
+  startedAtMs: z.number(),
+  finishedAtMs: z.number(),
+  sessions: z.array(discoveredSessionSchema).readonly(),
+  issues: z.array(z.strictObject({
+    sourceId: z.string(),
+    relativePath: z.string(),
+    code: z.string(),
+    message: z.string(),
+  }).readonly()).readonly(),
+  observations: z.array(sourceObservationSchema).readonly(),
+  locators: z.array(z.strictObject({
+    evidenceSourceId: z.string().min(1),
+    sourceId: z.string().min(1),
+    relativePath: z.string(),
+  }).readonly()).readonly(),
+}).readonly();
+/** Current manual discovery response; callers drop it on refresh/selection changes. */
+export type DiscoveryResult = z.infer<typeof discoveryResultSchema>;
 
 /** Public failures contain controlled messages, never raw exceptions or captured payloads. */
 export const errorSchema = z.strictObject({

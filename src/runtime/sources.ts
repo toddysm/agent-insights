@@ -6,6 +6,7 @@ import {
   realpath,
   stat,
   lstat,
+  opendir,
   type FileHandle,
 } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
@@ -85,6 +86,15 @@ export interface DatabaseLease {
   verify(): Promise<boolean>;
   /** Release the pinned read-only descriptor after the database process has exited. */
   close(): Promise<void>;
+}
+
+/** Compare admitted main/sidecar identities without exposing paths or treating metadata stability as an atomic snapshot. */
+export function databasePhysicalIdentity(lease: DatabaseLease): string {
+  return JSON.stringify([
+    lease.main.dev, lease.main.ino,
+    Object.entries(lease.sidecars).sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, state]) => [name, state ? [state.dev, state.ino] : null]),
+  ]);
 }
 
 /** Preserve nanosecond identity observations across the database-process boundary. */
@@ -350,6 +360,7 @@ export class SourceAccess {
     sourceId: string,
     relativePath: string,
     signal: AbortSignal,
+    kind: "file" | "directory" = "file",
   ): Promise<{
     grant: SourceGrant;
     canonical: string;
@@ -402,15 +413,93 @@ export class SourceAccess {
           403,
         );
       }
-      if (!(await stat(canonical)).isFile()) {
+      const info = await stat(canonical);
+      if (kind === "file" ? !info.isFile() : !info.isDirectory()) {
         throw new RuntimeError(
-          "NOT_A_FILE",
-          "Select a regular capture file.",
+          kind === "file" ? "NOT_A_FILE" : "NOT_A_DIRECTORY",
+          kind === "file" ? "Select a regular capture file." : "Select an approved source directory.",
           400,
         );
       }
       if (signal.aborted) throw cancelledRead(signal);
       return { grant, canonical, candidate };
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /** Inspect an explicitly selected regular file/directory through the same confined admission checks as reads. */
+  async kind(sourceId: string, relativePath: string, signal: AbortSignal): Promise<"file" | "directory"> {
+    try {
+      await this.resolve(sourceId, relativePath, signal);
+      return "file";
+    } catch (error) {
+      if (!(error instanceof RuntimeError) || error.code !== "NOT_A_FILE") throw error;
+    }
+    await this.resolve(sourceId, relativePath, signal, "directory");
+    return "directory";
+  }
+
+  /**
+   * List one approved directory, never recursively or through child links.
+   * Return links as distinct entries so callers can report their exclusion without following them.
+   * Reject over 256 entries rather than silently truncating discovery. Revalidate
+   * its locator after iteration; callers must still admit each selected file.
+   */
+  async entries(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+  ): Promise<readonly { name: string; kind: "file" | "directory" | "link" }[]> {
+    const { canonical } = await this.resolve(sourceId, relativePath, signal, "directory");
+    try {
+      const before = await stat(canonical, { bigint: true });
+      const directory = await opendir(canonical);
+      const entries: { name: string; kind: "file" | "directory" | "link" }[] = [];
+      let count = 0;
+      for await (const entry of directory) {
+        if (signal.aborted) throw cancelledRead(signal);
+        if (++count > 256)
+          throw new RuntimeError("DISCOVERY_LIMIT", "A discovery directory exceeds 256 entries; select a narrower root.", 413);
+        if (entry.isSymbolicLink())
+          entries.push({ name: entry.name, kind: "link" });
+        else if (entry.isFile() || entry.isDirectory())
+          entries.push({ name: entry.name, kind: entry.isFile() ? "file" : "directory" });
+      }
+      const after = await this.resolve(sourceId, relativePath, signal, "directory");
+      if (after.canonical !== canonical || !sameFileState(before, await stat(canonical, { bigint: true })))
+        throw new RuntimeError("SOURCE_CHANGED", "A discovery directory changed; refresh its sources.", 409);
+      return entries.sort((left, right) => left.name.localeCompare(right.name));
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * Reject links below an explicitly selected discovery directory, including
+   * generated filenames and intermediate components. The selected root itself
+   * may be an explicit alias. Call before/after acquisition: metadata checks do
+   * not claim an atomic filesystem snapshot or a sandbox against concurrent changes.
+   */
+  async verifyDiscoveryPath(sourceId: string, rootPath: string, relativePath: string, signal: AbortSignal): Promise<void> {
+    const root = await this.resolve(sourceId, rootPath, signal, "directory");
+    const candidate = path.resolve(root.grant.canonical, relativePath);
+    if (!contains(root.candidate, candidate))
+      throw new RuntimeError("SOURCE_SCOPE", "A generated discovery path escapes its selected root.", 403);
+    try {
+      let current = root.canonical;
+      for (const component of path.relative(root.candidate, candidate).split(path.sep).filter(Boolean)) {
+        if (signal.aborted) throw cancelledRead(signal);
+        const next = path.join(current, component);
+        if ((await lstat(next)).isSymbolicLink())
+          throw new RuntimeError("SOURCE_LINK", "Generated discovery paths cannot follow child links; select an alias explicitly.", 403);
+        current = await realpath(next);
+        if (!contains(root.canonical, current))
+          throw new RuntimeError("SOURCE_LINK", "A generated discovery path leaves its selected root.", 403);
+      }
+      if (await realpath(root.candidate) !== root.canonical || await realpath(candidate) !== current)
+        throw new RuntimeError("SOURCE_CHANGED", "A discovery path changed; refresh its sources.", 409);
+      if (signal.aborted) throw cancelledRead(signal);
     } catch (error) {
       filesystemError(error);
     }

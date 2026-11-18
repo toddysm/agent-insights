@@ -256,7 +256,9 @@ accounting remains separate work in [#32](https://github.com/toddysm/agent-insig
 
 Trusted embedding code can register `multiSourceReaders`. The authenticated
 `POST /api/read-set` control selects a registered `readerId` and one
-`{ key, sourceId, relativePath }` binding per declared role. The same launch-token,
+`{ key, sourceId, relativePath }` binding per required role. Optional roles may
+be omitted: they remain explicitly unavailable and no substitute path is opened.
+The same launch-token,
 origin and 8,192-byte request-body checks apply as for `POST /api/read`.
 Status exposes role metadata, **not** query/schema declarations. There is no
 generic SQL endpoint, automatic source discovery or model call during reading.
@@ -387,6 +389,110 @@ open producer SDK stores, restore sessions, migrate databases or copy sources.
 The [native evidence handoff](evidence-contracts.md#agent-host-native-evidence-handoff)
 defines coverage, accounting and original-anchor requirements.
 
+### Discover Agent Host sessions
+
+The **Discover Agent Host sessions** panel is the primary source workflow.
+Like native reading, production discovery is **explicitly unavailable** until a
+separately qualified compatible helper release is shipped. Preparing a developer
+candidate does not remove that gate. The supplemental extension exporter remains
+a separate format, not a substitute for Agent Host evidence.
+
+Start with `--source` for every approved location, then select discovery roots
+in the panel. Nothing scans the home directory or guesses an operating-system
+default. Each root selects a startup grant and a confined relative path:
+
+| Role | Inspected locations |
+| --- | --- |
+| App settings home | `globalStorage/agent-host.db` and `profiles/<profile>/globalStorage/agent-host.db` under the selected app settings home (normally `User`); no unrelated profile content |
+| Exact catalog | One explicitly selected catalog file, including a custom/profile catalog |
+| Native history | `events.jsonl` at the selected directory and one child-directory level, or an exact JSONL file |
+| Host overlay | `session.db` at the selected directory and one child-directory level, or an exact database |
+
+Use the corresponding per-user/custom roots from the harness configuration;
+the analyzer does not derive them from a working directory, SDK branding or
+timestamps. Named child links, including session directories and profile
+directories, are excluded with explicit `SOURCE_LINK` issues rather than followed
+or silently dropped. Directory/file admission still uses
+the [approved source boundary](#source-selection-and-limits).
+Explicit roots use their admitted file/directory kind, not a filename extension;
+extensionless files and directories ending in `.jsonl` or `.db` remain usable.
+An absent `profiles` directory means no custom profiles, not a missing selected
+settings home. Invalid selected roots and inaccessible existing children remain explicit issues.
+
+**Discover sessions** sends an authenticated `POST /api/discover` with
+`{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
+`catalog`, `history` or `overlay`. **Refresh discovered sessions** repeats that
+explicit request, replacing the list and invalidating prior read/analysis.
+**Refresh sources** drops the discovery list and current evidence. No watcher,
+session database, saved catalog or archive is created.
+
+Discovery verifies the pinned native header and current normalized catalog
+ownership. Physical aliases deduplicate; distinct files claiming one SDK identity
+and competing profile catalogs stay ambiguous. Distinct SDK backings claiming a
+shared runtime/storage chat identity are also ambiguous, preventing one overlay
+from being attributed to several sessions. Sharing only a parent session does
+not conflict. An overlay is proposed only from
+explicit `agentHost.rowOwnerChat` metadata; absent/ambiguous ownership leaves
+overlay usage unavailable. Selecting one exact catalog resolves profile scope
+without silently choosing a winner. Opening a result reopens and revalidates the
+selected sources through `agent-host-sessions`, framing the full native history
+and checking catalog ownership once for both conversation and execution readers.
+The open request also retains the discovered SDK and host identities: replacing
+history or ownership at the same path rejects with `SOURCE_CHANGED`, not another
+chat's successful read.
+Generated paths also retain their selected `discoveryRoot` in composite controls:
+discovery and reopening reject child links, including implicit filenames and
+intermediate layout directories. An alias explicitly selected as a file or root
+remains allowed within its startup grant; it is not an implicit neighbor scan.
+Deduplication identities must match the actual opened history descriptor or
+prepared database footprint. Rotation between admission and opening is an
+explicit source-change issue, and failed candidates cannot hide another alias.
+Overlay assignments become effective only after their catalog read is accepted.
+
+The list separates runtime from mode, execution location and analysis provider.
+Unknown mode/location stays unknown. Missing or rotated history, permission errors,
+unsupported sources, ambiguous ownership and archived retention are explicit;
+they never become a successful empty session. Each response includes read-time
+bounds, original references, per-input observations and a transient `locators`
+map from every evidence source ID to its approved grant/relative path, including
+ambiguous or unavailable selections. Unmatched overlays remain explicit issues.
+These are not live verification.
+
+Discovery accepts at most 16 root selections, 256 entries in a directory,
+64 candidate files and 64 chat rows per catalog, and a 256-KiB first-line header.
+Shared SQLite/query limits and the runtime deadline also apply. Limits reject,
+never silently truncate. Generated reopen controls must fit the same 8-KiB
+transport limit as submitted controls; oversized identities/paths reject discovery
+before a ready selection can be published. Large stores require narrower selections; integrated
+producer-generated and cross-platform qualification remains separate from the
+synthetic discovery tests.
+Native cleanup failures abort discovery, not just the affected source, even if a
+subsequent cleanup retry confirms resource release.
+Only expected source-admission failures become per-source issues. Native protocol,
+guard, cleanup and budget failures reject the generation. SQLite aliases deduplicate
+only when their admitted main and sidecar identities match; hard-linked main files
+with independent WAL/SHM files remain separate competing catalogs.
+If the native engine rejects a hard-linked database as requiring recovery, that
+location remains explicitly unavailable; any separately admitted catalog remains
+usable rather than either location silently hiding the other.
+
+Within one catalog connection, discovery reuses bounded chat/metadata projections
+for exact-key and first-JSON-member lookups, including whitespace, escaping and
+duplicate keys. JSON depth follows native admission; unsupported bindings retain
+native validation.
+Native predicate matching alone does not establish ownership: the decoded
+provider backing must also match the SDK. A first/last duplicate-member mismatch
+remains unqualified; lookup indexes do not relax reader admission.
+Original row witnesses and shared row/byte/query limits remain intact.
+JSON-BLOB rows and NUL-terminated JSON prefixes route their affected bindings
+through native predicates instead of being silently excluded or disabling all
+text indexes. Unrelated lookups stay indexed; unsupported or competing ownership
+still fails closed.
+Cached bindings retain the shared encoded-size limit. An optional overlay removed
+after discovery becomes an explicit unavailable input on open; generated links
+and scope violations still reject.
+This lookup state is discarded after discovery, not a copied application catalog.
+
 ### Agent Host execution availability
 
 The executable registers `agent-host-executions` but reports `available: false`
@@ -413,7 +519,7 @@ and verified candidate use:
 ```
 
 These are illustrative grant IDs from authenticated status, not captured paths.
-All three roles need explicit bindings; a missing optional overlay leaves host
+Required roles need explicit bindings; an omitted or missing optional overlay leaves host
 usage unavailable while retained native executions can still be read. Use an
 empty relative path for a file grant. The catalog and present usage overlay need
 connection-scoped snapshots with existing readable WAL/SHM sidecars. Do not change

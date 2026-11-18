@@ -6,8 +6,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { parseReadView, type ReadView } from "../contracts.js";
 import type { MultiSourceInput, MultiSourceReader } from "../source-access.js";
-import { agentHostCatalogDefinition, resolveAgentHostOwnership } from "./agent-host-catalog.js";
-import { identifier, object, readNativeHistory, type NativeEvent } from "./agent-host-history.js";
+import { agentHostCatalogDefinition, resolveAgentHostOwnership, type OwnershipResult } from "./agent-host-catalog.js";
+import { identifier, object, readNativeHistory, type NativeEvent, type NativeHistory } from "./agent-host-history.js";
 import { eventTime, executionIdentities, pointerSegment, tokenCount, usageObservation, type NativeExecution, type NativeIssue } from "./agent-host-events.js";
 import { agentHostOverlayDefinition, readTurnUsage } from "./agent-host-usage.js";
 
@@ -51,13 +51,18 @@ function lifecycleKey(event: NativeEvent, sdk: string): { key: string; kind: Lif
  * Read retained tools/agents/turns plus qualified observations. Unsupported native format/runtime
  * publishes no events. Qualified SDK history without unique host ownership remains unassigned
  * with unknown harness identity; it is not misrepresented as Agent Host evidence.
+ * Prepared inputs are borrowed only from the same combined read generation.
  */
-async function read(input: MultiSourceInput): Promise<ReadView> {
+export async function readAgentHostExecution(
+  input: MultiSourceInput,
+  preparedHistory?: NativeHistory,
+  preparedOwnership?: OwnershipResult | null,
+): Promise<ReadView> {
   const startedAtMs = Date.now();
   const history = input.get("history");
   const catalog = input.get("catalog");
   const overlay = input.get("overlay");
-  const parsed = await readNativeHistory(history, input.readId, input.signal);
+  const parsed = preparedHistory ?? await readNativeHistory(history, input.readId, input.signal);
   const { records, issues, start, producer, version } = parsed;
   const events: NativeExecution[] = [];
   const sessions: ReadView["sessions"][number][] = [];
@@ -98,8 +103,9 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
   if (start.data.detachedFromSpawningParentSessionId !== undefined &&
       identifier(start.data.detachedFromSpawningParentSessionId) === null)
     issue(history.sourceId, "unsupported-schema", "Detached native session parent is malformed; no parent was inferred.", start.references);
-  const ownership = catalog.available && catalog.kind === "sqlite"
-    ? await resolveAgentHostOwnership(catalog, sdk, input.signal) : null;
+  const ownership = preparedOwnership !== undefined ? preparedOwnership
+    : catalog.available && catalog.kind === "sqlite"
+      ? await resolveAgentHostOwnership(catalog, sdk, input.signal) : null;
   if (ownership?.ok) {
     qualified = true;
     sessions.push({
@@ -372,5 +378,5 @@ export const agentHostExecutionReader: MultiSourceReader = Object.freeze({
     { key: "catalog", kind: "sqlite", format: "vscode-agenthost-catalog-sqlite", optional: true, database: agentHostCatalogDefinition },
     { key: "overlay", kind: "sqlite", format: "vscode-agenthost-session-sqlite", optional: true, database: agentHostOverlayDefinition },
   ] as const),
-  read,
+  read: readAgentHostExecution,
 });

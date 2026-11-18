@@ -25,6 +25,7 @@ qualification(
     ".build/tests/sqlite-transport.test.js",
     ".build/tests/agent-host-conversation.test.js",
     ".build/tests/agent-host-execution.test.js",
+    ".build/tests/source-discovery.test.js",
   ],
   env,
 );

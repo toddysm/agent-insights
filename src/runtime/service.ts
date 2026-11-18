@@ -26,12 +26,15 @@ import type {
   ReadSetRequest,
   ReadTiming,
   RuntimeStatus,
+  DiscoveryRequest,
+  DiscoveryResult,
 } from "./protocol.js";
+import { SourceDiscovery } from "./discovery.js";
 import { SourceAccess, byteChunks, type StreamedSource } from "./sources.js";
 import { JsonlScan } from "./jsonl-scan.js";
 import { STREAM_LIMITS, ScanBudgetExceeded, type ScanRequest, type ScanStatus, type DetailRequest } from "../evidence/streaming.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
-import { SourceReadSet } from "./source-read.js";
+import { SourceReadSet, optionalSourceUnavailable } from "./source-read.js";
 import {
   defaultNativeHelper,
   nativeSqliteAvailability,
@@ -145,7 +148,7 @@ export class RuntimeService {
   readonly scanCatalog = new JsonlScan();
   private readonly readers = new Map<SourceFormat, EvidenceReader>();
   private readonly multiReaders = new Map<string, MultiSourceReader>();
-  private readonly readSets = new Set<SourceReadSet>();
+  private readonly readSets = new Set<{ dispose(): Promise<void> }>();
   private readonly fileCaptures = new Set<Promise<void>>();
   private cleanupFailed = false;
   private cleanupBarrier: Promise<void> = Promise.resolve();
@@ -290,6 +293,69 @@ export class RuntimeService {
     this.currentSelection = null;
     this.currentTiming = null;
     this.scanCatalog.invalidate();
+  }
+
+  /**
+   * Manually discover within explicit roots and drop the previous read/analysis first.
+   * Results are returned, not retained as an application catalog. Source owners use
+   * the same serialization, cancellation and cleanup gate as normal session reads.
+   */
+  async discover(selection: DiscoveryRequest, externalSignal: AbortSignal): Promise<DiscoveryResult> {
+    if (this.cleanupFailed)
+      throw new RuntimeError("SOURCE_CLEANUP_FAILED", "Retry source cleanup before discovery.", 503);
+    const request = Object.freeze({ roots: Object.freeze(selection.roots.map((root) => Object.freeze({ ...root }))) });
+    this.invalidate();
+    const id = randomUUID();
+    const controller = new AbortController();
+    const deadline = performance.now() + this.timeoutMs;
+    const abort = () => controller.abort(cancelledRead());
+    externalSignal.addEventListener("abort", abort, { once: true });
+    if (externalSignal.aborted) abort();
+    const timer = setTimeout(() => controller.abort(
+      new RuntimeError("READ_TIMEOUT", "Discovery exceeded its time limit; select narrower roots.", 408),
+    ), this.timeoutMs);
+    timer.unref();
+    this.active = { id, controller };
+    const discovery = new SourceDiscovery(this.sources, this.nativeHelper, id, controller.signal);
+    this.readSets.add(discovery);
+    return this.enqueue(async () => {
+      let settled: Promise<void> | undefined;
+      try {
+        let result: DiscoveryResult;
+        try {
+          if (this.cleanupFailed)
+            throw new RuntimeError("SOURCE_CLEANUP_FAILED", "Retry source cleanup before discovery.", 503);
+          if (controller.signal.aborted) throw cancelledRead(controller.signal);
+          const reader = this.multiReaders.get("agent-host-sessions");
+          const operation = discovery.run(request, reader
+            ? reader.unavailableReason : "Qualified Agent Host session discovery is not installed.");
+          settled = operation.then(() => undefined, () => undefined);
+          this.fileCaptures.add(settled);
+          result = await abortable(operation, controller.signal);
+        } finally {
+          try {
+            if (settled) await this.finishCapture(settled);
+            await discovery.dispose();
+            await this.sources.retryCleanup();
+            this.readSets.delete(discovery);
+          } catch {
+            this.cleanupFailed = true;
+            // eslint-disable-next-line no-unsafe-finally -- Unconfirmed native cleanup must override a discovery result.
+            throw new RuntimeError("SOURCE_CLEANUP_FAILED", "Discovery cleanup failed; retry shutdown before reading again.", 500);
+          }
+        }
+        if (this.cleanupFailed)
+          throw new RuntimeError("SOURCE_CLEANUP_FAILED", "Retry source cleanup before discovery.", 503);
+        if (controller.signal.aborted || this.active?.id !== id) throw cancelledRead(controller.signal);
+        if (performance.now() >= deadline)
+          throw new RuntimeError("READ_TIMEOUT", "Discovery exceeded its time limit; select narrower roots.", 408);
+        return result;
+      } finally {
+        clearTimeout(timer);
+        externalSignal.removeEventListener("abort", abort);
+        if (this.active?.id === id) this.active = null;
+      }
+    });
   }
 
   /** Own acquisition, borrowed iteration and real descriptor closure, including late acquisition after cancellation. */
@@ -502,7 +568,7 @@ export class RuntimeService {
 
   /**
    * Execute an installed composite reader over explicit, immutable role bindings.
-   * @param selection - Reader identity and authorized grant/relative-path bindings only.
+   * @param selection - Reader/grant bindings with optional generated-root restrictions and identities to revalidate.
    * @param externalSignal - Caller cancellation; no source content or SQL arrives in controls.
    * @returns Validated in-memory view after all owned database processes have exited.
    */
@@ -512,6 +578,13 @@ export class RuntimeService {
   ): Promise<ReadView> {
     const request = Object.freeze({
       readerId: selection.readerId,
+      ...(selection.expectedSession ? {
+        expectedSession: Object.freeze({
+          nativeIdentities: Object.freeze(selection.expectedSession.nativeIdentities.map(
+            (identity) => Object.freeze({ ...identity }),
+          )),
+        }),
+      } : {}),
       sources: Object.freeze(
         selection.sources.map((binding) => Object.freeze({ ...binding })),
       ),
@@ -535,12 +608,40 @@ export class RuntimeService {
           this.nativeHelper,
         );
         this.readSets.add(set);
+        const admittedBindings = new Set<string>();
+        /** Preserve optional preflight failures for admission; postflight checks only admitted inputs. */
+        const verifyDiscoveredSources = async (prepared: boolean): Promise<void> => {
+          for (const binding of request.sources) {
+            if (binding.discoveryRoot === undefined || (prepared && !admittedBindings.has(binding.key)))
+              continue;
+            try {
+              await this.sources.verifyDiscoveryPath(binding.sourceId, binding.discoveryRoot, binding.relativePath, signal);
+            } catch (error) {
+              if (prepared || !reader.inputs.some((input) => input.key === binding.key && input.optional) ||
+                  !optionalSourceUnavailable(error))
+                throw error;
+            }
+          }
+        };
         try {
+          await verifyDiscoveredSources(false);
           await set.prepare(request.sources);
+          for (const binding of request.sources)
+            if (set.get(binding.key).available) admittedBindings.add(binding.key);
           ensureCurrent();
           const view = parseReadView(await abortable(reader.read(set), signal));
           ensureCurrent();
+          if (request.expectedSession && (view.sessions.length !== 1 ||
+              !request.expectedSession.nativeIdentities.every((expected) =>
+                view.sessions[0]?.nativeIdentities?.some((identity) =>
+                  identity.namespace === expected.namespace && identity.value === expected.value))))
+            throw new RuntimeError(
+              "SOURCE_CHANGED",
+              "The discovered session identity changed; refresh discovery before opening it.",
+              409,
+            );
           const observations = await set.finish();
+          await verifyDiscoveredSources(true);
           set.validate(view);
           return {
             view,

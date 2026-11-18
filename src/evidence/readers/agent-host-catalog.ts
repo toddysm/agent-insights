@@ -11,6 +11,7 @@ import {
   type SqliteRow,
 } from "../source-access.js";
 import { sqliteReference } from "../../runtime/source-read.js";
+import { copySqliteBindings } from "../../runtime/sqlite.js";
 
 /** Fixed projections are shared-reader declarations, never SQL or schemas supplied by captures. */
 export const agentHostCatalogDefinition = sqliteDefinitionSchema.parse({
@@ -40,6 +41,21 @@ export const agentHostCatalogDefinition = sqliteDefinitionSchema.parse({
     { name: "metadata", primaryKey: ["key"], columns: ["key", "value"] },
   ],
   queries: [
+    {
+      id: "discovery_chats",
+      table: "chats_v2",
+      columns: [
+        "chat_uri", "owner_session_uri", "storage_resource", "parent_chat",
+        "provider_data", "tombstoned", "archived", "origin_session_uri",
+      ],
+      filters: [],
+    },
+    {
+      id: "discovery_metadata",
+      table: "metadata",
+      columns: ["key", "value"],
+      filters: [],
+    },
     {
       id: "sdk_chats",
       table: "chats_v2",
@@ -118,6 +134,126 @@ function jsonObject(value: unknown): Record<string, unknown> | null {
 /** Only SQLite INTEGER cells (bigint), never exact-valued REAL cells, can establish integer flags. */
 function integer(value: unknown, expected: number): boolean {
   return value === BigInt(expected);
+}
+
+/**
+ * Index only the first top-level string member, as SQLite json_extract does.
+ * Tokenization preserves duplicate keys and escaped labels without reparsing
+ * nested values. BLOB decoding and SQLite's NUL-terminated JSON prefix are only
+ * routing hints: their matching lookups must still use native predicates.
+ * SQLite's 1000-level JSON limit is retained.
+ */
+function jsonStringMember(encoded: unknown, member: string): string | null {
+  if (encoded instanceof Uint8Array) encoded = Buffer.from(encoded).toString("utf8");
+  if (typeof encoded === "string") encoded = encoded.split("\0", 1)[0];
+  if (typeof encoded !== "string" || !jsonObject(encoded)) return null;
+  let depth = 0;
+  let previous: string | undefined;
+  let found = false;
+  let pending = false;
+  let value: string | null = null;
+  for (const match of encoded.matchAll(/"(?:\\.|[^"\\])*"|[{}:,]|\[|\]|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)) {
+    const token = match[0];
+    if (pending) {
+      const parsed: unknown = token.startsWith('"') ? JSON.parse(token) : null;
+      value = typeof parsed === "string" ? parsed : null;
+      pending = false;
+    }
+    if (token === "{" || token === "[") {
+      if (++depth > 1000) return null;
+    } else if (token === "}" || token === "]") depth--;
+    else if (depth === 1 && token === ":" && previous !== undefined && !found &&
+        JSON.parse(previous) === member) {
+      found = true;
+      pending = true;
+    }
+    previous = token.startsWith('"') ? token : undefined;
+  }
+  return value;
+}
+
+/**
+ * Reuse bounded discovery projections only within this connection snapshot.
+ * Exact metadata keys already require binary equality in the resolver. JSON
+ * lookup indexes preserve first-member semantics, not JSON.parse's last keys.
+ * BLOB/NUL-backed candidates route only their affected bindings through native
+ * predicates; unrelated text lookups remain indexed. Unsupported bindings
+ * retain native semantics.
+ * Original rows/fingerprints survive unchanged; native owner/storage lookups
+ * retain their SQLite affinity/collation behavior and all shared budgets.
+ */
+export async function prepareAgentHostDiscoveryCatalog(
+  catalog: SqliteInput,
+  chats: readonly SqliteRow[],
+  signal: AbortSignal,
+): Promise<SqliteInput> {
+  if (catalog.userVersion !== 22 || catalog.snapshotScope !== "connection") return catalog;
+  signal.throwIfAborted();
+  const metadata = await catalog.query("discovery_metadata", {});
+  const sdkRows = new Map<string, SqliteRow[]>();
+  const metadataRows = new Map<string, SqliteRow[]>();
+  const storageRows = new Map<string, SqliteRow[]>();
+  const nativeSdks = new Set<string>();
+  const nativeStorage = new Set<string>();
+  /** Group original witnesses without reconstructing rows or their SQLite identities. */
+  const append = (index: Map<string, SqliteRow[]>, key: string, row: SqliteRow): void => {
+    const rows = index.get(key) ?? [];
+    rows.push(row);
+    index.set(key, rows);
+  };
+  for (const row of chats) {
+    signal.throwIfAborted();
+    const value = row.values.provider_data;
+    const sdk = jsonStringMember(value, "sdkSessionId");
+    if (sdk !== null) {
+      if (value instanceof Uint8Array || (typeof value === "string" && value.includes("\0")))
+        nativeSdks.add(sdk);
+      else append(sdkRows, sdk, row);
+    }
+  }
+  for (const row of metadata) {
+    signal.throwIfAborted();
+    const key = row.values.key;
+    if (typeof key !== "string") continue;
+    append(metadataRows, key, row);
+    for (const prefix of ["sessionStorageIdentity:", "chatStorageIdentity:"]) {
+      if (!key.startsWith(prefix)) continue;
+      const value = row.values.value;
+      const storage = jsonStringMember(value, "storage");
+      if (storage !== null) {
+        const binding = JSON.stringify([prefix, storage]);
+        if (value instanceof Uint8Array || (typeof value === "string" && value.includes("\0")))
+          nativeStorage.add(binding);
+        else append(storageRows, binding, row);
+      }
+    }
+  }
+  return {
+    ...catalog,
+    async query(queryId, bindings) {
+      signal.throwIfAborted();
+      bindings = copySqliteBindings(bindings);
+      if (Object.values(bindings).some((value) => typeof value === "string" && /[\uD800-\uDFFF]/u.test(value)))
+        return catalog.query(queryId, bindings);
+      const keys = Object.keys(bindings);
+      // Other SDK bindings can equal JSON-encoded containers and have no canonical storage-URI lookup.
+      if (queryId === "sdk_chats" && keys.length === 1 && typeof bindings.sdk === "string" &&
+          /^[A-Za-z0-9._-]+$/.test(bindings.sdk))
+        return nativeSdks.has(bindings.sdk)
+          ? catalog.query(queryId, bindings)
+          : sdkRows.get(bindings.sdk) ?? [];
+      if (queryId === "metadata_key" && keys.length === 1 && typeof bindings.key === "string")
+        return metadataRows.get(bindings.key) ?? [];
+      if (queryId === "storage_identity" && keys.length === 2 &&
+          typeof bindings.prefix === "string" && typeof bindings.storage === "string" &&
+          ["sessionStorageIdentity:", "chatStorageIdentity:"].includes(bindings.prefix) &&
+          !/^[{[]/.test(bindings.storage.trimStart()))
+        return nativeStorage.has(JSON.stringify([bindings.prefix, bindings.storage]))
+          ? catalog.query(queryId, bindings)
+          : storageRows.get(JSON.stringify([bindings.prefix, bindings.storage])) ?? [];
+      return catalog.query(queryId, bindings);
+    },
+  };
 }
 
 /**

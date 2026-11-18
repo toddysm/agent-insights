@@ -20,6 +20,7 @@ import {
   SourceAccess,
   MAX_SOURCE_BYTES,
   byteChunks,
+  databasePhysicalIdentity,
   type DatabaseLease,
 } from "./sources.js";
 import {
@@ -35,6 +36,22 @@ export interface SourceBinding {
   readonly key: string;
   readonly sourceId: string;
   readonly relativePath: string;
+}
+
+/** Optional admission failures become unavailable observations, never swallowed scope/link/limit failures. */
+export function optionalSourceUnavailable(error: unknown): error is RuntimeError {
+  return error instanceof RuntimeError && [
+    "SOURCE_MISSING",
+    "SOURCE_UNAVAILABLE",
+    "SOURCE_DENIED",
+    "SOURCE_IO",
+    "SQLITE_SCHEMA",
+    "SQLITE_FORMAT",
+    "SQLITE_SIDECARS",
+    "SQLITE_RECOVERY_REQUIRED",
+    "SQLITE_JOURNAL_PRESENT",
+    "SQLITE_LOCKED",
+  ].includes(error.code);
 }
 
 /** Database ownership is retained until both process and pinned descriptor are closed. */
@@ -134,7 +151,7 @@ export class SourceReadSet implements MultiSourceInput {
     readonly readId: string,
     signal: AbortSignal,
     private readonly access: SourceAccess,
-    reader: MultiSourceReader,
+    reader: Pick<MultiSourceReader, "inputs">,
     private readonly nativeHelper: NativeHelperResolver = defaultNativeHelper,
   ) {
     this.signal = AbortSignal.any([signal, this.stopped.signal]);
@@ -172,10 +189,19 @@ export class SourceReadSet implements MultiSourceInput {
     return input;
   }
 
+  /** Return the actual prepared SQLite footprint for runtime admission checks; closed or non-database roles reject. */
+  databaseIdentity(key: string): string {
+    const input = this.get(key);
+    const owner = this.databases.get(key);
+    if (!input.available || input.kind !== "sqlite" || !owner)
+      throw new RuntimeError("SOURCE_ROLE", "The requested role has no admitted database identity.", 400);
+    return databasePhysicalIdentity(owner.lease);
+  }
+
   /**
    * Capture files and open bounded database snapshots for exactly the requested roles.
    * @param bindings - Explicit grants/relative paths, copied by the runtime before this call.
-   * @returns After admission; missing optional inputs are typed unavailable results, not empty data.
+   * @returns After admission; missing or unselected optional inputs are explicit unavailable results.
    */
   prepare(bindings: readonly SourceBinding[]): Promise<void> {
     if (this.admission || this.finishing)
@@ -195,7 +221,7 @@ export class SourceReadSet implements MultiSourceInput {
     bindings: readonly SourceBinding[],
   ): Promise<void> {
     if (
-      bindings.length !== this.requirements.length ||
+      bindings.length > this.requirements.length ||
       new Set(bindings.map((binding) => binding.key)).size !==
         bindings.length ||
       bindings.some(
@@ -213,7 +239,7 @@ export class SourceReadSet implements MultiSourceInput {
       const binding = bindings.find(
         (binding) => binding.key === requirement.key,
       );
-      if (!binding)
+      if (!binding && !requirement.optional)
         throw new RuntimeError(
           "SOURCE_ROLES",
           "A required source role was not selected.",
@@ -222,6 +248,8 @@ export class SourceReadSet implements MultiSourceInput {
       const sourceId = `${this.readId}:source:${requirement.key}`;
       const startedAtMs = Date.now();
       try {
+        if (!binding)
+          throw new RuntimeError("SOURCE_UNAVAILABLE", "Optional source was not selected; no substitute was opened.", 404);
         if (requirement.kind === "file") {
           const capture = await this.access.read(
             binding.sourceId,
@@ -290,22 +318,9 @@ export class SourceReadSet implements MultiSourceInput {
           );
         }
       } catch (error) {
-        const optionalCodes = [
-          "SOURCE_MISSING",
-          "SOURCE_UNAVAILABLE",
-          "SOURCE_DENIED",
-          "SOURCE_IO",
-          "SQLITE_SCHEMA",
-          "SQLITE_FORMAT",
-          "SQLITE_SIDECARS",
-          "SQLITE_RECOVERY_REQUIRED",
-          "SQLITE_JOURNAL_PRESENT",
-          "SQLITE_LOCKED",
-        ];
         if (
           !requirement.optional ||
-          !(error instanceof RuntimeError) ||
-          !optionalCodes.includes(error.code)
+          !optionalSourceUnavailable(error)
         )
           throw error;
         const owner = this.databases.get(requirement.key);
