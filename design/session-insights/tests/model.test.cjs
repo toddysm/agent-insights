@@ -59,6 +59,18 @@ test("missing lifecycle coverage never becomes measured waiting or idle time", (
   }
 });
 
+test("activity contributors resolve to the same source interaction, task and tool duration", () => {
+  const state = M.createState();
+  for (const span of state.intervals) {
+    const records = span.kind === "model" ? state.requests : state.tools;
+    const source = records.find((item) => item.id === span.sourceId);
+    assert.ok(source, `Missing activity contributor ${span.sourceId}`);
+    assert.equal(span.turn, source.turn, `Interaction mismatch for ${span.sourceId}`);
+    assert.equal(span.taskId, source.taskId, `Task mismatch for ${span.sourceId}`);
+    if (span.kind === "work") assert.equal((span.end - span.start) * 60000, source.durationMs);
+  }
+});
+
 test("partial and transcript-only captures do not use zero for unavailable values", () => {
   const partial = M.metrics(M.createState("partial"));
   assert.equal(partial.input, null);

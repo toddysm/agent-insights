@@ -228,12 +228,12 @@ const InsightsModel = (() => {
     },
   ];
   const intervals = [
-    { taskId: "t1", turn: 6, start: 2, end: 8, kind: "model", sourceId: "m1" },
-    { taskId: "t1", turn: 12, start: 12, end: 16, kind: "model", sourceId: "m6" },
-    { taskId: "t2", turn: 17, start: 22, end: 26, kind: "model", sourceId: "m8" },
+    { taskId: "t1", turn: 2, start: 2, end: 8, kind: "model", sourceId: "m1" },
+    { taskId: "t1", turn: 14, start: 12, end: 16, kind: "model", sourceId: "m6" },
+    { taskId: "t2", turn: 18, start: 22, end: 26, kind: "model", sourceId: "m8" },
     { taskId: "t2", turn: 20, start: 30, end: 32, kind: "work", sourceId: "c21" },
     { taskId: "t3", turn: 26, start: 36, end: 38, kind: "work", sourceId: "c26" },
-    { taskId: "t1", turn: 6, start: 4, end: 6, kind: "work", sourceId: "c6" },
+    { taskId: "t1", turn: 7, start: 4, end: 6, kind: "work", sourceId: "c6" },
   ];
   const stateIntervals = [
     { kind: "waiting", start: 8, end: 12, evidence: [
