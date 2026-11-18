@@ -127,7 +127,7 @@ export function SourceDiscoveryPanel({
             >
               {status.sources.map((source) => (
                 <option key={source.id} value={source.id}>
-                  {source.path}
+                  {source.id}: {source.path}
                 </option>
               ))}
             </select>
