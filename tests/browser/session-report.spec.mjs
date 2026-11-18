@@ -167,14 +167,12 @@ test("native report numbers reach exact original commands/messages and return to
         exact: true,
       }),
     ).toBeVisible();
-    const invocations = report
-      .locator("section")
-      .filter({
-        has: page.getByRole("heading", {
-          name: "Tools & commands",
-          exact: true,
-        }),
-      });
+    const invocations = report.locator("section").filter({
+      has: page.getByRole("heading", {
+        name: "Tools & commands",
+        exact: true,
+      }),
+    });
     const shell = invocations.getByRole("button", { name: /shell-call/ });
     await shell.click();
     await dialog
