@@ -12,6 +12,7 @@ import {
   readFile,
   readdir,
   rm,
+  rmdir,
   symlink,
   chmod,
   link,
@@ -645,6 +646,46 @@ async function fixture(t: TestContext) {
 }
 
 test(
+  "native settings discovery permits an absent profiles child but reports invalid selected roots and existing children",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const profiles = path.join(data.root, "User", "profiles");
+    await rmdir(profiles);
+    const result = await data.service.discover(data.selection, signal);
+    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions[0]?.state, "ready");
+    assert.deepEqual(result.issues, []);
+
+    await writeFile(profiles, "not a directory");
+    const invalidChild = await data.service.discover(data.selection, signal);
+    assert.ok(
+      invalidChild.issues.some((issue) => issue.code === "NOT_A_DIRECTORY"),
+    );
+    const missingRoot = await data.service.discover(
+      {
+        roots: [
+          {
+            sourceId: "source-1",
+            relativePath: "missing-settings",
+            layout: "settings",
+          },
+        ],
+      },
+      signal,
+    );
+    assert.equal(missingRoot.sessions.length, 0);
+    assert.ok(
+      missingRoot.issues.some(
+        (issue) =>
+          issue.relativePath === "missing-settings" &&
+          issue.code === "SOURCE_MISSING",
+      ),
+    );
+  },
+);
+
+test(
   "native catalogs sharing a main inode but different sidecars remain independent",
   native,
   async (t) => {
@@ -687,18 +728,23 @@ test(
         .sort(),
       catalogs.sort(),
     );
-    if (result.sessions.length === 0)
-      assert.equal(
-        result.issues.filter(
-          (issue) => issue.code === "SQLITE_RECOVERY_REQUIRED",
-        ).length,
-        2,
-      );
-    else assert.equal(result.sessions.length, 2, JSON.stringify(result.issues));
-    assert.ok(
-      result.sessions.every((session) => session.state === "ambiguous"),
+    const recovery = result.issues.filter(
+      (issue) =>
+        catalogs.includes(issue.relativePath) &&
+        issue.code === "SQLITE_RECOVERY_REQUIRED",
     );
-    assert.ok(result.sessions.every((session) => session.selection === null));
+    assert.equal(
+      result.sessions.length + recovery.length,
+      2,
+      JSON.stringify(result.issues),
+    );
+    assert.ok(
+      result.sessions.every((session) =>
+        result.sessions.length === 1
+          ? session.state === "ready" && session.selection !== null
+          : session.state === "ambiguous" && session.selection === null,
+      ),
+    );
   },
 );
 

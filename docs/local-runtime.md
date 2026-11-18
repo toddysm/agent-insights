@@ -414,6 +414,8 @@ timestamps. Named child links are excluded. Directory/file admission still uses
 the [approved source boundary](#source-selection-and-limits).
 Explicit roots use their admitted file/directory kind, not a filename extension;
 extensionless files and directories ending in `.jsonl` or `.db` remain usable.
+An absent `profiles` directory means no custom profiles, not a missing selected
+settings home. Invalid selected roots and inaccessible existing children remain explicit issues.
 
 **Discover sessions** sends an authenticated `POST /api/discover` with
 `{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
@@ -461,8 +463,9 @@ Only expected source-admission failures become per-source issues. Native protoco
 guard, cleanup and budget failures reject the generation. SQLite aliases deduplicate
 only when their admitted main and sidecar identities match; hard-linked main files
 with independent WAL/SHM files remain separate competing catalogs.
-If the native engine rejects a hard-linked database as requiring recovery, both
-locations remain explicitly unavailable rather than one silently hiding the other.
+If the native engine rejects a hard-linked database as requiring recovery, that
+location remains explicitly unavailable; any separately admitted catalog remains
+usable rather than either location silently hiding the other.
 
 Within one catalog connection, discovery reuses bounded chat/metadata projections
 for exact-key and first-JSON-member lookups, including whitespace, escaping and

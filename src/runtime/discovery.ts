@@ -207,6 +207,7 @@ export class SourceDiscovery {
   /**
    * Expand only documented layout levels. Settings means appSettingsHome
    * (normally User), not a guessed OS home. Custom files use exact catalog/history/overlay roles.
+   * An absent implicit profiles directory is empty; selected-root failures remain explicit.
    */
   private async locations(
     request: DiscoveryRequest,
@@ -267,31 +268,46 @@ export class SourceDiscovery {
             root.relativePath,
           );
           const profiles = path.join(root.relativePath, "profiles");
-          await this.access.verifyDiscoveryPath(
-            root.sourceId,
-            root.relativePath,
-            profiles,
-            this.signal,
-          );
-          for (const entry of await this.access.entries(
-            root.sourceId,
-            profiles,
-            this.signal,
-          ))
-            if (entry.kind === "directory")
-              add(
-                "catalog",
-                {
-                  ...location,
-                  relativePath: path.join(
-                    profiles,
-                    entry.name,
-                    "globalStorage",
-                    "agent-host.db",
-                  ),
-                },
-                root.relativePath,
-              );
+          try {
+            await this.access.verifyDiscoveryPath(
+              root.sourceId,
+              root.relativePath,
+              profiles,
+              this.signal,
+            );
+            for (const entry of await this.access.entries(
+              root.sourceId,
+              profiles,
+              this.signal,
+            ))
+              if (entry.kind === "directory")
+                add(
+                  "catalog",
+                  {
+                    ...location,
+                    relativePath: path.join(
+                      profiles,
+                      entry.name,
+                      "globalStorage",
+                      "agent-host.db",
+                    ),
+                  },
+                  root.relativePath,
+                );
+          } catch (error) {
+            if (
+              !(error instanceof RuntimeError) ||
+              error.code !== "SOURCE_MISSING" ||
+              this.signal.aborted
+            )
+              throw error;
+            await this.access.verifyDiscoveryPath(
+              root.sourceId,
+              root.relativePath,
+              root.relativePath,
+              this.signal,
+            );
+          }
         } else {
           const filename =
             root.layout === "history" ? "events.jsonl" : "session.db";
