@@ -134,10 +134,18 @@ function appendReferences(
 
 /** Native IDs are comparable only within source, kind, trace and native agent/session namespaces. */
 function eventKey(event: Event): string {
-  if (event.kind === "message" || event.nativeId === null)
+  if (event.nativeId === null)
     return JSON.stringify([
       event.kind,
       event.references.map(referenceKey).sort(),
+    ]);
+  if (event.kind === "message")
+    return JSON.stringify([
+      event.kind,
+      [
+        ...new Set(event.references.map((reference) => reference.sourceId)),
+      ].sort(),
+      event.nativeId,
     ]);
   const nativeScope = event.nativeIdentities
     ?.filter(
@@ -194,13 +202,24 @@ function sum(values: readonly number[]): number | null {
 function intervalUnion(
   intervals: readonly (readonly [number, number])[],
 ): number | null {
-  let end = -1;
+  const ordered = [...intervals].sort(([a], [b]) => a - b);
+  const first = ordered[0];
+  if (!first) return 0;
+  let start = first[0];
+  let end = first[1];
   const lengths: number[] = [];
-  for (const [start, finish] of [...intervals].sort(([a], [b]) => a - b)) {
-    if (finish > end) lengths.push(finish - Math.max(start, end));
-    end = Math.max(end, finish);
+  for (const [nextStart, finish] of ordered) {
+    if (nextStart <= end) end = Math.max(end, finish);
+    else {
+      lengths.push(end - start);
+      start = nextStart;
+      end = finish;
+    }
   }
-  return sum(lengths);
+  lengths.push(end - start);
+  const total = sum(lengths);
+  // Bound floating-point roundoff by the mathematically enclosing interval.
+  return total === null ? null : Math.min(total, end - first[0]);
 }
 
 /**

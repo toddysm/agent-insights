@@ -689,3 +689,58 @@ test("usage reports do not relabel tool, agent, hook or generic span names as mo
     [null, null, null, null, "responded-model", "requested-model"],
   );
 });
+
+test("native message replays preserve one timing boundary and poison conflicting timestamps", () => {
+  const message = exampleReadView().events[0]!;
+  assert.ok(message.kind === "message");
+  const replay = {
+    ...message,
+    id: "message-replay",
+    references: [reference("message-replay", 3)],
+  };
+  const view = read([message, replay]);
+  for (const result of [calculate(view), calculate(view, [message.id])]) {
+    assert.equal(result.timing.elapsed.metric.value, null);
+    assert.equal(result.timing.observedStart.metric.value, message.timestampMs);
+    assert.equal(result.timing.observedStart.metric.contributors.length, 2);
+  }
+  const conflict = calculate(read([message, { ...replay, timestampMs: 950 }]));
+  assert.equal(conflict.timing.elapsed.metric.value, null);
+  assert.equal(conflict.timing.observedStart.metric.value, null);
+  assert.equal(conflict.exclusions[0]?.reason, "conflicting-replay");
+});
+
+test("fractional touching intervals cannot round activity beyond elapsed or create negative gaps", () => {
+  for (const [intervals, expected] of [
+    [
+      [
+        [0.1, 0.2],
+        [0.2, 1.1],
+      ],
+      1,
+    ],
+    [
+      [
+        [0, 0.1],
+        [0.1, 0.2],
+        [0.2, 0.3],
+        [0.3, 0.9],
+      ],
+      0.9,
+    ],
+  ] as const) {
+    const result = calculate(
+      read(
+        intervals.map(([start, end], index) =>
+          execution(`fractional-${index}`, {
+            startedAtMs: start,
+            endedAtMs: end,
+          }),
+        ),
+      ),
+    );
+    assert.equal(result.timing.elapsed.metric.value, expected);
+    assert.equal(result.timing.agentActivity.metric.value, expected);
+    assert.equal(result.timing.unobservedGaps.metric.value, 0);
+  }
+});
