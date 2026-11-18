@@ -33,6 +33,7 @@ import {
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
 import { SourceDiscoveryPanel } from "./source-discovery.js";
+import { SessionReportPanel } from "./session-report.js";
 
 /**
  * Read bootstrap access from the initial URL fragment and remove that fragment from history.
@@ -467,7 +468,7 @@ function App(): ReactElement {
         .map((issue) => issue.message)
         .join(" ");
       setReadNotice(
-        `${summary} ${limitations} Report views are not installed yet.`,
+        `${summary} ${limitations}`,
       );
     } catch (failure) {
       if (current === generation.current)
@@ -494,9 +495,9 @@ function App(): ReactElement {
           <a href="#sources" aria-current="page">
             Sources
           </a>
-          <span aria-disabled="true">
-            Session report <small>Not available yet</small>
-          </span>
+          {view ? <a href="#session-report">Session report</a> : <span aria-disabled="true">
+            Session report <small>Read a source first</small>
+          </span>}
         </nav>
         <p className="sidebar-note">
           Read-only source access.
@@ -758,6 +759,7 @@ function App(): ReactElement {
                 </section>
               )}
             </section>
+            {view && <SessionReportPanel key={view.id} view={view} send={request} />}
             <section
               className="panel analysis"
               aria-labelledby="analysis-heading"
@@ -774,8 +776,8 @@ function App(): ReactElement {
               </div>
               <dl>
                 <div>
-                  <dt>Configured harness</dt>
-                  <dd>Copilot</dd>
+                  <dt>Configured analysis executor</dt>
+                  <dd>Copilot CLI (separate from source identity)</dd>
                 </div>
                 <div>
                   <dt>Requested model</dt>

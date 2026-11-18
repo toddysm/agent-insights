@@ -18,6 +18,8 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { EvidenceReader } from "../evidence/contracts.js";
+import { reportRequestSchema } from "../metrics/report.js";
+import { recordedReport } from "./report.js";
 import type { MultiSourceReader } from "../evidence/source-access.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
@@ -332,6 +334,7 @@ export async function startRuntime(
         "/api/cancel",
         "/api/read",
         "/api/read-set",
+        "/api/report",
         "/api/discover",
         "/api/scan",
         "/api/scan/catalog",
@@ -348,6 +351,13 @@ export async function startRuntime(
           403,
         );
       const body = await controlBody(request);
+      if (url.pathname === "/api/report") {
+        const selection = reportRequestSchema.safeParse(body);
+        if (!selection.success)
+          throw new RuntimeError("INVALID_SELECTION", "Select an exact current read and session for reporting.", 400);
+        json(response, 200, recordedReport(service.view, selection.data));
+        return;
+      }
       if (url.pathname === "/api/discover") {
         const selection = discoveryRequestSchema.safeParse(body);
         if (!selection.success)

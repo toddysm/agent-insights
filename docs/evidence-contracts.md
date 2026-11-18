@@ -8,6 +8,25 @@ in-memory views; they must never be serialized into an application session store
 
 ## Read generations and provenance
 
+The authenticated `POST /api/report` control accepts only the current `readId`
+and an attributed `sessionId`. It invokes the pure
+[recorded calculator](../src/metrics/recorded.ts) through the
+[report adapter](../src/runtime/report.ts); no source access, inference or report
+cache occurs. Invalid controls fail, foreign sessions return unavailable, and
+missing/replaced reads are stale rather than restored from history. The shared
+[report schema](../src/metrics/report.ts) carries exact metric provenance,
+definitions, coverage, scope and non-additive observation labels to the browser.
+Original-content panels use only matching current-read/session events and full
+original-locator identity; unmatched source witnesses never resolve by record
+proximity or colliding native IDs.
+
+Native report tests compose the real combined Agent Host reader, calculator and
+browser with independently authored history/catalog projections. Browser
+transport shims are explicitly not released-helper qualification. The native
+source-access suite separately runs guarded catalog/history/overlay discovery,
+combined reads and exact report anchors with the verified candidate. Neither
+synthetic coverage nor reporting removes the production helper-release gate.
+
 - Every read has an independent `id`, source metadata, sessions, events and visible
   issues. In runtime-published views, `startedAtMs` is input-capture start and
   `finishedAtMs` is processing completion, including adapter work and validation.

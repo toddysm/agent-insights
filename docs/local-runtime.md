@@ -5,9 +5,10 @@ The current runtime implements
 availability checks, a controlled read boundary and an in-memory reader registry.
 It also includes the [Copilot analysis transport](copilot-analysis.md).
 It includes the VS Code OpenTelemetry extension file-export reader from
-[#10](https://github.com/toddysm/agent-insights/issues/10). Conversation readers,
-report views and interpretation definitions are not installed yet.
-The interface states those limitations explicitly. The
+[#10](https://github.com/toddysm/agent-insights/issues/10), Agent Host backend
+readers behind their qualified-helper availability gates, and a
+[recorded session report](#read-the-session-report). Interpretation definitions
+remain separate, unavailable work. The interface states those limitations explicitly. The
 [historical prototype](../design/session-insights/README.md) is separate and
 continues to use fictional data.
 
@@ -65,6 +66,46 @@ Configured locations are checked for availability and shown only after
 authentication. A missing or unreadable startup location remains unavailable;
 correct it and restart to grant access. Existing authorized locations can be
 rechecked with "Refresh sources."
+
+### Read the session report
+
+After **Read source** or **Open retained session**, use **Report session** to
+choose among sessions in that read. The report computes recorded timing, tool
+and token metrics locally without a model request. The Agent Host
+discovery/combined-reader path is primary; its existing incompatible-helper
+gate is not bypassed by report availability. An extension-export report does
+not qualify Agent Host support. Empty, unqualified and wrong-runtime reads
+show diagnostics rather than sample sessions.
+
+Tasks/outcomes, steering, artifacts and prompt coaching show **Not analyzed**.
+The source-backed conversation and **Tools & commands** expose retained
+messages, full captured multiline arguments/results and original source
+anchors. Unknown shell fields remain unavailable; one shell invocation is not
+every program inside its command. Captured HTML, commands and URLs are inert
+text, never instructions to execute or external links to follow.
+
+Select any metric, including **Unavailable**, to see its definition, coverage,
+contributing records and exact original message/tool evidence. Source-only
+witnesses show their original locators with an unavailable-content explanation.
+Native cumulative/overlay observations remain non-additive and separate from
+per-call token totals. **Inspect activity lanes** distinguishes recorded
+model/tool/agent/hook spans from unavailable waiting, not-analyzed quiet/idle
+and unknown gaps; assistant turns are not fabricated model calls.
+
+Tool filtering changes visible invocations, not session totals. The evidence
+dialog preserves filters and report scroll, supports full-width detail,
+keyboard focus trapping, Escape, Back/Forward and focus return. On narrow
+screens it fills the viewport. Invalid, foreign or stale links never fall back
+to another record. Links identify only a transient read and stop working when
+that generation is discarded.
+
+**Read at ... / coverage and sources** shows actual producer/host/version,
+read timing and dimension-specific limitations. Read processing completion is
+not a physical input-observation bound or proof of a global snapshot. Ask/Agent
+mode and the separately configured analysis executor are not source identities.
+Refresh or a new selection discards the old report and evidence; reread the
+selected sources explicitly to compute fresh metrics. No report history,
+source replica, browser storage or correction controls are created.
 
 For a directory grant, a reader request must name a relative file inside it.
 A regular-file read cannot select neighboring files through a file grant.
