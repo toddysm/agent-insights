@@ -1398,6 +1398,57 @@ test(
       ).size,
       2,
     );
+    profileWriter
+      .prepare("UPDATE chats_v2 SET provider_data=?, storage_resource=?")
+      .run('{"sdkSessionId":"sdk-other"}', "copilotcli:/sdk-other");
+    const otherHistory = path.join(data.root, "native", "other");
+    await mkdir(otherHistory);
+    await writeFile(
+      path.join(otherHistory, "events.jsonl"),
+      records("sdk-other")
+        .map((record) => JSON.stringify(record))
+        .join("\n") + "\n",
+    );
+    const sameChat = await data.service.discover(data.selection, signal);
+    assert.equal(sameChat.sessions.length, 2);
+    assert.ok(
+      sameChat.sessions.every(
+        (session) =>
+          session.state === "ambiguous" && session.selection === null,
+      ),
+    );
+    profileWriter.exec(
+      "UPDATE chats_v2 SET chat_uri='copilotcli:/host/other-chat'",
+    );
+    const sharedParent = await data.service.discover(data.selection, signal);
+    assert.equal(sharedParent.sessions.length, 2);
+    assert.ok(
+      sharedParent.sessions.every((session) => session.state === "ready"),
+    );
+    assert.equal(
+      sharedParent.sessions
+        .find((session) => session.sdkSessionId === "sdk-other")
+        ?.selection?.sources.some((source) => source.key === "overlay"),
+      false,
+    );
+    profileWriter.prepare("INSERT INTO metadata VALUES(?,?)").run(
+      "chatStorageIdentity:copilotcli:/host/chat",
+      JSON.stringify({
+        runtime: "copilotcli:/host/chat",
+        storage: "copilotcli:/host/other-chat",
+      }),
+    );
+    const translatedCollision = await data.service.discover(
+      data.selection,
+      signal,
+    );
+    assert.equal(translatedCollision.sessions.length, 2);
+    assert.ok(
+      translatedCollision.sessions.every(
+        (session) =>
+          session.state === "ambiguous" && session.selection === null,
+      ),
+    );
     const exact: DiscoveryRequest = {
       roots: [
         ...data.selection.roots.filter((root) => root.layout !== "settings"),

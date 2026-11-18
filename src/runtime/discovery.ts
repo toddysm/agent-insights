@@ -442,6 +442,7 @@ export class SourceDiscovery {
     const overlays: OverlayCandidate[] = [];
     const assignedOverlays = new Set<OverlayCandidate>();
     const sessions: DiscoveryResult["sessions"][number][] = [];
+    const claims = new Map<string, Set<string>>();
     const physical = new Set<string>();
     for (const role of ["history", "overlay", "catalog"] as const) {
       for (const location of locations.get(role) ?? []) {
@@ -485,6 +486,7 @@ export class SourceDiscovery {
                   "Overlay lacks unique explicit chat ownership; no path-based match was attempted.",
               });
           } else {
+            const catalogChats = new Map<string, readonly string[]>();
             const discovered = await this.database(
               location,
               agentHostCatalogDefinition,
@@ -543,15 +545,20 @@ export class SourceDiscovery {
                   const matches = histories.filter(
                     (history) => history.sdk === sdk,
                   );
+                  const chats = ownership.ok
+                    ? ownership.value.identities.filter((identity) =>
+                        [
+                          "agent-host-chat",
+                          "agent-host-storage-chat",
+                        ].includes(identity.namespace),
+                      )
+                    : [];
+                  if (ownership.ok)
+                    catalogChats.set(sdk, chats.map((identity) => identity.value));
                   const overlayMatches = ownership.ok
                     ? overlays.filter((overlay) =>
-                        ownership.value.identities.some(
-                          (identity) =>
-                            [
-                              "agent-host-chat",
-                              "agent-host-storage-chat",
-                            ].includes(identity.namespace) &&
-                            identity.value === overlay.owner,
+                        chats.some(
+                          (identity) => identity.value === overlay.owner,
                         ),
                       )
                     : [];
@@ -628,28 +635,38 @@ export class SourceDiscovery {
               },
             );
             sessions.push(...discovered);
+            for (const session of discovered) {
+              const chats = catalogChats.get(session.sdkSessionId);
+              if (!chats) continue;
+              for (const identity of [
+                JSON.stringify(["sdk", session.sdkSessionId]),
+                ...chats.map((chat) => JSON.stringify(["chat", chat])),
+              ]) {
+                const owners = claims.get(identity) ?? new Set<string>();
+                owners.add(session.id);
+                claims.set(identity, owners);
+              }
+            }
           }
         } catch (error) {
           this.problem(location, error);
         }
       }
     }
-    // Independent catalogs may claim the same native backing; neither wins by location or discovery order.
-    const claims = new Map<string, number>();
-    for (const session of sessions)
-      if (session.runtime === "copilot-agent-host")
-        claims.set(
-          session.sdkSessionId,
-          (claims.get(session.sdkSessionId) ?? 0) + 1,
-        );
+    // Chat aliases share overlay ownership semantics; parent sessions may legitimately own several chats.
+    const conflicts = new Set(
+      [...claims.values()]
+        .filter((owners) => owners.size > 1)
+        .flatMap((owners) => [...owners]),
+    );
     const correlated = sessions.map((session) =>
-      (claims.get(session.sdkSessionId) ?? 0) > 1
+      conflicts.has(session.id)
         ? {
             ...session,
             state: "ambiguous" as const,
             selection: null,
             reason:
-              "Independent catalogs claim the same native backing; select the intended profile/catalog explicitly.",
+              "Catalog records claim the same native backing or runtime/storage chat identity; select an unambiguous catalog explicitly.",
           }
         : session,
     );

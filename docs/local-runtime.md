@@ -426,7 +426,10 @@ session database, saved catalog or archive is created.
 
 Discovery verifies the pinned native header and current normalized catalog
 ownership. Physical aliases deduplicate; distinct files claiming one SDK identity
-and competing profile catalogs stay ambiguous. An overlay is proposed only from
+and competing profile catalogs stay ambiguous. Distinct SDK backings claiming a
+shared runtime/storage chat identity are also ambiguous, preventing one overlay
+from being attributed to several sessions. Sharing only a parent session does
+not conflict. An overlay is proposed only from
 explicit `agentHost.rowOwnerChat` metadata; absent/ambiguous ownership leaves
 overlay usage unavailable. Selecting one exact catalog resolves profile scope
 without silently choosing a winner. Opening a result reopens and revalidates the
