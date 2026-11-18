@@ -585,6 +585,67 @@ components declare their overlap with input/output totals; do not add subsets
 twice. Task grouping and prompt judgments do not belong in recorded events.
 Their provider policy and result contracts remain separate work.
 
+### Recorded-metrics calculator
+
+The pure [calculator](../src/metrics/recorded.ts) accepts a validated `ReadView`
+and `{ sessionId, eventIds? }`. Omit `eventIds` for a whole-session selection;
+provide current-read event IDs for an evidence-attributed subset. A subset is
+not a time window: selected executions retain their full recorded intervals.
+Unknown/foreign event IDs and absent sessions throw. No source reads, model
+calls, persistence or task inference occur.
+
+Each `RecordedMetric` wraps the existing `Metric` in `metric`, with its
+`scope` and a functional `definition`. The result also retains the read's
+observation bounds; these are not session start/end times. Every numeric
+contributor is attributable to the selected session and available for the
+metric's dimension. Source/dimension coverage remains an upper bound;
+missing fields, conflicts and unresolved attribution reduce availability.
+
+- **Observed start/end** are the earliest/latest selected message or execution
+  boundary timestamps, in Unix milliseconds. **Elapsed** is their difference,
+  requiring at least two recorded boundaries. Usage-observation timestamps
+  do not establish session timing.
+- **Recorded agent activity** is the union of complete model, tool, agent and
+  hook execution intervals. Nested/parallel overlap counts once. Assistant
+  turns are boundaries, not model calls or proof of uninterrupted activity.
+- **Cumulative span duration** sums distinct complete execution intervals,
+  intentionally including nested/parallel work. Two overlapping 60-second
+  spans give 60 seconds elapsed/activity and 120 cumulative seconds.
+- **Unobserved gaps** are observed elapsed minus interval-union activity,
+  requiring both measurements. They are neither human typing nor true idle
+  time. Incomplete intervals remain partial/unavailable, not zero-length spans.
+- **Tool calls/identities** count distinct recorded executions, including
+  incomplete calls. Missing names remain `null`; optional absent call IDs
+  are not fabricated. Qualified native bridge wrappers are excluded.
+- **Input/output tokens** sum only model-call `per-call` measurements.
+  Parent usage, cumulative/unknown reports, whole/direct-turn totals,
+  assistant-output reports and shutdown snapshots are not added to these
+  totals or to one another. Each non-additive report remains inspectable in
+  `tokens.observations`, with its own scope, model and original contributors.
+  Native-only evidence may therefore expose reported usage while per-call
+  totals remain unavailable.
+- **Components** retain name, value and declared overlap relation separately.
+  Cache/reasoning subsets are not added again; even `additional` and `unknown`
+  components stay separate from input/output totals. Conflicting duplicate
+  components and impossible subset counts are unavailable or explicitly partial.
+
+Repeated native identities deduplicate only within qualified trace/SDK/source
+scopes. Identical replays retain every locator without multiplying totals;
+conflicting variants poison the identity even when a subset selects one copy.
+Without a comparable native identity, only identical original locator sets
+establish replay identity; matching text/timing is not sufficient. Unassigned
+and shared-source evidence remains in `exclusions`, not silently assigned to
+the selected session. Selections may expand to equivalent replay locators.
+
+Missing token measurements stay unavailable; a reported zero is still a
+measurement. Zero tools without event contributors requires complete relevant
+source coverage and an unambiguous declared session anchor, and is not inferred
+for an empty subset. Unsafe numeric sums are unavailable with a reason.
+The [numeric tests](../tests/recorded-metrics.test.ts) and native-reader
+integration checks run in the existing application validation matrix.
+Report/UI wiring remains separate work in
+[#14](https://github.com/toddysm/agent-insights/issues/14).
+
 ## Extending and validating
 
 An `EvidenceReader` receives only a borrowed byte stream and cancellation signal

@@ -10,9 +10,11 @@ import { vscodeOtelReader } from "../src/evidence/readers/vscode-otel.js";
 import { jsonLines } from "../src/evidence/readers/jsonl.js";
 import {
   parseReadView,
+  parseMetric,
   type ReaderInput,
   type ReadView,
 } from "../src/evidence/contracts.js";
+import { calculateRecordedMetrics } from "../src/metrics/recorded.js";
 
 const trace = "1".repeat(32);
 const otherTrace = "2".repeat(32);
@@ -141,6 +143,12 @@ test("normalizes exact identity, time units, content, status and usage with orig
   assert.equal(view.sources[0]?.coverage.messages.status, "unavailable");
   assert.equal(view.sources[0]?.changedDuringRead, null);
   assert.ok(Object.isFrozen(event.content));
+  const metrics = calculateRecordedMetrics(view, { sessionId: view.sessions[0].id });
+  assert.equal(metrics.tools.calls.metric.value, 0);
+  assert.equal(metrics.tokens.input.metric.value, 20);
+  assert.equal(metrics.tokens.output.metric.value, 5);
+  assert.equal(metrics.timing.elapsed.metric.value, 1100);
+  assert.deepEqual(parseMetric(metrics.tools.calls.metric, view), metrics.tools.calls.metric);
 });
 
 test("explicit operations keep embeddings, hooks, tools and agent executions distinct", async () => {

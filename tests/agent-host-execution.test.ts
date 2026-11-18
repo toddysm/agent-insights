@@ -20,6 +20,8 @@ import { RuntimeService } from "../src/runtime/service.js";
 import { SourceAccess } from "../src/runtime/sources.js";
 import { statusSchema } from "../src/runtime/protocol.js";
 import { testNativeHelper } from "./fixtures/native-helper.js";
+import { calculateRecordedMetrics } from "../src/metrics/recorded.js";
+import { parseMetric } from "../src/evidence/contracts.js";
 
 /** Fictional envelope defaults; overrides deliberately damage typed source fields. */
 function event(type: string, id: string, data: Record<string, unknown> = {}, fields: Record<string, unknown> = {}) {
@@ -140,6 +142,13 @@ test("native tools pair within agent scope, retain parallel/nested edges and nev
   assert.ok(view.issues.some((issue) => issue.code === "unknown-record"));
   assert.equal(view.sources[0]?.identity.executionHost, "agent-host");
   assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
+  const metrics = calculateRecordedMetrics(view, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.tools.calls.metric.value, 2);
+  assert.equal(metrics.timing.agentActivity.metric.value, 2);
+  assert.equal(metrics.timing.cumulativeSpanDuration.metric.value, 3);
+  assert.equal(metrics.tokens.input.metric.value, null);
+  assert.equal(metrics.tools.calls.metric.coverage.status, "partial");
+  assert.deepEqual(parseMetric(metrics.tools.calls.metric, view), metrics.tools.calls.metric);
 });
 
 test("optional native session identity pairs lifecycle boundaries without merging other or malformed sessions", async () => {
@@ -489,6 +498,16 @@ test("retained whole/direct turn reports preserve overlap and exact multi-source
   assert.ok(observations.every((item) => item.references.some((ref) => ref.location.kind === "jsonl" && ref.location.line === 2)));
   assert.ok(observations.every((item) => item.nativeIdentities?.some((identity) =>
     identity.namespace === "agent-host-turn" && identity.value === "host-turn")));
+  const metrics = calculateRecordedMetrics(view, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.tokens.input.metric.value, null);
+  assert.equal(metrics.tokens.observations.length, 2);
+  assert.deepEqual(metrics.tokens.observations.map((observation) => observation.input.metric.value), [30, 20]);
+  assert.deepEqual(metrics.tokens.observations.map((observation) =>
+    observation.components[0]?.tokens.metric.value), [5, 3]);
+  for (const observation of metrics.tokens.observations) {
+    assert.deepEqual(parseMetric(observation.input.metric, view), observation.input.metric);
+    assert.deepEqual(parseMetric(observation.output.metric, view), observation.output.metric);
+  }
 });
 
 test("overlay ownership, foreign rows, duplicate bridges, malformed counters and request snapshots fail honestly", async () => {
