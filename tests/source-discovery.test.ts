@@ -14,12 +14,13 @@ import {
   rm,
   symlink,
   chmod,
+  link,
+  copyFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { SourceAccess } from "../src/runtime/sources.js";
 import { SourceDiscovery } from "../src/runtime/discovery.js";
-import { SourceReadSet } from "../src/runtime/source-read.js";
 import { RuntimeError } from "../src/runtime/errors.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { startRuntime } from "../src/runtime/server.js";
@@ -400,11 +401,14 @@ for (const code of [
   "SQLITE_LIMIT",
   "SOURCE_TOO_LARGE",
   "SQLITE_CLEANUP_FAILED",
+  "SQLITE_PROCESS_PROTOCOL",
+  "SQLITE_GUARD",
+  "NATIVE_GUARD_UNAVAILABLE",
 ]) {
   test(`discovery rejects ${code} instead of publishing an incomplete correlation set`, async (t) => {
     const root = await temporary(t);
     await writeFile(path.join(root, "catalog.db"), "");
-    t.mock.method(SourceReadSet.prototype, "prepare", async () => {
+    t.mock.method(SourceAccess.prototype, "database", async () => {
       throw new RuntimeError(code, "Synthetic source budget exceeded.", 413);
     });
     const discovery = new SourceDiscovery(
@@ -639,6 +643,64 @@ async function fixture(t: TestContext) {
     selection,
   };
 }
+
+test(
+  "native catalogs sharing a main inode but different sidecars remain independent",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const other = path.join(data.root, "Other", "agent-host.db");
+    await mkdir(path.dirname(other));
+    await link(data.catalogPath, other);
+    for (const suffix of ["-wal", "-shm"])
+      await copyFile(data.catalogPath + suffix, other + suffix);
+    const result = await data.service.discover(
+      {
+        roots: [
+          ...data.selection.roots.filter((root) => root.layout === "history"),
+          {
+            sourceId: "source-1",
+            relativePath: path.relative(data.root, data.catalogPath),
+            layout: "catalog",
+          },
+          {
+            sourceId: "source-1",
+            relativePath: path.relative(data.root, other),
+            layout: "catalog",
+          },
+        ],
+      },
+      signal,
+    );
+    const catalogs = [
+      path.relative(data.root, data.catalogPath),
+      path.relative(data.root, other),
+    ];
+    assert.deepEqual(
+      [
+        ...new Set([
+          ...result.locators.map((locator) => locator.relativePath),
+          ...result.issues.map((issue) => issue.relativePath),
+        ]),
+      ]
+        .filter((location) => catalogs.includes(location))
+        .sort(),
+      catalogs.sort(),
+    );
+    if (result.sessions.length === 0)
+      assert.equal(
+        result.issues.filter(
+          (issue) => issue.code === "SQLITE_RECOVERY_REQUIRED",
+        ).length,
+        2,
+      );
+    else assert.equal(result.sessions.length, 2, JSON.stringify(result.issues));
+    assert.ok(
+      result.sessions.every((session) => session.state === "ambiguous"),
+    );
+    assert.ok(result.sessions.every((session) => session.selection === null));
+  },
+);
 
 test(
   "native explicit roots use admitted path kinds instead of extensions",

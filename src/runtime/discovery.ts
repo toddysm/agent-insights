@@ -107,15 +107,11 @@ export class SourceDiscovery {
   private problem(location: Location, error: unknown): void {
     if (
       !(error instanceof RuntimeError) ||
-      [
-        "SOURCE_CLEANUP_FAILED",
-        "SQLITE_CLEANUP_FAILED",
-        "READ_CANCELLED",
-        "READ_TIMEOUT",
-        "READ_LIMIT",
-        "DISCOVERY_LIMIT",
-        "SQLITE_LIMIT",
-        "SOURCE_TOO_LARGE",
+      ![
+        "SOURCE_MISSING", "SOURCE_UNAVAILABLE", "SOURCE_DENIED", "SOURCE_IO",
+        "SOURCE_CHANGED", "SOURCE_SCOPE", "SOURCE_LINK", "NOT_A_FILE", "NOT_A_DIRECTORY",
+        "SQLITE_SCHEMA", "SQLITE_FORMAT", "SQLITE_SIDECARS", "SQLITE_RECOVERY_REQUIRED",
+        "SQLITE_JOURNAL_PRESENT", "SQLITE_LOCKED",
       ].includes(error.code) ||
       this.signal.aborted
     )
@@ -133,9 +129,24 @@ export class SourceDiscovery {
       );
   }
 
-  /** Return stable physical identity under authorized admission; do not read database bytes or follow source metadata paths. */
-  private async physical(location: Location): Promise<string> {
+  /** Deduplicate SQLite main/sidecar footprints, not main inodes alone; history aliases use file identity. */
+  private async physical(location: Location, database: boolean): Promise<string> {
     await this.verifyLocation(location);
+    if (database) {
+      const lease = await this.access.database(location.sourceId, location.relativePath, this.signal);
+      try {
+        if (await lease.verify())
+          throw new RuntimeError("SOURCE_CHANGED", "A discovery database changed during admission.", 409);
+        await this.verifyLocation(location);
+        return JSON.stringify([
+          lease.main.dev, lease.main.ino,
+          Object.entries(lease.sidecars).sort(([left], [right]) => left.localeCompare(right))
+            .map(([name, state]) => [name, state ? [state.dev, state.ino] : null]),
+        ]);
+      } finally {
+        await lease.close();
+      }
+    }
     return this.access.withStream(
       location.sourceId,
       location.relativePath,
@@ -420,7 +431,7 @@ export class SourceDiscovery {
       for (const location of locations.get(role) ?? []) {
         if (this.signal.aborted) throw cancelledRead(this.signal);
         try {
-          const key = `${role}:${await this.physical(location)}`;
+          const key = `${role}:${await this.physical(location, role !== "history")}`;
           if (physical.has(key)) continue;
           physical.add(key);
           if (role === "history") {

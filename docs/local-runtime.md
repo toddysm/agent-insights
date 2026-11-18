@@ -457,6 +457,12 @@ producer-generated and cross-platform qualification remains separate from the
 synthetic discovery tests.
 Native cleanup failures abort discovery, not just the affected source, even if a
 subsequent cleanup retry confirms resource release.
+Only expected source-admission failures become per-source issues. Native protocol,
+guard, cleanup and budget failures reject the generation. SQLite aliases deduplicate
+only when their admitted main and sidecar identities match; hard-linked main files
+with independent WAL/SHM files remain separate competing catalogs.
+If the native engine rejects a hard-linked database as requiring recovery, both
+locations remain explicitly unavailable rather than one silently hiding the other.
 
 Within one catalog connection, discovery reuses bounded chat/metadata projections
 for exact-key and first-JSON-member lookups, including whitespace, escaping and
