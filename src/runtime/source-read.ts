@@ -134,7 +134,7 @@ export class SourceReadSet implements MultiSourceInput {
     readonly readId: string,
     signal: AbortSignal,
     private readonly access: SourceAccess,
-    reader: MultiSourceReader,
+    reader: Pick<MultiSourceReader, "inputs">,
     private readonly nativeHelper: NativeHelperResolver = defaultNativeHelper,
   ) {
     this.signal = AbortSignal.any([signal, this.stopped.signal]);
@@ -175,7 +175,7 @@ export class SourceReadSet implements MultiSourceInput {
   /**
    * Capture files and open bounded database snapshots for exactly the requested roles.
    * @param bindings - Explicit grants/relative paths, copied by the runtime before this call.
-   * @returns After admission; missing optional inputs are typed unavailable results, not empty data.
+   * @returns After admission; missing or unselected optional inputs are explicit unavailable results.
    */
   prepare(bindings: readonly SourceBinding[]): Promise<void> {
     if (this.admission || this.finishing)
@@ -195,7 +195,7 @@ export class SourceReadSet implements MultiSourceInput {
     bindings: readonly SourceBinding[],
   ): Promise<void> {
     if (
-      bindings.length !== this.requirements.length ||
+      bindings.length > this.requirements.length ||
       new Set(bindings.map((binding) => binding.key)).size !==
         bindings.length ||
       bindings.some(
@@ -213,7 +213,7 @@ export class SourceReadSet implements MultiSourceInput {
       const binding = bindings.find(
         (binding) => binding.key === requirement.key,
       );
-      if (!binding)
+      if (!binding && !requirement.optional)
         throw new RuntimeError(
           "SOURCE_ROLES",
           "A required source role was not selected.",
@@ -222,6 +222,8 @@ export class SourceReadSet implements MultiSourceInput {
       const sourceId = `${this.readId}:source:${requirement.key}`;
       const startedAtMs = Date.now();
       try {
+        if (!binding)
+          throw new RuntimeError("SOURCE_UNAVAILABLE", "Optional source was not selected; no substitute was opened.", 404);
         if (requirement.kind === "file") {
           const capture = await this.access.read(
             binding.sourceId,

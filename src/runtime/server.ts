@@ -21,7 +21,7 @@ import type { EvidenceReader } from "../evidence/contracts.js";
 import type { MultiSourceReader } from "../evidence/source-access.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
-import { readRequestSchema, readSetRequestSchema } from "./protocol.js";
+import { readRequestSchema, readSetRequestSchema, discoveryRequestSchema } from "./protocol.js";
 import { RuntimeService } from "./service.js";
 import { SourceAccess } from "./sources.js";
 import type { NativeHelperResolver } from "./sqlite.js";
@@ -332,6 +332,7 @@ export async function startRuntime(
         "/api/cancel",
         "/api/read",
         "/api/read-set",
+        "/api/discover",
         "/api/scan",
         "/api/scan/catalog",
         "/api/scan/details",
@@ -347,6 +348,22 @@ export async function startRuntime(
           403,
         );
       const body = await controlBody(request);
+      if (url.pathname === "/api/discover") {
+        const selection = discoveryRequestSchema.safeParse(body);
+        if (!selection.success)
+          throw new RuntimeError("INVALID_SELECTION", "Select approved discovery roots and their source roles.", 400);
+        const controller = new AbortController();
+        /** A disconnected client cancels only this generation; cleanup remains runtime-owned. */
+        const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", disconnect);
+        if (response.destroyed) controller.abort();
+        try {
+          json(response, 200, await service.discover(selection.data, controller.signal));
+        } finally {
+          response.removeListener("close", disconnect);
+        }
+        return;
+      }
       if (url.pathname === "/api/scan" || url.pathname.startsWith("/api/scan/")) {
         if (url.pathname === "/api/scan/cancel") {
           if (!z.strictObject({}).safeParse(body).success)

@@ -216,6 +216,23 @@ form {
   border-top: 1px solid var(--line);
   padding-top: 20px;
 }
+fieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  padding: 16px;
+}
+legend {
+  font-size: 13px;
+  font-weight: bold;
+}
+.discovery-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 12px;
+}
 label {
   font-weight: bold;
   font-size: 13px;

@@ -6,8 +6,8 @@
 import { isDeepStrictEqual } from "node:util";
 import { parseReadView, type ReadView, type EvidenceReference } from "../contracts.js";
 import type { MultiSourceInput, MultiSourceReader } from "../source-access.js";
-import { agentHostCatalogDefinition, resolveAgentHostOwnership } from "./agent-host-catalog.js";
-import { readNativeHistory, identifier, nativeTimestamp, nativeMessageKey as messageKey, type NativeEvent } from "./agent-host-history.js";
+import { agentHostCatalogDefinition, resolveAgentHostOwnership, type OwnershipResult } from "./agent-host-catalog.js";
+import { readNativeHistory, identifier, nativeTimestamp, nativeMessageKey as messageKey, type NativeEvent, type NativeHistory } from "./agent-host-history.js";
 
 /** Mutable message assembly is confined to this generation; validation freezes published facts. */
 type Message = Extract<ReadView["events"][number], { kind: "message" }>;
@@ -33,12 +33,18 @@ const nonMessageEvents = new Set([
  * tools and lifecycle events never become extra instructions. Unsupported or incomplete data
  * remains visible through original-anchor diagnostics and unavailable/partial coverage.
  * Rejects with READ_LIMIT (413) before publishing any result when retention ceilings are exceeded.
+ * The combined adapter may supply this same read's parsed history and ownership
+ * decision to avoid parsing/querying either input twice.
  */
-async function read(input: MultiSourceInput): Promise<ReadView> {
+export async function readAgentHostConversation(
+  input: MultiSourceInput,
+  preparedHistory?: NativeHistory,
+  preparedOwnership?: OwnershipResult | null,
+): Promise<ReadView> {
   const startedAtMs = Date.now();
   const history = input.get("history");
   const catalog = input.get("catalog");
-  const parsed = await readNativeHistory(history, input.readId, input.signal);
+  const parsed = preparedHistory ?? await readNativeHistory(history, input.readId, input.signal);
   const { records, issues, producer, version, start } = parsed;
   const conflictingMessages = new Set(parsed.conflicts.map(messageKey));
   const events: Message[] = [];
@@ -92,7 +98,7 @@ async function read(input: MultiSourceInput): Promise<ReadView> {
     issue(catalog.sourceId, "unreadable-source", "Agent Host catalog is unavailable; a shared native SDK file alone does not establish Agent Host ownership.");
     return finish();
   }
-  const ownership = await resolveAgentHostOwnership(catalog, sdkSessionId, input.signal);
+  const ownership = preparedOwnership ?? await resolveAgentHostOwnership(catalog, sdkSessionId, input.signal);
   if (!ownership.ok) {
     issue(catalog.sourceId, "ambiguous-session", ownership.reason, ownership.references);
     return finish();
@@ -295,5 +301,5 @@ export const agentHostConversationReader: MultiSourceReader = Object.freeze({
     { key: "history", kind: "file", format: "copilot-sdk-events-jsonl", optional: true },
     { key: "catalog", kind: "sqlite", format: "vscode-agenthost-catalog-sqlite", optional: true, database: agentHostCatalogDefinition },
   ] as const),
-  read,
+  read: readAgentHostConversation,
 });

@@ -41,6 +41,15 @@ export const agentHostCatalogDefinition = sqliteDefinitionSchema.parse({
   ],
   queries: [
     {
+      id: "discovery_chats",
+      table: "chats_v2",
+      columns: [
+        "chat_uri", "owner_session_uri", "storage_resource", "parent_chat",
+        "provider_data", "tombstoned", "archived", "origin_session_uri",
+      ],
+      filters: [],
+    },
+    {
       id: "sdk_chats",
       table: "chats_v2",
       columns: [

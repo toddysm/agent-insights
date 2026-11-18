@@ -6,6 +6,7 @@ import {
   realpath,
   stat,
   lstat,
+  opendir,
   type FileHandle,
 } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
@@ -350,6 +351,7 @@ export class SourceAccess {
     sourceId: string,
     relativePath: string,
     signal: AbortSignal,
+    kind: "file" | "directory" = "file",
   ): Promise<{
     grant: SourceGrant;
     canonical: string;
@@ -402,15 +404,48 @@ export class SourceAccess {
           403,
         );
       }
-      if (!(await stat(canonical)).isFile()) {
+      const info = await stat(canonical);
+      if (kind === "file" ? !info.isFile() : !info.isDirectory()) {
         throw new RuntimeError(
-          "NOT_A_FILE",
-          "Select a regular capture file.",
+          kind === "file" ? "NOT_A_FILE" : "NOT_A_DIRECTORY",
+          kind === "file" ? "Select a regular capture file." : "Select an approved source directory.",
           400,
         );
       }
       if (signal.aborted) throw cancelledRead(signal);
       return { grant, canonical, candidate };
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
+   * List one approved directory, never recursively or through child links.
+   * Reject over 256 entries rather than silently truncating discovery. Revalidate
+   * its locator after iteration; callers must still admit each selected file.
+   */
+  async entries(
+    sourceId: string,
+    relativePath: string,
+    signal: AbortSignal,
+  ): Promise<readonly { name: string; kind: "file" | "directory" }[]> {
+    const { canonical } = await this.resolve(sourceId, relativePath, signal, "directory");
+    try {
+      const before = await stat(canonical, { bigint: true });
+      const directory = await opendir(canonical);
+      const entries: { name: string; kind: "file" | "directory" }[] = [];
+      let count = 0;
+      for await (const entry of directory) {
+        if (signal.aborted) throw cancelledRead(signal);
+        if (++count > 256)
+          throw new RuntimeError("DISCOVERY_LIMIT", "A discovery directory exceeds 256 entries; select a narrower root.", 413);
+        if (entry.isFile() || entry.isDirectory())
+          entries.push({ name: entry.name, kind: entry.isFile() ? "file" : "directory" });
+      }
+      const after = await this.resolve(sourceId, relativePath, signal, "directory");
+      if (after.canonical !== canonical || !sameFileState(before, await stat(canonical, { bigint: true })))
+        throw new RuntimeError("SOURCE_CHANGED", "A discovery directory changed; refresh its sources.", 409);
+      return entries.sort((left, right) => left.name.localeCompare(right.name));
     } catch (error) {
       filesystemError(error);
     }

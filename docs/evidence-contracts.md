@@ -160,6 +160,34 @@ accounting overlap, original anchors and cancellation/source changes.
 [#20](https://github.com/toddysm/agent-insights/issues/20) still owns integrated
 producer-generated verification; optional telemetry is not a native prerequisite.
 
+### Agent Host discovery and combined reads
+
+Manual [source discovery](local-runtime.md#discover-agent-host-sessions) produces
+a transient list, not a `ReadView`, persisted session catalog or analysis result.
+Only explicitly selected startup grants/layouts are inspected. The bounded
+`discovery_chats` projection uses the same schema-22 definition and ownership
+resolver as native reading; paths and shared SDK branding do not establish
+runtime identity.
+
+The first native physical line must satisfy the pinned format/runtime guard.
+Its exact SDK identity must have one authoritative catalog backing and one
+distinct admitted history. Physical aliases are deduplicated; independent
+catalogs and duplicate histories do not merge on timestamps, filenames or text.
+Overlay discovery requires explicit unique chat-owner metadata and still
+revalidates every turn/event bridge during reading. Missing overlay ownership
+does not exclude independently retained native conversation/execution evidence.
+
+The `agent-host-sessions` composite adapter frames the full native input once,
+resolves ownership once, then reuses those same-generation inputs for conversation
+and execution normalization. Both dimensions keep their original references,
+distinct event identities and partial/unavailable coverage; usage scopes are
+not summed during composition. An omitted optional role has an explicit
+unavailable input/observation, never a guessed neighboring path.
+
+Discovery/combined reading is registered with the existing incompatible-helper
+gate. Synthetic qualification explicitly installs the adapter with a verified
+candidate; it does not enable production access or certify live producer data.
+
 ### Agent Host conversation reader
 
 The implemented `agent-host-conversations` reader is **gated out of the production
@@ -309,8 +337,8 @@ these synthetic tests.
 ### Agent Host execution reader
 
 `agent-host-executions` consumes explicitly bound `history`, `catalog` and `overlay`
-roles through the shared access boundary. The overlay binding is required by the
-read-set protocol, but may point to a missing optional input; no source is discovered
+roles through the shared access boundary. The optional overlay may be omitted or
+point to a missing input; no source is discovered
 or opened from captured content. It shares #31's bounded native framing,
 format-1/emitted-runtime pin and schema-22 catalog authority checks. Schema-18
 overlay projections are separate from the catalog. There is no extension-parser,
