@@ -67,8 +67,11 @@ test("activity contributors resolve to the same source interaction, task and too
     assert.ok(source, `Missing activity contributor ${span.sourceId}`);
     assert.equal(span.turn, source.turn, `Interaction mismatch for ${span.sourceId}`);
     assert.equal(span.taskId, source.taskId, `Task mismatch for ${span.sourceId}`);
+    assert.deepEqual(source.timing, { startMinute: span.start, endMinute: span.end });
     if (span.kind === "work") assert.equal((span.end - span.start) * 60000, source.durationMs);
   }
+  assert.equal(state.requests.find((item) => item.id === "m2").timing, null);
+  assert.equal(state.tools.find((item) => item.id === "c27").timing, null);
 });
 
 test("partial and transcript-only captures do not use zero for unavailable values", () => {

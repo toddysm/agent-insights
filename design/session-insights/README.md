@@ -72,6 +72,9 @@ synthetic contributors:
 The session is still 42 minutes long, with 24 minutes outside recorded
 execution. These new state fixtures illustrate the user-approved walkthrough
 feedback; they do not prove that a production harness exposes these events.
+Linked request/tool records expose the recorded start/end minute offsets that
+support each execution span. Records without captured boundaries say timing is
+unavailable; duration or token counts alone do not place a record on the timeline.
 Incomplete evidence omits lifecycle coverage: waiting/quiet become unavailable
 and 24 minutes stay unknown. Transcript-only capture has no execution timing;
 the entire observed window is unclassified, not zero runtime.

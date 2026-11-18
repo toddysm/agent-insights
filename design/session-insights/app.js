@@ -572,12 +572,20 @@
       `<div class="badge-row">${badge(tool.status, tool.status.startsWith("Failed") ? "danger" : "")}${badge(`${tool.durationMs} ms`, "neutral")}${badge(`Turn U${tool.turn}`, "neutral")}</div>
       <p class="small muted">This is one recorded tool invocation. Durations include waiting; they are not processor time.</p>
       <p>Source ${h(tool.id.toUpperCase())} / read ${state.readId} / synthetic. Display only; nothing is executed.</p>
+      ${timingDetails(tool)}
       <h3>${tool.name === "terminal" ? "Full captured command" : "Captured arguments"} / synthetic</h3>
       ${tool.inputStatus !== "complete" ? `<div class="callout">Input ${h(tool.inputStatus)} in the source. ${tool.inputStatus === "missing" ? "Arguments are unavailable, not an empty invocation." : tool.inputStatus === "truncated" ? "Only the captured portion is shown; the remainder is unavailable." : "Redacted values are not recoverable or reconstructed."}</div>` : ""}
       ${tool.input === null ? "" : `<pre id="tool-input">${h(tool.name === "terminal" ? tool.input.command : JSON.stringify(tool.input, null, 2))}</pre>${tool.name === "terminal" ? `<p class="small">Working directory: <code>${h(tool.input.workingDirectory)}</code></p>` : ""}`}
       ${state.content ? `<h3>Recorded result / synthetic</h3><pre id="tool-result">${h(tool.output ? `stdout:\n${tool.output.stdout}\n\nstderr:\n${tool.output.stderr || "(empty)"}\n\nExit code: ${tool.output.exitCode}` : [...operations, result].join("\n"))}</pre>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}
       <button class="text-button" data-action="metric" data-metric="tools" data-task="${h(route().params.get("task") || "")}">Back to tool calls</button>`,
     );
+  }
+
+  /** Show captured source offsets, not a timestamp inferred from an invocation's duration. */
+  function timingDetails(record) {
+    return record.timing
+      ? `<p class="small">Recorded boundaries / synthetic: minute ${record.timing.startMinute} to minute ${record.timing.endMinute} from the 09:00 UTC session start. Elapsed: ${record.timing.endMinute - record.timing.startMinute}m.</p>`
+      : '<p class="small muted">Start/end timing unavailable. Duration or token counts alone cannot place this record on the timeline.</p>';
   }
 
   /** Expose individual recorded requests, with missing usage and analysis overhead separated. */
@@ -616,7 +624,8 @@
       `${item.id.toUpperCase()} / usage record`,
       M.taskLabel(state, item.taskId),
       `<p>Recorded model: ${h(item.model)}. Associated interaction: U${item.turn}.</p>
-      <pre>${h(JSON.stringify({ request: item.id, inputTokens: item.input, outputTokens: item.output, source: "synthetic fixture", unit: "tokens" }, null, 2))}</pre>
+      ${timingDetails(item)}
+      <pre>${h(JSON.stringify({ request: item.id, inputTokens: item.input, outputTokens: item.output, source: "synthetic fixture", unit: "tokens", timing: item.timing, timingUnit: "minutes from 09:00 UTC session start" }, null, 2))}</pre>
       <p class="small muted">Cache and reasoning breakdowns are not supplied in this example; no additional tokens are invented.</p><button class="text-button" data-action="metric" data-metric="tokens" data-task="${h(route().params.get("task") || "")}">Back to request ledger</button>`,
     );
   }

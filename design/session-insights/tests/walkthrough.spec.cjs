@@ -130,6 +130,12 @@ test("activity lanes separate recorded, inferred and unknown time with evidence 
   await expect(page.locator("#main .lane-model .activity-label")).toContainText("14m / Recorded");
   await expect(page.locator("#main .lane-work .activity-label")).toContainText("6m / Recorded");
   await expect(page.locator("#main .lane-unknown .activity-label")).toContainText("14m / Unavailable");
+  await page.locator("#main .lane-model .text-button").click();
+  await page.getByRole("button", { name: "Inspect M1", exact: true }).click();
+  await expect(page.locator("#detail")).toContainText("minute 2 to minute 8");
+  await expect(page.locator("#detail pre")).toContainText('"startMinute": 2');
+  await expect(page.locator("#detail pre")).toContainText('"endMinute": 8');
+  await page.getByRole("button", { name: "Close detail" }).click();
   await page.locator("#main .lane-waiting .text-button").click();
   await expect(page.locator("#detail")).toContainText("H01");
   await expect(page.locator("#detail")).toContainText("Human response at 09:12");
@@ -143,6 +149,7 @@ test("activity lanes separate recorded, inferred and unknown time with evidence 
   await page.getByRole("button", { name: "Inspect C6", exact: true }).click();
   await expect(page.locator("#tool-input")).toHaveText("npm test -- --run tests/export.test.ts");
   await expect(page.locator("#tool-result")).toContainText("Exit code: 1");
+  await expect(page.locator("#detail")).toContainText("minute 4 to minute 6");
   await page.getByRole("button", { name: "Close detail" }).click();
   await scenario(page, "partial");
   await expect(page.locator("#main .lane-quiet .activity-label")).toContainText("Unavailable");

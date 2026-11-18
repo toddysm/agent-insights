@@ -255,6 +255,12 @@ const InsightsModel = (() => {
     "Rejected approach",
   ];
 
+  /** Attach the fixture's recorded minute offsets to its source record; other invocations have no captured boundaries. */
+  function sourceTiming(id) {
+    const span = intervals.find((item) => item.sourceId === id);
+    return span ? { startMinute: span.start, endMinute: span.end } : null;
+  }
+
   /** Return a fresh synthetic capture; modes deliberately remove evidence rather than replace missing values with zero. */
   function createState(mode = "complete") {
     if (
@@ -312,6 +318,7 @@ const InsightsModel = (() => {
           name,
           taskId: `t${group + 1}`,
           turn: toolTurns[group][index],
+          timing: mode === "transcript" ? null : sourceTiming(`c${toolIndex}`),
           durationMs: [6, 21, 26].includes(toolIndex) ? 120000 : name === "terminal" ? 1400 + index * 80 : 40 + index * 17,
           status: toolIndex === 6 ? "Failed, recovered later" : "Succeeded",
           input: mode === "partial" ? null : name === "terminal"
@@ -333,6 +340,7 @@ const InsightsModel = (() => {
           input,
           output,
           model: requestIndex < 9 ? "Example model A" : "Example model B",
+          timing: mode === "transcript" ? null : sourceTiming(`m${requestIndex}`),
         })),
       ),
     };
