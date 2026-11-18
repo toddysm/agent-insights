@@ -608,10 +608,11 @@ export class RuntimeService {
           this.nativeHelper,
         );
         this.readSets.add(set);
+        const admittedBindings = new Set<string>();
         /** Preserve optional preflight failures for admission; postflight checks only admitted inputs. */
         const verifyDiscoveredSources = async (prepared: boolean): Promise<void> => {
           for (const binding of request.sources) {
-            if (binding.discoveryRoot === undefined || (prepared && !set.get(binding.key).available))
+            if (binding.discoveryRoot === undefined || (prepared && !admittedBindings.has(binding.key)))
               continue;
             try {
               await this.sources.verifyDiscoveryPath(binding.sourceId, binding.discoveryRoot, binding.relativePath, signal);
@@ -625,6 +626,8 @@ export class RuntimeService {
         try {
           await verifyDiscoveredSources(false);
           await set.prepare(request.sources);
+          for (const binding of request.sources)
+            if (set.get(binding.key).available) admittedBindings.add(binding.key);
           ensureCurrent();
           const view = parseReadView(await abortable(reader.read(set), signal));
           ensureCurrent();
