@@ -136,10 +136,43 @@ function integer(value: unknown, expected: number): boolean {
 }
 
 /**
+ * Index only the first top-level string member, as SQLite json_extract does.
+ * JSON.parse validates the whole object first; tokenization preserves duplicate
+ * keys and escaped labels without reparsing nested values. SQLite's 1000-level
+ * JSON limit is retained; deeper objects do not satisfy the guarded predicate.
+ */
+function jsonStringMember(encoded: unknown, member: string): string | null {
+  if (typeof encoded !== "string" || !jsonObject(encoded)) return null;
+  let depth = 0;
+  let previous: string | undefined;
+  let found = false;
+  let pending = false;
+  let value: string | null = null;
+  for (const match of encoded.matchAll(/"(?:\\.|[^"\\])*"|[{}:,]|\[|\]|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g)) {
+    const token = match[0];
+    if (pending) {
+      const parsed: unknown = token.startsWith('"') ? JSON.parse(token) : null;
+      value = typeof parsed === "string" ? parsed : null;
+      pending = false;
+    }
+    if (token === "{" || token === "[") {
+      if (++depth > 1000) return null;
+    } else if (token === "}" || token === "]") depth--;
+    else if (depth === 1 && token === ":" && previous !== undefined && !found &&
+        JSON.parse(previous) === member) {
+      found = true;
+      pending = true;
+    }
+    previous = token.startsWith('"') ? token : undefined;
+  }
+  return value;
+}
+
+/**
  * Reuse bounded discovery projections only within this connection snapshot.
  * Exact metadata keys already require binary equality in the resolver. JSON
- * lookups are indexed only for canonical objects: other encodings (including
- * duplicate keys) retain native JSON predicates, never JSON.parse substitutes.
+ * lookup indexes preserve first-member semantics, not JSON.parse's last keys.
+ * JSON admission and unsupported string bindings retain native semantics.
  * Original rows/fingerprints survive unchanged; native owner/storage lookups
  * retain their SQLite affinity/collation behavior and all shared budgets.
  */
@@ -154,8 +187,6 @@ export async function prepareAgentHostDiscoveryCatalog(
   const sdkRows = new Map<string, SqliteRow[]>();
   const metadataRows = new Map<string, SqliteRow[]>();
   const storageRows = new Map<string, SqliteRow[]>();
-  const nativePrefixes = new Set<string>();
-  let nativeSdk = false;
   /** Group original witnesses without reconstructing rows or their SQLite identities. */
   const append = (index: Map<string, SqliteRow[]>, key: string, row: SqliteRow): void => {
     const rows = index.get(key) ?? [];
@@ -164,10 +195,8 @@ export async function prepareAgentHostDiscoveryCatalog(
   };
   for (const row of chats) {
     signal.throwIfAborted();
-    const value = jsonObject(row.values.provider_data);
-    if (!value) continue;
-    if (JSON.stringify(value) !== row.values.provider_data) nativeSdk = true;
-    if (typeof value.sdkSessionId === "string") append(sdkRows, value.sdkSessionId, row);
+    const sdk = jsonStringMember(row.values.provider_data, "sdkSessionId");
+    if (sdk !== null) append(sdkRows, sdk, row);
   }
   for (const row of metadata) {
     signal.throwIfAborted();
@@ -176,26 +205,28 @@ export async function prepareAgentHostDiscoveryCatalog(
     append(metadataRows, key, row);
     for (const prefix of ["sessionStorageIdentity:", "chatStorageIdentity:"]) {
       if (!key.startsWith(prefix)) continue;
-      const value = jsonObject(row.values.value);
-      if (!value) continue;
-      if (JSON.stringify(value) !== row.values.value) nativePrefixes.add(prefix);
-      if (typeof value.storage === "string")
-        append(storageRows, JSON.stringify([prefix, value.storage]), row);
+      const storage = jsonStringMember(row.values.value, "storage");
+      if (storage !== null)
+        append(storageRows, JSON.stringify([prefix, storage]), row);
     }
   }
   return {
     ...catalog,
     async query(queryId, bindings) {
       signal.throwIfAborted();
+      if (Object.values(bindings).some((value) => typeof value === "string" && /[\uD800-\uDFFF]/u.test(value)))
+        return catalog.query(queryId, bindings);
       const keys = Object.keys(bindings);
-      if (queryId === "sdk_chats" && keys.length === 1 && typeof bindings.sdk === "string" && !nativeSdk)
+      // Other SDK bindings can equal JSON-encoded containers and have no canonical storage-URI lookup.
+      if (queryId === "sdk_chats" && keys.length === 1 && typeof bindings.sdk === "string" &&
+          /^[A-Za-z0-9._-]+$/.test(bindings.sdk))
         return sdkRows.get(bindings.sdk) ?? [];
       if (queryId === "metadata_key" && keys.length === 1 && typeof bindings.key === "string")
         return metadataRows.get(bindings.key) ?? [];
       if (queryId === "storage_identity" && keys.length === 2 &&
           typeof bindings.prefix === "string" && typeof bindings.storage === "string" &&
           ["sessionStorageIdentity:", "chatStorageIdentity:"].includes(bindings.prefix) &&
-          !nativePrefixes.has(bindings.prefix))
+          !/^[{[]/.test(bindings.storage.trimStart()))
         return storageRows.get(JSON.stringify([bindings.prefix, bindings.storage])) ?? [];
       return catalog.query(queryId, bindings);
     },

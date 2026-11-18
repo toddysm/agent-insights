@@ -224,7 +224,7 @@ test("combined session reads frame history and resolve catalog once without merg
   assert.equal(view.sources[2]?.coverage.tokens.status, "unavailable");
 });
 
-test("discovery preserves native JSON predicates for duplicate or noncanonical keys and original metadata witnesses", async () => {
+test("discovery preserves first JSON members, original witnesses and native validation for unsupported values", async () => {
   const chats = catalogRows()
     .filter((row) => row.table === "chats_v2")
     .map((row) => ({
@@ -280,10 +280,29 @@ test("discovery preserves native JSON predicates for duplicate or noncanonical k
     }),
     [metadata],
   );
+  assert.deepEqual(calls, ["discovery_metadata"]);
+  await prepared.query("sdk_chats", { sdk: "\ud800" });
+  let nested: unknown = null;
+  for (let depth = 0; depth < 1001; depth++) nested = { nested };
+  const deep = await prepareAgentHostDiscoveryCatalog(
+    catalog,
+    chats.map((row) => ({
+      ...row,
+      values: {
+        ...row.values,
+        provider_data: JSON.stringify({
+          sdkSessionId: "sdk-fictional",
+          nested,
+        }),
+      },
+    })),
+    signal,
+  );
+  assert.deepEqual(await deep.query("sdk_chats", { sdk: "sdk-fictional" }), []);
   assert.deepEqual(calls, [
     "discovery_metadata",
     "sdk_chats",
-    "storage_identity",
+    "discovery_metadata",
   ]);
 });
 
@@ -670,6 +689,64 @@ test(
         .length,
       63,
     );
+    const updateChat = data.catalog.prepare(
+      "UPDATE chats_v2 SET provider_data=? WHERE chat_uri=?",
+    );
+    const updateMetadata = data.catalog.prepare(
+      "UPDATE metadata SET value=? WHERE key=?",
+    );
+    for (let index = 0; index < 64; index++) {
+      const sdk = index === 0 ? "sdk-fictional" : `sdk-${index}`;
+      updateChat.run(
+        `{
+        "nested": {"sdkSessionId": "decoy"},
+        "sdkSession\\u0049d": ${JSON.stringify(sdk)},
+        "sdkSessionId": ${JSON.stringify(sdk)}
+      }`,
+        `stored-chat-${index}`,
+      );
+      updateMetadata.run(
+        JSON.stringify(
+          {
+            runtime: `runtime-owner-${index}`,
+            storage: `stored-owner-${index}`,
+            provider: "copilotcli",
+          },
+          null,
+          2,
+        ).replace('"storage"', '"stor\\u0061ge"'),
+        `sessionStorageIdentity:runtime-owner-${index}`,
+      );
+      updateMetadata.run(
+        JSON.stringify(
+          {
+            runtime: `runtime-chat-${index}`,
+            storage: `stored-chat-${index}`,
+          },
+          null,
+          2,
+        ).replace('"storage"', '"stor\\u0061ge"'),
+        `chatStorageIdentity:runtime-chat-${index}`,
+      );
+    }
+    const encoded = await data.service.discover(selection, signal);
+    assert.equal(encoded.sessions.length, 64);
+    assert.ok(
+      encoded.sessions.every(
+        (session) => session.runtime === "copilot-agent-host",
+      ),
+    );
+    data.catalog.exec(`UPDATE chats_v2 SET storage_resource=NULL,
+      provider_data='{"sdkSessionId":"different","sdkSessionId":"sdk-fictional"}'
+      WHERE chat_uri='stored-chat-0'`);
+    const duplicate = (
+      await data.service.discover(selection, signal)
+    ).sessions.find((session) => session.sdkSessionId === "sdk-fictional");
+    assert.equal(duplicate?.runtime, "unknown");
+    assert.equal(duplicate?.selection, null);
+    data.catalog
+      .exec(`UPDATE chats_v2 SET storage_resource='copilotcli:/sdk-fictional',
+      provider_data='{"sdkSessionId":"sdk-fictional"}' WHERE chat_uri='stored-chat-0'`);
     metadata.run("sessionHidden:runtime-owner-63", "false");
     const hidden = (
       await data.service.discover(selection, signal)

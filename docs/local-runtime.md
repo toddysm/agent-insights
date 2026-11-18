@@ -449,8 +449,10 @@ producer-generated and cross-platform qualification remains separate from the
 synthetic discovery tests.
 
 Within one catalog connection, discovery reuses bounded chat/metadata projections
-for exact-key and canonical-JSON lookups; noncanonical JSON retains native
-predicates. Original row witnesses and shared row/byte/query limits remain intact.
+for exact-key and first-JSON-member lookups, including whitespace, escaping and
+duplicate keys. JSON depth follows native admission; unsupported bindings retain
+native validation.
+Original row witnesses and shared row/byte/query limits remain intact.
 This lookup state is discarded after discovery, not a copied application catalog.
 
 ### Agent Host execution availability
