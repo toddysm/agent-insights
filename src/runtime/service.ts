@@ -34,7 +34,7 @@ import { SourceAccess, byteChunks, type StreamedSource } from "./sources.js";
 import { JsonlScan } from "./jsonl-scan.js";
 import { STREAM_LIMITS, ScanBudgetExceeded, type ScanRequest, type ScanStatus, type DetailRequest } from "../evidence/streaming.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
-import { SourceReadSet } from "./source-read.js";
+import { SourceReadSet, optionalSourceUnavailable } from "./source-read.js";
 import {
   defaultNativeHelper,
   nativeSqliteAvailability,
@@ -608,10 +608,22 @@ export class RuntimeService {
           this.nativeHelper,
         );
         this.readSets.add(set);
-        try {
-          for (const binding of request.sources)
-            if (binding.discoveryRoot !== undefined)
+        /** Preserve optional preflight failures for admission; postflight checks only admitted inputs. */
+        const verifyDiscoveredSources = async (prepared: boolean): Promise<void> => {
+          for (const binding of request.sources) {
+            if (binding.discoveryRoot === undefined || (prepared && !set.get(binding.key).available))
+              continue;
+            try {
               await this.sources.verifyDiscoveryPath(binding.sourceId, binding.discoveryRoot, binding.relativePath, signal);
+            } catch (error) {
+              if (prepared || !reader.inputs.some((input) => input.key === binding.key && input.optional) ||
+                  !optionalSourceUnavailable(error))
+                throw error;
+            }
+          }
+        };
+        try {
+          await verifyDiscoveredSources(false);
           await set.prepare(request.sources);
           ensureCurrent();
           const view = parseReadView(await abortable(reader.read(set), signal));
@@ -626,9 +638,7 @@ export class RuntimeService {
               409,
             );
           const observations = await set.finish();
-          for (const binding of request.sources)
-            if (binding.discoveryRoot !== undefined)
-              await this.sources.verifyDiscoveryPath(binding.sourceId, binding.discoveryRoot, binding.relativePath, signal);
+          await verifyDiscoveredSources(true);
           set.validate(view);
           return {
             view,

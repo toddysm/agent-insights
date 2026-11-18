@@ -457,8 +457,13 @@ for exact-key and first-JSON-member lookups, including whitespace, escaping and
 duplicate keys. JSON depth follows native admission; unsupported bindings retain
 native validation.
 Original row witnesses and shared row/byte/query limits remain intact.
-JSON-BLOB rows retain native lookups instead of being silently excluded by text
-indexes; unsupported or competing ownership still fails closed.
+JSON-BLOB rows and NUL-terminated JSON prefixes route their affected bindings
+through native predicates instead of being silently excluded or disabling all
+text indexes. Unrelated lookups stay indexed; unsupported or competing ownership
+still fails closed.
+Cached bindings retain the shared encoded-size limit. An optional overlay removed
+after discovery becomes an explicit unavailable input on open; generated links
+and scope violations still reject.
 This lookup state is discarded after discovery, not a copied application catalog.
 
 ### Agent Host execution availability

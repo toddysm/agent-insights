@@ -37,6 +37,22 @@ export interface SourceBinding {
   readonly relativePath: string;
 }
 
+/** Optional admission failures become unavailable observations, never swallowed scope/link/limit failures. */
+export function optionalSourceUnavailable(error: unknown): error is RuntimeError {
+  return error instanceof RuntimeError && [
+    "SOURCE_MISSING",
+    "SOURCE_UNAVAILABLE",
+    "SOURCE_DENIED",
+    "SOURCE_IO",
+    "SQLITE_SCHEMA",
+    "SQLITE_FORMAT",
+    "SQLITE_SIDECARS",
+    "SQLITE_RECOVERY_REQUIRED",
+    "SQLITE_JOURNAL_PRESENT",
+    "SQLITE_LOCKED",
+  ].includes(error.code);
+}
+
 /** Database ownership is retained until both process and pinned descriptor are closed. */
 interface DatabaseOwner {
   readonly key: string;
@@ -292,22 +308,9 @@ export class SourceReadSet implements MultiSourceInput {
           );
         }
       } catch (error) {
-        const optionalCodes = [
-          "SOURCE_MISSING",
-          "SOURCE_UNAVAILABLE",
-          "SOURCE_DENIED",
-          "SOURCE_IO",
-          "SQLITE_SCHEMA",
-          "SQLITE_FORMAT",
-          "SQLITE_SIDECARS",
-          "SQLITE_RECOVERY_REQUIRED",
-          "SQLITE_JOURNAL_PRESENT",
-          "SQLITE_LOCKED",
-        ];
         if (
           !requirement.optional ||
-          !(error instanceof RuntimeError) ||
-          !optionalCodes.includes(error.code)
+          !optionalSourceUnavailable(error)
         )
           throw error;
         const owner = this.databases.get(requirement.key);

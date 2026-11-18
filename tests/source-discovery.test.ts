@@ -304,6 +304,17 @@ test("discovery preserves first JSON members, original witnesses and native vali
     "sdk_chats",
     "discovery_metadata",
   ]);
+  for (const [id, bindings] of [
+    ["sdk_chats", { sdk: "s".repeat(9000) }],
+    ["metadata_key", { key: "k".repeat(9000) }],
+    [
+      "storage_identity",
+      { prefix: "sessionStorageIdentity:", storage: "o".repeat(9000) },
+    ],
+  ] as const)
+    await assert.rejects(prepared.query(id, bindings), {
+      code: "SQLITE_LIMIT",
+    });
 });
 
 test("directory discovery is bounded, excludes child links, rejects traversal and reports permission failures", async (t) => {
@@ -736,6 +747,58 @@ test(
         (session) => session.runtime === "copilot-agent-host",
       ),
     );
+    updateChat.run(
+      Buffer.from('{"sdkSessionId":"unrelated-blob"}'),
+      "stored-chat-63",
+    );
+    const blobChat = await data.service.discover(selection, signal);
+    assert.equal(blobChat.sessions.length, 63);
+    assert.ok(
+      blobChat.sessions.every(
+        (session) => session.runtime === "copilot-agent-host",
+      ),
+    );
+    updateChat.run('{"sdkSessionId":"sdk-63"}', "stored-chat-63");
+    metadata.run(
+      "sessionStorageIdentity:unrelated-blob",
+      Buffer.from(
+        '{"runtime":"unrelated-blob","storage":"unrelated-owner","provider":"copilotcli"}',
+      ),
+    );
+    metadata.run(
+      "chatStorageIdentity:unrelated-blob",
+      Buffer.from('{"runtime":"unrelated-blob","storage":"unrelated-chat"}'),
+    );
+    const blobMetadata = await data.service.discover(selection, signal);
+    assert.equal(blobMetadata.sessions.length, 64);
+    assert.ok(
+      blobMetadata.sessions.every(
+        (session) => session.runtime === "copilot-agent-host",
+      ),
+    );
+    updateMetadata.run(
+      Buffer.from(
+        '{"runtime":"runtime-owner-63","storage":"stored-owner-63","provider":"copilotcli"}',
+      ),
+      "sessionStorageIdentity:runtime-owner-63",
+    );
+    const affectedBlob = await data.service.discover(selection, signal);
+    assert.equal(affectedBlob.sessions.length, 64);
+    assert.equal(
+      affectedBlob.sessions.filter(
+        (session) => session.runtime === "copilot-agent-host",
+      ).length,
+      63,
+    );
+    assert.equal(
+      affectedBlob.sessions.find((session) => session.sdkSessionId === "sdk-63")
+        ?.runtime,
+      "unknown",
+    );
+    updateMetadata.run(
+      '{"runtime":"runtime-owner-63","storage":"stored-owner-63","provider":"copilotcli"}',
+      "sessionStorageIdentity:runtime-owner-63",
+    );
     data.catalog.exec(`UPDATE chats_v2 SET storage_resource=NULL,
       provider_data='{"sdkSessionId":"different","sdkSessionId":"sdk-fictional"}'
       WHERE chat_uri='stored-chat-0'`);
@@ -762,6 +825,23 @@ test(
           ),
       ),
     );
+    metadata.run(
+      `sessionStorageIdentity:${"r".repeat(9000)}`,
+      JSON.stringify({
+        runtime: "r".repeat(9000),
+        storage: "stored-owner-0",
+        provider: "copilotcli",
+      }),
+    );
+    data.catalog.exec(
+      "DELETE FROM metadata WHERE key='sessionStorageIdentity:runtime-owner-0'",
+    );
+    await assert.rejects(data.service.discover(selection, signal), {
+      code: "SQLITE_LIMIT",
+    });
+    data.catalog
+      .prepare("DELETE FROM metadata WHERE key=?")
+      .run(`sessionStorageIdentity:${"r".repeat(9000)}`);
     chat.run(
       "row-65",
       "owner-65",
@@ -953,6 +1033,46 @@ test(
         .map((record) => JSON.stringify(record))
         .join("\n") + "\n",
     );
+    const overlayBinding = first.sessions[0].selection.sources.find(
+      (binding) => binding.key === "overlay",
+    );
+    assert.ok(overlayBinding);
+    data.overlay.close();
+    data.writers.splice(data.writers.indexOf(data.overlay), 1);
+    await rm(path.join(data.root, overlayBinding.relativePath));
+    const missingOverlay = await data.service.readSet(
+      first.sessions[0].selection,
+      signal,
+    );
+    assert.equal(
+      missingOverlay.events.filter((event) => event.kind === "message").length,
+      1,
+    );
+    assert.equal(
+      missingOverlay.events.filter(
+        (event) => event.kind === "usage-observation",
+      ).length,
+      0,
+    );
+    assert.ok(
+      missingOverlay.issues.some((issue) => issue.code === "unreadable-source"),
+    );
+    const overlayDirectory = path.dirname(
+      path.join(data.root, overlayBinding.relativePath),
+    );
+    const linkedOverlay = path.join(data.root, "outside-selected-overlay");
+    await mkdir(linkedOverlay);
+    await writeFile(path.join(linkedOverlay, "session.db"), "synthetic");
+    await rm(overlayDirectory, { recursive: true });
+    await symlink(
+      linkedOverlay,
+      overlayDirectory,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    await assert.rejects(
+      data.service.readSet(first.sessions[0].selection, signal),
+      { code: "SOURCE_LINK" },
+    );
     const noOverlay = await data.service.discover(
       {
         roots: data.selection.roots.filter((root) => root.layout !== "overlay"),
@@ -1088,6 +1208,36 @@ test(
     const competing = await data.service.discover(data.selection, signal);
     assert.equal(competing.sessions[0]?.runtime, "unknown");
     assert.equal(competing.sessions[0]?.selection, null);
+    data.catalog
+      .prepare(
+        "UPDATE chats_v2 SET provider_data=? WHERE chat_uri='competing-chat'",
+      )
+      .run(
+        Buffer.concat([
+          Buffer.from('{"sdkSessionId":"sdk-fictional","other":"'),
+          Buffer.from([255]),
+          Buffer.from('"}'),
+        ]),
+      );
+    const nonUtf8Blob = await data.service.discover(data.selection, signal);
+    assert.equal(nonUtf8Blob.sessions[0]?.runtime, "unknown");
+    assert.equal(nonUtf8Blob.sessions[0]?.selection, null);
+    data.catalog
+      .prepare(
+        "UPDATE chats_v2 SET provider_data=? WHERE chat_uri='competing-chat'",
+      )
+      .run(Buffer.from('{"sdkSessionId":"sdk-fictional"}\0trailing'));
+    const nulBlob = await data.service.discover(data.selection, signal);
+    assert.equal(nulBlob.sessions[0]?.runtime, "unknown");
+    assert.equal(nulBlob.sessions[0]?.selection, null);
+    data.catalog
+      .prepare(
+        "UPDATE chats_v2 SET provider_data=? WHERE chat_uri='competing-chat'",
+      )
+      .run('{"sdkSessionId":"sdk-fictional"}\0trailing');
+    const nulText = await data.service.discover(data.selection, signal);
+    assert.equal(nulText.sessions[0]?.runtime, "unknown");
+    assert.equal(nulText.sessions[0]?.selection, null);
     data.catalog.exec("DELETE FROM chats_v2 WHERE chat_uri='competing-chat'");
     data.catalog
       .prepare("INSERT INTO metadata VALUES(?,?)")
