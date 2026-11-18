@@ -456,6 +456,60 @@ test("unassigned and shared evidence stay explicit and cannot contaminate attrib
   assert.throws(() => calculate(view, ["other"]), /foreign/);
 });
 
+test("unassigned replays share one exclusion without merging into attributed metrics", () => {
+  const unassigned = execution("u", { sessionId: null });
+  const replay = {
+    ...unassigned,
+    id: "u-replay",
+    references: [reference("u-replay", 3)],
+  };
+  const attributed = {
+    ...unassigned,
+    id: "attributed",
+    sessionId: "session-fixture",
+    references: [reference("attributed", 4)],
+  };
+  const view = read([unassigned, replay, attributed]);
+  const expected = [
+    {
+      eventIds: ["u", "u-replay"],
+      reason: "ambiguous-attribution",
+      references: [...unassigned.references, ...replay.references],
+    },
+  ];
+  const whole = calculate(view);
+  assert.equal(whole.tokens.input.metric.value, 20);
+  assert.equal(whole.tokens.input.metric.coverage.status, "partial");
+  assert.deepEqual(whole.exclusions, expected);
+  for (const id of ["u", "u-replay"]) {
+    const subset = calculate(view, [id]);
+    assert.deepEqual(subset.exclusions, expected);
+    assert.equal(subset.tokens.input.metric.value, null);
+    assert.equal(subset.timing.agentActivity.metric.value, null);
+  }
+  assert.deepEqual(calculate(view, ["attributed"]).exclusions, []);
+  const duplicatedLocator = calculate(
+    read([
+      unassigned,
+      {
+        ...unassigned,
+        id: "u-same-locator",
+      },
+    ]),
+  );
+  assert.equal(duplicatedLocator.exclusions.length, 1);
+  assert.deepEqual(duplicatedLocator.exclusions[0]?.eventIds, [
+    "u",
+    "u-same-locator",
+  ]);
+  assert.deepEqual(
+    duplicatedLocator.exclusions[0]?.references,
+    unassigned.references,
+  );
+  for (const { metric } of measurements(whole))
+    assert.deepEqual(parseMetric(metric, view), metric);
+});
+
 test("partial/changing source coverage cannot produce complete metrics", () => {
   const base = exampleReadView();
   const partial = {

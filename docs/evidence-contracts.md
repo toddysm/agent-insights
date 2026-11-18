@@ -641,7 +641,9 @@ conflicting variants poison the identity even when a subset selects one copy.
 Without a comparable native identity, only identical original locator sets
 establish replay identity; matching text/timing is not sufficient. Unassigned
 and shared-source evidence remains in `exclusions`, not silently assigned to
-the selected session. Selections may expand to equivalent replay locators.
+the selected session. Unassigned replays are grouped into one exclusion with
+all event IDs and unique original locators, separately from attributed records
+even when their native IDs match. Selections may expand to equivalent replay locators.
 
 Missing token measurements stay unavailable; a reported zero is still a
 measurement. Zero tools without event contributors requires complete relevant

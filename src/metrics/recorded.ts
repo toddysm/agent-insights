@@ -33,7 +33,7 @@ export interface RecordedMetric {
   readonly definition: string;
 }
 
-/** Evidence excluded from arithmetic remains visible instead of silently acquiring session ownership. */
+/** Excluded replays retain their IDs/locators together without acquiring session ownership. */
 export interface MetricExclusion {
   readonly eventIds: readonly string[];
   readonly reason:
@@ -287,23 +287,17 @@ export function calculateRecordedMetrics(
   const byReferences = new Map<string, RecordGroup>();
   const exclusions: MetricExclusion[] = [];
   for (const event of view.events) {
-    if (event.sessionId !== session.id) {
-      if (
+    if (
+      event.sessionId !== session.id &&
+      !(
         event.sessionId === null &&
-        event.references.some((ref) =>
-          session.sourceIds.includes(ref.sourceId),
-        ) &&
-        (requested === null || requested.has(event.id))
+        event.references.some((ref) => session.sourceIds.includes(ref.sourceId))
       )
-        exclusions.push({
-          eventIds: [event.id],
-          reason: "ambiguous-attribution",
-          references: event.references,
-        });
+    )
       continue;
-    }
-    const key = eventKey(event);
+    const key = JSON.stringify([event.sessionId, eventKey(event)]);
     const locatorKey = JSON.stringify([
+      event.sessionId,
       event.kind,
       [...new Set(event.references.map(referenceKey))].sort(),
     ]);
@@ -335,20 +329,23 @@ export function calculateRecordedMetrics(
   for (const group of new Set(grouped.values())) {
     if (requested !== null && !group.eventIds.some((id) => requested.has(id)))
       continue;
-    const reason = group.conflict
-      ? "conflicting-replay"
-      : group.references.some((reference) => {
-            const found = owners.get(referenceKey(reference));
-            return found && (found.size !== 1 || !found.has(session.id));
-          })
+    const reason =
+      group.event.sessionId === null
         ? "ambiguous-attribution"
-        : group.event.kind !== "message" &&
-            group.event.nativeExecution?.accounting === "bridge-wrapper"
-          ? "bridge-wrapper"
-          : group.event.kind !== "message" &&
-              group.event.nativeExecution?.accounting === "ambiguous"
-            ? "ambiguous-accounting"
-            : null;
+        : group.conflict
+          ? "conflicting-replay"
+          : group.references.some((reference) => {
+                const found = owners.get(referenceKey(reference));
+                return found && (found.size !== 1 || !found.has(session.id));
+              })
+            ? "ambiguous-attribution"
+            : group.event.kind !== "message" &&
+                group.event.nativeExecution?.accounting === "bridge-wrapper"
+              ? "bridge-wrapper"
+              : group.event.kind !== "message" &&
+                  group.event.nativeExecution?.accounting === "ambiguous"
+                ? "ambiguous-accounting"
+                : null;
     if (reason)
       exclusions.push({
         eventIds: group.eventIds,
