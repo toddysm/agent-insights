@@ -693,24 +693,33 @@ export function calculateRecordedMetrics(
         continue;
       const usage = group.event.usage;
       if (usage === null) continue;
+      const reported = new Map<
+        string,
+        {
+          name: string;
+          relation: TokenComponent["relation"];
+          value: number | null;
+        }
+      >();
       for (const component of usage.components) {
         const key = JSON.stringify([component.name, component.relation]);
+        const previous = reported.get(key);
+        reported.set(key, {
+          ...component,
+          value:
+            previous !== undefined && previous.value !== component.value
+              ? null
+              : component.value,
+        });
+      }
+      for (const [key, component] of reported) {
         const category = categories.get(key) ?? {
           name: component.name,
           relation: component.relation,
           values: [],
         };
         categories.set(key, category);
-        const duplicates = usage.components.filter(
-          (item) =>
-            item.name === component.name &&
-            item.relation === component.relation,
-        );
-        if (
-          new Set(duplicates.map((item) => item.value)).size !== 1 ||
-          category.values.some((item) => item.group === group)
-        )
-          continue;
+        if (component.value === null) continue;
         const parent =
           component.relation === "subset-of-input"
             ? usage?.input
