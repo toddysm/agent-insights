@@ -538,7 +538,7 @@ export function parseReadView(input: unknown): ReadView {
 }
 
 /** Compare original locators, including SQLite fields and captured revisions, without delimiter collisions. */
-function referenceKey(reference: EvidenceReference): string {
+export function evidenceReferenceKey(reference: EvidenceReference): string {
   const location = reference.location;
   return JSON.stringify([
     reference.sourceId,
@@ -563,14 +563,14 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
       "Metric belongs to an unavailable read generation or session",
     );
   }
-  const declaredAnchors = new Set(session.references.map(referenceKey));
+  const declaredAnchors = new Set(session.references.map(evidenceReferenceKey));
   const sourcesById = new Map(
     view.sources.map((source) => [source.id, source]),
   );
   const eventOwners = new Map<string, Set<string | null>>();
   for (const event of view.events) {
     for (const reference of event.references) {
-      const key = referenceKey(reference);
+      const key = evidenceReferenceKey(reference);
       const owners = eventOwners.get(key) ?? new Set<string | null>();
       owners.add(event.sessionId);
       eventOwners.set(key, owners);
@@ -596,7 +596,7 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
         "Complete metrics require complete contributing coverage",
       );
     }
-    const key = referenceKey(reference);
+    const key = evidenceReferenceKey(reference);
     const owners = eventOwners.get(key);
     if (owners !== undefined) {
       if (owners.size !== 1 || !owners.has(session.id)) {
