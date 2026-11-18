@@ -150,6 +150,10 @@ test("identical replayed native evidence and repeated selected IDs preserve tota
     assert.equal(result.timing.cumulativeSpanDuration.metric.value, 60_000);
     assert.equal(result.tokens.input.metric.value, 20);
     assert.equal(result.tokens.input.metric.contributors.length, 2);
+    assert.deepEqual(result.tokens.input.contributorEventIds, [
+      "call",
+      "replay",
+    ]);
     assert.deepEqual(
       parseMetric(result.tokens.input.metric, view),
       result.tokens.input.metric,

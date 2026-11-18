@@ -93,7 +93,7 @@ export function parseReportHash(hash: string): ReportRoute | null {
   return { readId, sessionId, panel, id, from };
 }
 
-/** Enforce scope and timing eligibility before matching anchors shared by distinct observations. */
+/** Resolve only calculator-selected records with exact anchors; shared locators never imply contribution. */
 export function contributingEvents(
   view: ReadView,
   sessionId: string,
@@ -102,6 +102,7 @@ export function contributingEvents(
   const references = new Set(
     measurement.metric.contributors.map(evidenceReferenceKey),
   );
+  const contributors = new Set(measurement.contributorEventIds);
   const scope =
     measurement.scope.kind === "events"
       ? new Set(measurement.scope.eventIds)
@@ -109,9 +110,8 @@ export function contributingEvents(
   return view.events.filter(
     (event) =>
       event.sessionId === sessionId &&
+      contributors.has(event.id) &&
       (!scope || scope.has(event.id)) &&
-      (measurement.metric.dimension !== "timing" ||
-        event.kind !== "usage-observation") &&
       event.references.some((reference) =>
         references.has(evidenceReferenceKey(reference)),
       ),

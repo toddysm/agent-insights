@@ -29,6 +29,8 @@ export interface MetricScope {
 /** Numeric contract plus its definition and exact evidence selection; unavailable is null, not zero. */
 export interface RecordedMetric {
   readonly metric: Metric;
+  /** Exact records used for the value or unavailable explanation, including replays; source-only witnesses add none. */
+  readonly contributorEventIds: readonly string[];
   readonly scope: MetricScope;
   readonly definition: string;
 }
@@ -356,7 +358,7 @@ export function calculateRecordedMetrics(
   }
   const sources = new Map(view.sources.map((source) => [source.id, source]));
 
-  /** Emit only dimension-available, uniquely owned references; missing numbers never acquire zeros. */
+  /** Retain contributing group IDs alongside eligible original references, never the entire selection scope. */
   const measurement = (
     key: string,
     dimension: Metric["dimension"],
@@ -450,6 +452,9 @@ export function calculateRecordedMetrics(
         coverage,
         contributors: references,
       }),
+      contributorEventIds: Object.freeze([
+        ...new Set(contributors.flatMap((group) => group.eventIds)),
+      ]),
       scope: metricScope,
       definition,
     });

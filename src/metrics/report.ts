@@ -23,6 +23,7 @@ const measurementSchema = z
     group: z.enum(["Timing", "Tools", "Recorded tokens", "Usage observations"]),
     display: z.enum(["duration", "timestamp", "number"]),
     metric: metricSchema,
+    contributorEventIds: z.array(evidenceIdSchema).readonly(),
     scope: z
       .strictObject({
         sessionId: evidenceIdSchema,

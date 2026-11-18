@@ -15,10 +15,13 @@ and an attributed `sessionId`. It invokes the pure
 cache occurs. Invalid controls fail, foreign sessions return unavailable, and
 missing/replaced reads are stale rather than restored from history. The shared
 [report schema](../src/metrics/report.ts) carries exact metric provenance,
-definitions, coverage, scope and non-additive observation labels to the browser.
-Original-content panels use only matching current-read/session events and full
-original-locator identity; unmatched source witnesses never resolve by record
-proximity or colliding native IDs.
+definitions, coverage, scope, exact contributing normalized event IDs and
+non-additive observation labels to the browser. Contributor IDs identify the
+calculator's actual groups (including replay IDs), not every event in the
+selection scope. Original-content panels require both a contributing ID and
+full original-locator identity within the current read/session. Sharing an
+anchor does not make another event a contributor; unmatched source witnesses
+never resolve by record proximity or colliding native IDs.
 
 Native report tests compose the real combined Agent Host reader, calculator and
 browser with independently authored history/catalog projections. Browser

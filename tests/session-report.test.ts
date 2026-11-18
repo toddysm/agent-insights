@@ -130,6 +130,72 @@ test("shared message anchors do not turn untimed usage observations into timing 
   );
 });
 
+test("shared locators cannot add unrelated events to session timing, tool or token contributors", () => {
+  const view = exampleReadView();
+  const message = view.events[0]!;
+  const model = view.events[1]!;
+  assert.ok(model.kind !== "message");
+  const anchor = model.references[0]!;
+  const later = {
+    ...model,
+    id: "later-model",
+    nativeId: "later-native-model",
+    startedAtMs: 960,
+    endedAtMs: 990,
+    usage: { basis: "per-call", input: null, output: null, components: [] },
+    references: [
+      ...message.references,
+      ...model.references,
+      {
+        ...anchor,
+        recordId: "later-source-record",
+        location: { kind: "jsonl", line: 3, pointer: "" },
+      },
+    ],
+  };
+  const tool = {
+    ...model,
+    kind: "tool-call",
+    id: "shared-tool",
+    nativeId: "shared-native-tool",
+    name: "shell",
+    startedAtMs: 970,
+    endedAtMs: 985,
+    usage: null,
+    references: [
+      ...model.references,
+      {
+        ...anchor,
+        recordId: "tool-source-record",
+        location: { kind: "jsonl", line: 4, pointer: "" },
+      },
+    ],
+  };
+  const expanded = parseReadView({
+    ...view,
+    events: [...view.events, later, tool],
+  });
+  const result = recordedReport(expanded, {
+    readId: view.id,
+    sessionId: "session-fixture",
+  });
+  for (const [id, expected] of [
+    ["start", message.id],
+    ["tools", tool.id],
+    ["input", model.id],
+  ]) {
+    const metric = result.measurements.find((entry) => entry.id === id)!;
+    assert.equal(metric.scope.kind, "session");
+    assert.deepEqual(
+      contributingEvents(expanded, "session-fixture", metric).map(
+        (event) => event.id,
+      ),
+      [expected],
+    );
+    assert.deepEqual(metric.contributorEventIds, [expected]);
+  }
+});
+
 test("partial, missing and wrong-runtime native sources never become complete reports or fabricated sessions", async () => {
   const raw = nativeReportRecords()
     .map((item) => JSON.stringify(item))
