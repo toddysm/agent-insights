@@ -580,8 +580,7 @@ function SelectedReport({
         title = `${metric.label}: ${metricValue(metric)}`;
         const contributors = contributingEvents(view, sessionId, metric);
         const anchors = unmatchedReferences(
-          view,
-          sessionId,
+          contributors,
           metric.metric.contributors,
         );
         content = (
@@ -630,9 +629,9 @@ function SelectedReport({
               <>
                 <h4>Original source witnesses</h4>
                 <p>
-                  These anchors have no normalized interaction content in this
-                  read. They are not replaced with a nearby message or tool
-                  call.
+                  These source witnesses do not identify a contributing
+                  normalized interaction for this measurement. They are not
+                  replaced with a nearby message or tool call.
                 </p>
                 <SourceAnchors references={anchors} />
               </>

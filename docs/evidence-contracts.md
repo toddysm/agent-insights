@@ -21,7 +21,9 @@ calculator's actual groups (including replay IDs), not every event in the
 selection scope. Original-content panels require both a contributing ID and
 full original-locator identity within the current read/session. Sharing an
 anchor does not make another event a contributor; unmatched source witnesses
-never resolve by record proximity or colliding native IDs.
+never resolve by record proximity or colliding native IDs. Source witnesses
+remain visible when they overlap a noncontributing event's locator, including
+session evidence supporting a measured zero tool count.
 
 Native report tests compose the real combined Agent Host reader, calculator and
 browser with independently authored history/catalog projections. Browser

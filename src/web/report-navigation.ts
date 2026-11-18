@@ -118,16 +118,13 @@ export function contributingEvents(
   );
 }
 
-/** Retain source witnesses without normalized content as anchors, not fabricated conversation records. */
+/** Keep witnesses not covered by this metric's actual contributors, even when other events share their locators. */
 export function unmatchedReferences(
-  view: ReadView,
-  sessionId: string,
+  contributors: ReadView["events"],
   references: readonly EvidenceReference[],
 ): readonly EvidenceReference[] {
   const known = new Set(
-    view.events
-      .filter((event) => event.sessionId === sessionId)
-      .flatMap((event) => event.references.map(evidenceReferenceKey)),
+    contributors.flatMap((event) => event.references.map(evidenceReferenceKey)),
   );
   return references.filter(
     (reference) => !known.has(evidenceReferenceKey(reference)),

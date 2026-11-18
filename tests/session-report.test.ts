@@ -196,6 +196,30 @@ test("shared locators cannot add unrelated events to session timing, tool or tok
   }
 });
 
+test("measured zero tools retain session witnesses even when non-tool events share their locators", () => {
+  const base = exampleReadView();
+  const view = parseReadView({
+    ...base,
+    sessions: base.sessions.map((session) => ({
+      ...session,
+      references: base.events.flatMap((event) => event.references),
+    })),
+  });
+  const result = recordedReport(view, {
+    readId: view.id,
+    sessionId: "session-fixture",
+  });
+  const tools = result.measurements.find((entry) => entry.id === "tools")!;
+  assert.equal(tools.metric.value, 0);
+  assert.equal(tools.metric.coverage.status, "complete");
+  const contributors = contributingEvents(view, "session-fixture", tools);
+  assert.deepEqual(contributors, []);
+  assert.deepEqual(
+    unmatchedReferences(contributors, tools.metric.contributors),
+    view.sessions[0]!.references,
+  );
+});
+
 test("partial, missing and wrong-runtime native sources never become complete reports or fabricated sessions", async () => {
   const raw = nativeReportRecords()
     .map((item) => JSON.stringify(item))
@@ -270,8 +294,10 @@ test("unknown, duplicate, foreign and stale navigation cannot fall back to anoth
   };
   assert.deepEqual(contributingEvents(view, "session-fixture", altered), []);
   assert.equal(
-    unmatchedReferences(view, "session-fixture", altered.metric.contributors)
-      .length,
+    unmatchedReferences(
+      contributingEvents(view, "session-fixture", altered),
+      altered.metric.contributors,
+    ).length,
     1,
   );
   assert.notEqual(

@@ -511,6 +511,7 @@ test("fractional timestamp boundaries retain exact epoch milliseconds in cards a
       name: "Session report",
       exact: true,
     });
+
     await expect(
       report.getByRole("button", { name: /^Observed elapsed: 0\.5 ms/ }),
     ).toBeVisible();
@@ -526,6 +527,49 @@ test("fractional timestamp boundaries retain exact epoch milliseconds in cards a
       await page.keyboard.press("Escape");
       await expect(dialog).toHaveCount(0);
     }
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("a measured zero tool count retains source witnesses shared with non-tool records", async ({
+  page,
+}) => {
+  const fixture = await openNativeReport(page);
+  try {
+    const base = exampleReadView();
+    fixture.setView(
+      parseReadView({
+        ...base,
+        sessions: base.sessions.map((session) => ({
+          ...session,
+          references: base.events.flatMap((event) => event.references),
+        })),
+      }),
+    );
+    await page
+      .getByRole("button", { name: "Read source", exact: true })
+      .click();
+    const report = page.getByRole("region", {
+      name: "Session report",
+      exact: true,
+    });
+    await report
+      .getByRole("button", {
+        name: "Tool calls: 0; complete coverage",
+        exact: true,
+      })
+      .click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("heading", { name: "Original source witnesses" }),
+    ).toBeVisible();
+    await expect(dialog.getByText("request-1", { exact: true })).toBeVisible();
+    await expect(dialog.getByText("span-1", { exact: true })).toBeVisible();
+    await expect(
+      dialog.getByRole("button", { name: /model-call:/ }),
+    ).toHaveCount(0);
+    await page.keyboard.press("Escape");
   } finally {
     await fixture.close();
   }
