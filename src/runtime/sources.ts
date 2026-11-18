@@ -452,6 +452,36 @@ export class SourceAccess {
   }
 
   /**
+   * Reject links below an explicitly selected discovery directory, including
+   * generated filenames and intermediate components. The selected root itself
+   * may be an explicit alias. Call before/after acquisition: metadata checks do
+   * not claim an atomic filesystem snapshot or a sandbox against concurrent changes.
+   */
+  async verifyDiscoveryPath(sourceId: string, rootPath: string, relativePath: string, signal: AbortSignal): Promise<void> {
+    const root = await this.resolve(sourceId, rootPath, signal, "directory");
+    const candidate = path.resolve(root.grant.canonical, relativePath);
+    if (!contains(root.candidate, candidate))
+      throw new RuntimeError("SOURCE_SCOPE", "A generated discovery path escapes its selected root.", 403);
+    try {
+      let current = root.canonical;
+      for (const component of path.relative(root.candidate, candidate).split(path.sep).filter(Boolean)) {
+        if (signal.aborted) throw cancelledRead(signal);
+        const next = path.join(current, component);
+        if ((await lstat(next)).isSymbolicLink())
+          throw new RuntimeError("SOURCE_LINK", "Generated discovery paths cannot follow child links; select an alias explicitly.", 403);
+        current = await realpath(next);
+        if (!contains(root.canonical, current))
+          throw new RuntimeError("SOURCE_LINK", "A generated discovery path leaves its selected root.", 403);
+      }
+      if (await realpath(root.candidate) !== root.canonical || await realpath(candidate) !== current)
+        throw new RuntimeError("SOURCE_CHANGED", "A discovery path changed; refresh its sources.", 409);
+      if (signal.aborted) throw cancelledRead(signal);
+    } catch (error) {
+      filesystemError(error);
+    }
+  }
+
+  /**
    * Capture an authorized regular file prefix through a read-only descriptor.
    * Reject escapes and sizes over the remaining byte budget (default 64 MiB) before allocation.
    */

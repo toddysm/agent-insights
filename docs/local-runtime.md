@@ -431,6 +431,10 @@ and checking catalog ownership once for both conversation and execution readers.
 The open request also retains the discovered SDK and host identities: replacing
 history or ownership at the same path rejects with `SOURCE_CHANGED`, not another
 chat's successful read.
+Generated paths also retain their selected `discoveryRoot` in composite controls:
+discovery and reopening reject child links, including implicit filenames and
+intermediate layout directories. An alias explicitly selected as a file or root
+remains allowed within its startup grant; it is not an implicit neighbor scan.
 
 The list separates runtime from mode, execution location and analysis provider.
 Unknown mode/location stays unknown. Missing or rotated history, permission errors,
@@ -453,6 +457,8 @@ for exact-key and first-JSON-member lookups, including whitespace, escaping and
 duplicate keys. JSON depth follows native admission; unsupported bindings retain
 native validation.
 Original row witnesses and shared row/byte/query limits remain intact.
+JSON-BLOB rows retain native lookups instead of being silently excluded by text
+indexes; unsupported or competing ownership still fails closed.
 This lookup state is discarded after discovery, not a copied application catalog.
 
 ### Agent Host execution availability

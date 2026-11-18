@@ -24,6 +24,7 @@ import {
   discoveryResultSchema,
   type DiscoveryRequest,
   type DiscoveryResult,
+  type ReadSetRequest,
 } from "./protocol.js";
 import { SourceAccess, byteChunks } from "./sources.js";
 import {
@@ -60,6 +61,8 @@ export class SourceDiscovery {
   private readonly issues: DiscoveryResult["issues"][number][] = [];
   private sequence = 0;
   private candidates = 0;
+  private readonly implicitRoots = new Map<string, string>();
+  private readonly explicitLocations = new Set<string>();
 
   /** Bind this generation to approved access and a trusted helper resolver, never capture-supplied code. */
   constructor(
@@ -68,6 +71,36 @@ export class SourceDiscovery {
     private readonly id: string,
     private readonly signal: AbortSignal,
   ) {}
+
+  /** Stable control key, never a filesystem or session identity. */
+  private locationKey(location: Location): string {
+    return JSON.stringify([location.sourceId, location.relativePath]);
+  }
+
+  /** Preserve generated-root restrictions across a later reopen; explicit file aliases remain allowed. */
+  private binding(
+    key: string,
+    location: Location,
+  ): ReadSetRequest["sources"][number] {
+    const discoveryRoot = this.implicitRoots.get(this.locationKey(location));
+    return {
+      key,
+      ...location,
+      ...(discoveryRoot !== undefined ? { discoveryRoot } : {}),
+    };
+  }
+
+  /** Revalidate every implicit component without broadening the startup grant or following child links. */
+  private async verifyLocation(location: Location): Promise<void> {
+    const root = this.implicitRoots.get(this.locationKey(location));
+    if (root !== undefined)
+      await this.access.verifyDiscoveryPath(
+        location.sourceId,
+        root,
+        location.relativePath,
+        this.signal,
+      );
+  }
 
   /** Preserve controlled expected failures; cleanup, cancellation, limits and unexpected errors must reject. */
   private problem(location: Location, error: unknown): void {
@@ -100,12 +133,14 @@ export class SourceDiscovery {
 
   /** Return stable physical identity under authorized admission; do not read database bytes or follow source metadata paths. */
   private async physical(location: Location): Promise<string> {
+    await this.verifyLocation(location);
     return this.access.withStream(
       location.sourceId,
       location.relativePath,
       this.signal,
       async (source) => {
         await source.verify();
+        await this.verifyLocation(location);
         return JSON.stringify([source.identity.dev, source.identity.ino]);
       },
     );
@@ -118,6 +153,7 @@ export class SourceDiscovery {
     format: Extract<SourceRequirement, { kind: "sqlite" }>["format"],
     read: (input: SqliteInput) => Promise<T>,
   ): Promise<T> {
+    await this.verifyLocation(location);
     const set = new SourceReadSet(
       `${this.id}:database:${++this.sequence}`,
       this.signal,
@@ -140,6 +176,7 @@ export class SourceDiscovery {
       this.locators.push({ evidenceSourceId: input.sourceId, ...location });
       const result = await read(input);
       const observations = await set.finish();
+      await this.verifyLocation(location);
       this.observations.push(...observations);
       if (observations.some((observation) => observation.changed))
         throw new RuntimeError(
@@ -170,8 +207,15 @@ export class SourceDiscovery {
     const add = (
       kind: "catalog" | "history" | "overlay",
       location: Location,
+      implicitRoot?: string,
     ): void => {
       this.count();
+      const key = this.locationKey(location);
+      if (implicitRoot === undefined) {
+        this.explicitLocations.add(key);
+        this.implicitRoots.delete(key);
+      } else if (!this.explicitLocations.has(key))
+        this.implicitRoots.set(key, implicitRoot);
       const list = result.get(kind) ?? [];
       list.push(location);
       result.set(kind, list);
@@ -206,30 +250,44 @@ export class SourceDiscovery {
           continue;
         }
         if (root.layout === "settings") {
-          add("catalog", {
-            ...location,
-            relativePath: path.join(
-              root.relativePath,
-              "globalStorage",
-              "agent-host.db",
-            ),
-          });
+          add(
+            "catalog",
+            {
+              ...location,
+              relativePath: path.join(
+                root.relativePath,
+                "globalStorage",
+                "agent-host.db",
+              ),
+            },
+            root.relativePath,
+          );
           const profiles = path.join(root.relativePath, "profiles");
+          await this.access.verifyDiscoveryPath(
+            root.sourceId,
+            root.relativePath,
+            profiles,
+            this.signal,
+          );
           for (const entry of await this.access.entries(
             root.sourceId,
             profiles,
             this.signal,
           ))
             if (entry.kind === "directory")
-              add("catalog", {
-                ...location,
-                relativePath: path.join(
-                  profiles,
-                  entry.name,
-                  "globalStorage",
-                  "agent-host.db",
-                ),
-              });
+              add(
+                "catalog",
+                {
+                  ...location,
+                  relativePath: path.join(
+                    profiles,
+                    entry.name,
+                    "globalStorage",
+                    "agent-host.db",
+                  ),
+                },
+                root.relativePath,
+              );
         } else {
           const filename =
             root.layout === "history" ? "events.jsonl" : "session.db";
@@ -239,19 +297,27 @@ export class SourceDiscovery {
             this.signal,
           )) {
             if (entry.kind === "file" && entry.name === filename)
-              add(root.layout, {
-                ...location,
-                relativePath: path.join(root.relativePath, filename),
-              });
+              add(
+                root.layout,
+                {
+                  ...location,
+                  relativePath: path.join(root.relativePath, filename),
+                },
+                root.relativePath,
+              );
             else if (entry.kind === "directory")
-              add(root.layout, {
-                ...location,
-                relativePath: path.join(
-                  root.relativePath,
-                  entry.name,
-                  filename,
-                ),
-              });
+              add(
+                root.layout,
+                {
+                  ...location,
+                  relativePath: path.join(
+                    root.relativePath,
+                    entry.name,
+                    filename,
+                  ),
+                },
+                root.relativePath,
+              );
           }
         }
       } catch (error) {
@@ -263,6 +329,7 @@ export class SourceDiscovery {
 
   /** Read just the bounded first physical line; a full session read still reopens and qualifies current inputs. */
   private async header(location: Location): Promise<HistoryCandidate | null> {
+    await this.verifyLocation(location);
     return this.access.withStream(
       location.sourceId,
       location.relativePath,
@@ -296,6 +363,7 @@ export class SourceDiscovery {
           this.signal,
         );
         const observation = await source.verify();
+        await this.verifyLocation(location);
         this.observations.push({
           sourceId,
           kind: "file",
@@ -486,10 +554,10 @@ export class SourceDiscovery {
                             ],
                           },
                           sources: [
-                            { ...history.location, key: "history" },
-                            { ...location, key: "catalog" },
+                            this.binding("history", history.location),
+                            this.binding("catalog", location),
                             ...(overlay
-                              ? [{ ...overlay, key: "overlay" }]
+                              ? [this.binding("overlay", overlay)]
                               : []),
                           ],
                         }

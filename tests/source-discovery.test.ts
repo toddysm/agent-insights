@@ -1073,3 +1073,114 @@ test(
     assert.equal(response.headers.get("cache-control"), "no-store");
   },
 );
+
+test(
+  "native discovery retains JSON-BLOB competitors and rejects BLOB-backed storage mappings",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    data.catalog
+      .prepare(
+        `INSERT INTO chats_v2 SELECT 'competing-chat', owner_session_uri,
+    NULL, NULL, ?, 0, 0, NULL FROM chats_v2`,
+      )
+      .run(Buffer.from('{"sdkSessionId":"sdk-fictional"}'));
+    const competing = await data.service.discover(data.selection, signal);
+    assert.equal(competing.sessions[0]?.runtime, "unknown");
+    assert.equal(competing.sessions[0]?.selection, null);
+    data.catalog.exec("DELETE FROM chats_v2 WHERE chat_uri='competing-chat'");
+    data.catalog
+      .prepare("INSERT INTO metadata VALUES(?,?)")
+      .run(
+        "sessionStorageIdentity:blob-runtime",
+        Buffer.from(
+          '{"runtime":"blob-runtime","storage":"copilotcli:/host","provider":"copilotcli"}',
+        ),
+      );
+    const malformed = await data.service.discover(data.selection, signal);
+    assert.equal(malformed.sessions[0]?.runtime, "unknown");
+    assert.equal(malformed.sessions[0]?.selection, null);
+    assert.match(malformed.sessions[0]?.reason ?? "", /malformed/);
+  },
+);
+
+test(
+  "native generated paths reject leaf/intermediate links and stale opens but allow explicitly selected aliases",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const original = (await data.service.discover(data.selection, signal))
+      .sessions[0]?.selection;
+    assert.ok(original);
+    const outside = path.join(data.root, "outside-selected-native");
+    await mkdir(outside);
+    await writeFile(
+      path.join(outside, "events.jsonl"),
+      await readFile(data.historyPath),
+    );
+    let explicitHistory: string;
+    if (process.platform === "win32") {
+      await rm(path.dirname(data.historyPath), { recursive: true });
+      await symlink(outside, path.dirname(data.historyPath), "junction");
+      explicitHistory = path.relative(
+        data.root,
+        path.dirname(data.historyPath),
+      );
+    } else {
+      await rm(data.historyPath);
+      await symlink(path.join(outside, "events.jsonl"), data.historyPath);
+      explicitHistory = path.relative(data.root, data.historyPath);
+    }
+    await assert.rejects(data.service.readSet(original, signal), {
+      code: "SOURCE_LINK",
+    });
+    assert.equal(data.service.view, null);
+    const generated = await data.service.discover(data.selection, signal);
+    assert.equal(generated.sessions[0]?.state, "unavailable");
+    const explicit = await data.service.discover(
+      {
+        roots: [
+          ...data.selection.roots.filter((root) => root.layout !== "history"),
+          {
+            sourceId: "source-1",
+            relativePath: explicitHistory,
+            layout: "history",
+          },
+        ],
+      },
+      signal,
+    );
+    assert.ok(explicit.sessions[0]?.selection);
+    assert.equal(
+      (await data.service.readSet(explicit.sessions[0].selection, signal))
+        .sessions.length,
+      1,
+    );
+    const linkedUser = path.join(data.root, "LinkedUser");
+    await mkdir(path.join(linkedUser, "profiles"), { recursive: true });
+    await symlink(
+      path.dirname(data.catalogPath),
+      path.join(linkedUser, "globalStorage"),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const settings = await data.service.discover(
+      {
+        roots: [
+          {
+            sourceId: "source-1",
+            relativePath: "LinkedUser",
+            layout: "settings",
+          },
+          {
+            sourceId: "source-1",
+            relativePath: explicitHistory,
+            layout: "history",
+          },
+        ],
+      },
+      signal,
+    );
+    assert.equal(settings.sessions.length, 0);
+    assert.ok(settings.issues.some((issue) => issue.code === "SOURCE_LINK"));
+  },
+);

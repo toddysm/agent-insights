@@ -172,7 +172,7 @@ function jsonStringMember(encoded: unknown, member: string): string | null {
  * Reuse bounded discovery projections only within this connection snapshot.
  * Exact metadata keys already require binary equality in the resolver. JSON
  * lookup indexes preserve first-member semantics, not JSON.parse's last keys.
- * JSON admission and unsupported string bindings retain native semantics.
+ * JSON admission, BLOB-backed data and unsupported bindings retain native semantics.
  * Original rows/fingerprints survive unchanged; native owner/storage lookups
  * retain their SQLite affinity/collation behavior and all shared budgets.
  */
@@ -183,7 +183,14 @@ export async function prepareAgentHostDiscoveryCatalog(
 ): Promise<SqliteInput> {
   if (catalog.userVersion !== 22 || catalog.snapshotScope !== "connection") return catalog;
   signal.throwIfAborted();
+  if (chats.some((row) => row.values.provider_data instanceof Uint8Array)) return catalog;
   const metadata = await catalog.query("discovery_metadata", {});
+  if (metadata.some((row) => {
+    const key = row.values.key;
+    return row.values.value instanceof Uint8Array && typeof key === "string" &&
+      ["sessionStorageIdentity:", "chatStorageIdentity:"].some((prefix) => key.startsWith(prefix));
+  }))
+    return catalog;
   const sdkRows = new Map<string, SqliteRow[]>();
   const metadataRows = new Map<string, SqliteRow[]>();
   const storageRows = new Map<string, SqliteRow[]>();

@@ -568,7 +568,7 @@ export class RuntimeService {
 
   /**
    * Execute an installed composite reader over explicit, immutable role bindings.
-   * @param selection - Reader/grant bindings and optional discovered identities to revalidate before publication.
+   * @param selection - Reader/grant bindings with optional generated-root restrictions and identities to revalidate.
    * @param externalSignal - Caller cancellation; no source content or SQL arrives in controls.
    * @returns Validated in-memory view after all owned database processes have exited.
    */
@@ -609,6 +609,9 @@ export class RuntimeService {
         );
         this.readSets.add(set);
         try {
+          for (const binding of request.sources)
+            if (binding.discoveryRoot !== undefined)
+              await this.sources.verifyDiscoveryPath(binding.sourceId, binding.discoveryRoot, binding.relativePath, signal);
           await set.prepare(request.sources);
           ensureCurrent();
           const view = parseReadView(await abortable(reader.read(set), signal));
@@ -623,6 +626,9 @@ export class RuntimeService {
               409,
             );
           const observations = await set.finish();
+          for (const binding of request.sources)
+            if (binding.discoveryRoot !== undefined)
+              await this.sources.verifyDiscoveryPath(binding.sourceId, binding.discoveryRoot, binding.relativePath, signal);
           set.validate(view);
           return {
             view,

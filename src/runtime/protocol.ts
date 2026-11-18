@@ -109,6 +109,8 @@ export const readSetRequestSchema = z.strictObject({
         .strictObject({
           key: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,63}$/),
           sourceId: z.string().min(1),
+          /** Generated paths stay link-free below this explicitly selected directory. */
+          discoveryRoot: z.string().max(4096).refine((value) => !value.includes("\0")).optional(),
           relativePath: z
             .string()
             .max(4096)
