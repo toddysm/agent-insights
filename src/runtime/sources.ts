@@ -88,6 +88,15 @@ export interface DatabaseLease {
   close(): Promise<void>;
 }
 
+/** Compare admitted main/sidecar identities without exposing paths or treating metadata stability as an atomic snapshot. */
+export function databasePhysicalIdentity(lease: DatabaseLease): string {
+  return JSON.stringify([
+    lease.main.dev, lease.main.ino,
+    Object.entries(lease.sidecars).sort(([left], [right]) => left.localeCompare(right))
+      .map(([name, state]) => [name, state ? [state.dev, state.ino] : null]),
+  ]);
+}
+
 /** Preserve nanosecond identity observations across the database-process boundary. */
 export function fileState(info: BigIntStats): FileState {
   return {

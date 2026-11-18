@@ -442,6 +442,10 @@ Generated paths also retain their selected `discoveryRoot` in composite controls
 discovery and reopening reject child links, including implicit filenames and
 intermediate layout directories. An alias explicitly selected as a file or root
 remains allowed within its startup grant; it is not an implicit neighbor scan.
+Deduplication identities must match the actual opened history descriptor or
+prepared database footprint. Rotation between admission and opening is an
+explicit source-change issue, and failed candidates cannot hide another alias.
+Overlay assignments become effective only after their catalog read is accepted.
 
 The list separates runtime from mode, execution location and analysis provider.
 Unknown mode/location stays unknown. Missing or rotated history, permission errors,

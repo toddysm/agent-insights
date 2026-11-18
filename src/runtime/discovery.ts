@@ -27,7 +27,7 @@ import {
   type DiscoveryResult,
   type ReadSetRequest,
 } from "./protocol.js";
-import { SourceAccess, byteChunks } from "./sources.js";
+import { SourceAccess, byteChunks, databasePhysicalIdentity } from "./sources.js";
 import {
   SourceReadSet,
   sqliteReference,
@@ -138,11 +138,7 @@ export class SourceDiscovery {
         if (await lease.verify())
           throw new RuntimeError("SOURCE_CHANGED", "A discovery database changed during admission.", 409);
         await this.verifyLocation(location);
-        return JSON.stringify([
-          lease.main.dev, lease.main.ino,
-          Object.entries(lease.sidecars).sort(([left], [right]) => left.localeCompare(right))
-            .map(([name, state]) => [name, state ? [state.dev, state.ino] : null]),
-        ]);
+        return databasePhysicalIdentity(lease);
       } finally {
         await lease.close();
       }
@@ -159,9 +155,10 @@ export class SourceDiscovery {
     );
   }
 
-  /** Open one code-owned SQLite role and retain its process until finish/dispose has actually completed. */
+  /** Match the actual prepared footprint to deduplication admission; retain its process through finish/disposal. */
   private async database<T>(
     location: Location,
+    expectedIdentity: string,
     database: Extract<SourceRequirement, { kind: "sqlite" }>["database"],
     format: Extract<SourceRequirement, { kind: "sqlite" }>["format"],
     read: (input: SqliteInput) => Promise<T>,
@@ -186,6 +183,8 @@ export class SourceDiscovery {
           "The selected discovery database is unavailable.",
           422,
         );
+      if (set.databaseIdentity("database") !== expectedIdentity)
+        throw new RuntimeError("SOURCE_CHANGED", "A discovery database rotated between identity admission and opening.", 409);
       this.locators.push({ evidenceSourceId: input.sourceId, ...location });
       const result = await read(input);
       const observations = await set.finish();
@@ -347,14 +346,16 @@ export class SourceDiscovery {
     return result;
   }
 
-  /** Read just the bounded first physical line; a full session read still reopens and qualifies current inputs. */
-  private async header(location: Location): Promise<HistoryCandidate | null> {
+  /** Read the bounded first line only from the admitted inode; full session reads still reopen/qualify current inputs. */
+  private async header(location: Location, expectedIdentity: string): Promise<HistoryCandidate | null> {
     await this.verifyLocation(location);
     return this.access.withStream(
       location.sourceId,
       location.relativePath,
       this.signal,
       async (source) => {
+        if (JSON.stringify([source.identity.dev, source.identity.ino]) !== expectedIdentity)
+          throw new RuntimeError("SOURCE_CHANGED", "Native history rotated between identity admission and opening.", 409);
         const chunks: Uint8Array[] = [];
         let size = 0;
         for await (const chunk of source.chunks()) {
@@ -448,15 +449,16 @@ export class SourceDiscovery {
       for (const location of locations.get(role) ?? []) {
         if (this.signal.aborted) throw cancelledRead(this.signal);
         try {
-          const key = `${role}:${await this.physical(location, role !== "history")}`;
+          const identity = await this.physical(location, role !== "history");
+          const key = `${role}:${identity}`;
           if (physical.has(key)) continue;
-          physical.add(key);
           if (role === "history") {
-            const header = await this.header(location);
+            const header = await this.header(location, identity);
             if (header) histories.push(header);
           } else if (role === "overlay") {
             const ownership = await this.database(
               location,
+              identity,
               agentHostOverlayDefinition,
               "vscode-agenthost-session-sqlite",
               async (input) => {
@@ -487,8 +489,10 @@ export class SourceDiscovery {
               });
           } else {
             const catalogChats = new Map<string, readonly string[]>();
+            const catalogOverlays = new Set<OverlayCandidate>();
             const discovered = await this.database(
               location,
+              identity,
               agentHostCatalogDefinition,
               "vscode-agenthost-catalog-sqlite",
               async (catalog) => {
@@ -564,7 +568,7 @@ export class SourceDiscovery {
                     : [];
                   const ready = ownership.ok && matches.length === 1;
                   for (const match of overlayMatches)
-                    assignedOverlays.add(match);
+                    catalogOverlays.add(match);
                   const history = matches[0];
                   const overlay =
                     overlayMatches.length === 1
@@ -635,6 +639,8 @@ export class SourceDiscovery {
               },
             );
             sessions.push(...discovered);
+            for (const overlay of catalogOverlays)
+              assignedOverlays.add(overlay);
             for (const session of discovered) {
               const chats = catalogChats.get(session.sdkSessionId);
               if (!chats) continue;
@@ -648,6 +654,7 @@ export class SourceDiscovery {
               }
             }
           }
+          physical.add(key);
         } catch (error) {
           this.problem(location, error);
         }

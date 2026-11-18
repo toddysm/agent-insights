@@ -20,6 +20,7 @@ import {
   SourceAccess,
   MAX_SOURCE_BYTES,
   byteChunks,
+  databasePhysicalIdentity,
   type DatabaseLease,
 } from "./sources.js";
 import {
@@ -186,6 +187,15 @@ export class SourceReadSet implements MultiSourceInput {
         400,
       );
     return input;
+  }
+
+  /** Return the actual prepared SQLite footprint for runtime admission checks; closed or non-database roles reject. */
+  databaseIdentity(key: string): string {
+    const input = this.get(key);
+    const owner = this.databases.get(key);
+    if (!input.available || input.kind !== "sqlite" || !owner)
+      throw new RuntimeError("SOURCE_ROLE", "The requested role has no admitted database identity.", 400);
+    return databasePhysicalIdentity(owner.lease);
   }
 
   /**

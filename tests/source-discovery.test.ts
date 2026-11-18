@@ -17,10 +17,12 @@ import {
   chmod,
   link,
   copyFile,
+  rename,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { SourceAccess } from "../src/runtime/sources.js";
+import { SourceAccess, type StreamedSource } from "../src/runtime/sources.js";
+import { SourceReadSet } from "../src/runtime/source-read.js";
 import { SourceDiscovery } from "../src/runtime/discovery.js";
 import { RuntimeError } from "../src/runtime/errors.js";
 import { RuntimeService } from "../src/runtime/service.js";
@@ -681,6 +683,121 @@ test(
           issue.relativePath === "missing-settings" &&
           issue.code === "SOURCE_MISSING",
       ),
+    );
+  },
+);
+
+test(
+  "native history rotation cannot consume the deduplication identity of a still-valid alias",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const alias = path.join(data.root, "history-alias.jsonl");
+    await link(data.historyPath, alias);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Rebound to the intercepted instance below.
+    const original = SourceAccess.prototype.withStream;
+    const history = path.relative(data.root, data.historyPath);
+    let admissions = 0;
+    t.mock.method(SourceAccess.prototype, "withStream", async function <
+      T,
+    >(this: SourceAccess, sourceId: string, relativePath: string, readSignal: AbortSignal, borrow: (source: StreamedSource) => Promise<T>): Promise<T> {
+      if (relativePath === history && ++admissions === 2) {
+        await rename(data.historyPath, data.historyPath + ".rotated");
+        await writeFile(data.historyPath, await readFile(alias));
+      }
+      return original.bind(this)(sourceId, relativePath, readSignal, borrow);
+    });
+    const result = await data.service.discover(
+      {
+        roots: [
+          ...data.selection.roots.filter((root) => root.layout !== "history"),
+          { sourceId: "source-1", relativePath: history, layout: "history" },
+          {
+            sourceId: "source-1",
+            relativePath: path.relative(data.root, alias),
+            layout: "history",
+          },
+        ],
+      },
+      signal,
+    );
+    assert.ok(
+      result.issues.some(
+        (issue) =>
+          issue.relativePath === history && issue.code === "SOURCE_CHANGED",
+      ),
+    );
+    assert.equal(result.sessions[0]?.state, "ready");
+    assert.equal(
+      result.sessions[0]?.selection?.sources.find(
+        (source) => source.key === "history",
+      )?.relativePath,
+      path.relative(data.root, alias),
+    );
+  },
+);
+
+test(
+  "native catalog opening rejects a footprint different from deduplication admission",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Invoked with the intercepted instance via apply.
+    const original = SourceAccess.prototype.database;
+    const catalog = path.relative(data.root, data.catalogPath);
+    let admissions = 0;
+    t.mock.method(
+      SourceAccess.prototype,
+      "database",
+      async function (
+        this: SourceAccess,
+        ...args: Parameters<SourceAccess["database"]>
+      ) {
+        const lease = await original.apply(this, args);
+        return args[1] === catalog && ++admissions === 1
+          ? {
+              ...lease,
+              main: { ...lease.main, ino: `stale-${lease.main.ino}` },
+            }
+          : lease;
+      },
+    );
+    const result = await data.service.discover(data.selection, signal);
+    assert.equal(result.sessions.length, 0);
+    assert.ok(
+      result.issues.some(
+        (issue) =>
+          issue.relativePath === catalog && issue.code === "SOURCE_CHANGED",
+      ),
+    );
+  },
+);
+
+test(
+  "native rejected catalog postflight cannot suppress unassigned-overlay diagnostics",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Invoked with the intercepted instance via call.
+    const original = SourceReadSet.prototype.finish;
+    t.mock.method(
+      SourceReadSet.prototype,
+      "finish",
+      function (this: SourceReadSet) {
+        if (
+          this.requirements.some(
+            (input) => input.format === "vscode-agenthost-catalog-sqlite",
+          )
+        )
+          data.catalog.exec("UPDATE chats_v2 SET archived=1");
+        return original.call(this);
+      },
+    );
+    const result = await data.service.discover(data.selection, signal);
+    assert.equal(result.sessions.length, 0);
+    assert.ok(result.issues.some((issue) => issue.code === "SOURCE_CHANGED"));
+    assert.ok(
+      result.issues.some((issue) => issue.code === "OVERLAY_UNASSIGNED"),
     );
   },
 );
