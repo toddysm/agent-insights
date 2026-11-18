@@ -633,3 +633,21 @@ test("unsafe sums are unavailable and fractional milliseconds are preserved", ()
   assert.equal(result.timing.agentActivity.metric.value, 1.75);
   assert.equal(result.timing.cumulativeSpanDuration.metric.value, 2.5);
 });
+
+test("175,000 original session anchors preserve zero and unavailable metrics without VM argument overflow", () => {
+  const base = read([]);
+  const references = Array.from({ length: 175_000 }, (_, index) =>
+    reference("large-session", index + 1),
+  );
+  const view = read([], {
+    sessions: base.sessions.map((session) => ({
+      ...session,
+      references,
+    })),
+  });
+  const result = calculate(view);
+  assert.equal(result.tools.calls.metric.value, 0);
+  assert.equal(result.tools.calls.metric.contributors.length, 175_000);
+  assert.equal(result.tokens.input.metric.value, null);
+  assert.equal(result.tokens.input.metric.contributors.length, 175_000);
+});

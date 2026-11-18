@@ -123,6 +123,14 @@ function uniqueReferences(
   ];
 }
 
+/** Append to a calculator-owned list without the VM argument limit on large evidence arrays. */
+function appendReferences(
+  target: EvidenceReference[],
+  references: readonly EvidenceReference[],
+): void {
+  for (const reference of references) target.push(reference);
+}
+
 /** Native IDs are comparable only within source, kind, trace and native agent/session namespaces. */
 function eventKey(event: Event): string {
   if (event.kind === "message" || event.nativeId === null)
@@ -288,7 +296,7 @@ export function calculateRecordedMetrics(
     }
     if (group) {
       group.eventIds.push(event.id);
-      group.references.push(...event.references);
+      appendReferences(group.references, event.references);
       group.conflict ||= !sameEvent(group.event, event);
       grouped.set(key, group);
       byReferences.set(locatorKey, group);
@@ -374,8 +382,9 @@ export function calculateRecordedMetrics(
       sessionSources.length > 0 &&
       coverageReasons.size === 0
     ) {
-      references.push(
-        ...uniqueReferences(
+      appendReferences(
+        references,
+        uniqueReferences(
           session.references.filter(
             (ref) =>
               sources.get(ref.sourceId)?.coverage[dimension].status ===
@@ -398,8 +407,9 @@ export function calculateRecordedMetrics(
           "No attributable measurement is available for this metric.",
       };
       if (references.length === 0 && metricScope.kind === "session")
-        references.push(
-          ...uniqueReferences(
+        appendReferences(
+          references,
+          uniqueReferences(
             session.references.filter(
               (ref) =>
                 !owners.has(referenceKey(ref)) &&
