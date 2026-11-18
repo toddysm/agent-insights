@@ -15,8 +15,9 @@ separately. No editor settings or private sessions are changed automatically.
 The [session-insights HTML walkthrough](design/session-insights/index.html)
 uses synthetic data to explore the revision-2 read-only report, evidence
 drill-downs, source refresh and explicit analysis lifecycle. It does not read
-real captures, call a model or save report history. Experience approval in
-[#3](https://github.com/toddysm/agent-insights/issues/3) remains a separate gate.
+real captures, call a model or save report history. Experience revision 2 was
+approved in [#3](https://github.com/toddysm/agent-insights/issues/3); that is not
+qualification of production source readers.
 Open it locally in a browser; no backend or build is required.
 See the [walkthrough guide](design/session-insights/README.md) for scenarios,
 limitations, and validation instructions.
@@ -38,10 +39,13 @@ registered but explicitly unavailable pending a compatible qualified helper
 release; it does not invent model calls or complete token totals from native history.
 The [Copilot analysis transport](docs/copilot-analysis.md) adds acknowledged,
 memory-only model execution. The first production reader handles VS Code's
-OpenTelemetry extension file export in place. Local saved-chat conversation readers,
-production Agent Host availability, report views and interpretation definitions
-remain pending; unavailable capabilities do not
-show example data as real results.
+OpenTelemetry extension file export in place. The
+[recorded session report](docs/local-runtime.md#read-the-session-report) connects
+current-read metrics to exact message/tool evidence, with honest missing-data,
+non-additive usage, source-identity and interpretation states. Local saved-chat
+conversation readers, production Agent Host availability and interpretation
+definitions remain pending; unavailable capabilities do not show example data
+as real results.
 The [bounded JSONL scan](docs/local-runtime.md#scan-large-jsonl-captures-in-place)
 reads large extension exports in place, discovers sessions without returning
 payloads, and retrieves bounded original-evidence pages after selection.

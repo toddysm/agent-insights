@@ -43,6 +43,9 @@ import type {
 } from "../src/evidence/source-access.js";
 import { testNativeHelper } from "./fixtures/native-helper.js";
 import { syntheticProvider } from "./fixtures/analysis.js";
+import { recordedReport } from "../src/runtime/report.js";
+import { parseMetric } from "../src/evidence/contracts.js";
+import { contributingEvents } from "../src/web/report-navigation.js";
 
 const signal = new AbortController().signal;
 const native = { skip: !process.env.AGENT_INSIGHTS_TEST_NATIVE_ROOT };
@@ -649,6 +652,29 @@ async function fixture(t: TestContext) {
     selection,
   };
 }
+
+test("guarded Agent Host discovery and combined source read produce exact report evidence", native, async (t) => {
+  const data = await fixture(t);
+  const discovered = await data.service.discover(data.selection, signal);
+  const selection = discovered.sessions[0]?.selection;
+  assert.ok(selection);
+  const view = await data.service.readSet(selection, signal);
+  const sessionId = view.sessions[0]!.id;
+  const report = recordedReport(data.service.view, { readId: view.id, sessionId });
+  for (const entry of report.measurements) assert.deepEqual(parseMetric(entry.metric, view), entry.metric);
+  const toolMetric = report.measurements.find((entry) => entry.id === "tools")!;
+  assert.equal(toolMetric.metric.value, 1);
+  const tool = contributingEvents(view, sessionId, toolMetric)[0]!;
+  assert.equal(tool.kind, "tool-call");
+  assert.deepEqual(tool.references.map((reference) => reference.location.kind === "jsonl" ? reference.location.line : null), [3, 4]);
+  assert.equal(tool.content?.toolResult, "Fictional result");
+  assert.ok(view.events.some((event) => event.kind === "message" && event.text === "Fictional request"));
+  const observation = report.measurements.find((entry) => entry.group === "Usage observations" && entry.metric.value === 7)!;
+  assert.ok(observation);
+  assert.ok(observation.metric.contributors.some((reference) => reference.location.kind === "sqlite" && reference.location.table === "turn_usage"));
+  await data.service.close();
+  assert.throws(() => recordedReport(data.service.view, { readId: view.id, sessionId }), { code: "REPORT_STALE" });
+});
 
 test(
   "native settings discovery permits an absent profiles child but reports invalid selected roots and existing children",

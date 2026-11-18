@@ -1,4 +1,4 @@
-/* Offline source interface using the approved prototype's editorial palette and local fonts. */
+/* Offline source/report interface using the approved prototype's editorial palette and local fonts. */
 :root {
   color-scheme: light;
   --paper: #f5f3ed;
@@ -33,6 +33,141 @@ a {
 :focus-visible {
   outline: 3px solid #b36121;
   outline-offset: 3px;
+}
+/* Report drawers keep the underlying session, filters and scroll in place. */
+.session-report {
+  scroll-margin-top: 24px;
+}
+.session-report h3,
+.evidence-drawer h3 {
+  overflow-wrap: anywhere;
+}
+.session-report h4 {
+  margin: 8px 0;
+}
+.report-heading,
+.report-source-line {
+  margin: 24px 0;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.report-heading h3 {
+  font: normal 30px/1.3 Georgia, serif;
+}
+.interpretation-grid,
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr));
+  gap: 12px;
+}
+.interpretation-grid > div {
+  padding: 14px;
+  border-left: 3px solid var(--line);
+  background: var(--paper);
+}
+.interpretation-grid p {
+  color: var(--muted);
+  font-size: 12px;
+}
+.report-group {
+  margin: 28px 0;
+}
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  gap: 10px;
+  padding: 18px;
+  overflow-wrap: anywhere;
+  min-width: 0;
+  border-color: var(--line);
+}
+.metric-card:hover {
+  border-color: var(--teal);
+  background: #edf3ee;
+}
+.metric-card strong {
+  font: normal 24px/1.3 Georgia, serif;
+  font-variant-numeric: tabular-nums;
+}
+.metric-coverage {
+  font-size: 12px;
+  color: var(--teal);
+}
+.metric-coverage.partial,
+.metric-coverage.unavailable {
+  color: var(--amber);
+}
+.event-list,
+.source-anchors {
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+.event-list button {
+  text-align: left;
+  margin-bottom: 8px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+.evidence-drawer {
+  overflow-wrap: anywhere;
+  position: fixed;
+  inset: 0 0 0 auto;
+  margin: 0;
+  padding: 28px;
+  width: min(680px, 90vw);
+  max-width: 100vw;
+  height: 100dvh;
+  max-height: 100dvh;
+  color: var(--ink);
+  background: var(--panel);
+  border: 0;
+  border-left: 2px solid var(--teal);
+  overflow: auto;
+}
+.evidence-drawer.wide {
+  width: calc(100vw - 32px);
+}
+.evidence-drawer::backdrop {
+  background: #102b2770;
+}
+.drawer-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+.evidence-drawer h3 {
+  font: normal 28px/1.3 Georgia, serif;
+  margin-bottom: 20px;
+}
+.evidence-drawer pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  background: var(--paper);
+  padding: 12px;
+  font: 12px/1.7 "SFMono-Regular", Consolas, monospace;
+}
+.coverage-source {
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+  margin-top: 16px;
+}
+.metric-definition {
+  border-left: 3px solid var(--teal);
+  padding-left: 12px;
+}
+@media (max-width: 640px) {
+  .evidence-drawer,
+  .evidence-drawer.wide {
+    width: 100vw;
+    padding: 20px;
+    border-left: 0;
+  }
+  .session-report {
+    padding: 20px;
+  }
 }
 .skip {
   position: fixed;
