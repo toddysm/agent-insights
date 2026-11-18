@@ -322,18 +322,21 @@ test("discovery preserves first JSON members, original witnesses and native vali
     });
 });
 
-test("directory discovery is bounded, excludes child links, rejects traversal and reports permission failures", async (t) => {
+test("directory discovery is bounded, identifies child links without following them, rejects traversal and reports permission failures", async (t) => {
   const root = await temporary(t);
   const inside = path.join(root, "approved");
   await mkdir(inside);
   await writeFile(path.join(inside, "events.jsonl"), "");
   const access = await SourceAccess.create([inside]);
-  if (process.platform !== "win32") {
-    await symlink(root, path.join(inside, "outside"));
-    assert.deepEqual(await access.entries("source-1", "", signal), [
-      { name: "events.jsonl", kind: "file" },
-    ]);
-  }
+  await symlink(
+    root,
+    path.join(inside, "outside"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  assert.deepEqual(await access.entries("source-1", "", signal), [
+    { name: "events.jsonl", kind: "file" },
+    { name: "outside", kind: "link" },
+  ]);
   await assert.rejects(access.entries("source-1", "..", signal), {
     code: "SOURCE_SCOPE",
   });
@@ -1670,6 +1673,74 @@ test(
 );
 
 test(
+  "native discovery reports linked history, overlay and profile directories without following them",
+  native,
+  async (t) => {
+    const data = await fixture(t);
+    const historyRoot = path.join(data.root, "linked-histories");
+    const overlayRoot = path.join(data.root, "linked-overlays");
+    await mkdir(historyRoot);
+    await mkdir(overlayRoot);
+    const links = [
+      [path.dirname(data.historyPath), path.join(historyRoot, "session")],
+      [
+        path.dirname(path.dirname(data.catalogPath)),
+        path.join(data.root, "User", "profiles", "linked"),
+      ],
+      [
+        path.join(data.root, "agentSessionData", "unrelated-storage-key"),
+        path.join(overlayRoot, "session"),
+      ],
+    ] as const;
+    for (const [target, linkPath] of links)
+      await symlink(
+        target,
+        linkPath,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    const result = await data.service.discover(
+      {
+        roots: [
+          ...data.selection.roots.filter((root) => root.layout === "settings"),
+          {
+            sourceId: "source-1",
+            relativePath: path.relative(data.root, historyRoot),
+            layout: "history",
+          },
+          {
+            sourceId: "source-1",
+            relativePath: path.relative(data.root, overlayRoot),
+            layout: "overlay",
+          },
+        ],
+      },
+      signal,
+    );
+    assert.deepEqual(
+      result.issues
+        .filter((issue) => issue.code === "SOURCE_LINK")
+        .map((issue) => issue.relativePath)
+        .sort(),
+      links.map(([, linkPath]) => path.relative(data.root, linkPath)).sort(),
+    );
+    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions[0]?.state, "unavailable");
+    assert.equal(result.sessions[0]?.selection, null);
+    assert.equal(
+      result.observations.filter((observation) => observation.kind === "sqlite")
+        .length,
+      1,
+    );
+    assert.ok(
+      result.locators.every(
+        (locator) =>
+          locator.relativePath === path.relative(data.root, data.catalogPath),
+      ),
+    );
+  },
+);
+
+test(
   "native generated paths reject leaf/intermediate links and stale opens but allow explicitly selected aliases",
   native,
   async (t) => {
@@ -1702,6 +1773,7 @@ test(
     assert.equal(data.service.view, null);
     const generated = await data.service.discover(data.selection, signal);
     assert.equal(generated.sessions[0]?.state, "unavailable");
+    assert.ok(generated.issues.some((issue) => issue.code === "SOURCE_LINK"));
     const explicit = await data.service.discover(
       {
         roots: [

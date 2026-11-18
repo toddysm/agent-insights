@@ -410,7 +410,9 @@ default. Each root selects a startup grant and a confined relative path:
 
 Use the corresponding per-user/custom roots from the harness configuration;
 the analyzer does not derive them from a working directory, SDK branding or
-timestamps. Named child links are excluded. Directory/file admission still uses
+timestamps. Named child links, including session directories and profile
+directories, are excluded with explicit `SOURCE_LINK` issues rather than followed
+or silently dropped. Directory/file admission still uses
 the [approved source boundary](#source-selection-and-limits).
 Explicit roots use their admitted file/directory kind, not a filename extension;
 extensionless files and directories ending in `.jsonl` or `.db` remain usable.

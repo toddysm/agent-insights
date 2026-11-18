@@ -27,7 +27,11 @@ import {
   type DiscoveryResult,
   type ReadSetRequest,
 } from "./protocol.js";
-import { SourceAccess, byteChunks, databasePhysicalIdentity } from "./sources.js";
+import {
+  SourceAccess,
+  byteChunks,
+  databasePhysicalIdentity,
+} from "./sources.js";
 import {
   SourceReadSet,
   sqliteReference,
@@ -108,10 +112,21 @@ export class SourceDiscovery {
     if (
       !(error instanceof RuntimeError) ||
       ![
-        "SOURCE_MISSING", "SOURCE_UNAVAILABLE", "SOURCE_DENIED", "SOURCE_IO",
-        "SOURCE_CHANGED", "SOURCE_SCOPE", "SOURCE_LINK", "NOT_A_FILE", "NOT_A_DIRECTORY",
-        "SQLITE_SCHEMA", "SQLITE_FORMAT", "SQLITE_SIDECARS", "SQLITE_RECOVERY_REQUIRED",
-        "SQLITE_JOURNAL_PRESENT", "SQLITE_LOCKED",
+        "SOURCE_MISSING",
+        "SOURCE_UNAVAILABLE",
+        "SOURCE_DENIED",
+        "SOURCE_IO",
+        "SOURCE_CHANGED",
+        "SOURCE_SCOPE",
+        "SOURCE_LINK",
+        "NOT_A_FILE",
+        "NOT_A_DIRECTORY",
+        "SQLITE_SCHEMA",
+        "SQLITE_FORMAT",
+        "SQLITE_SIDECARS",
+        "SQLITE_RECOVERY_REQUIRED",
+        "SQLITE_JOURNAL_PRESENT",
+        "SQLITE_LOCKED",
       ].includes(error.code) ||
       this.signal.aborted
     )
@@ -130,13 +145,24 @@ export class SourceDiscovery {
   }
 
   /** Deduplicate SQLite main/sidecar footprints, not main inodes alone; history aliases use file identity. */
-  private async physical(location: Location, database: boolean): Promise<string> {
+  private async physical(
+    location: Location,
+    database: boolean,
+  ): Promise<string> {
     await this.verifyLocation(location);
     if (database) {
-      const lease = await this.access.database(location.sourceId, location.relativePath, this.signal);
+      const lease = await this.access.database(
+        location.sourceId,
+        location.relativePath,
+        this.signal,
+      );
       try {
         if (await lease.verify())
-          throw new RuntimeError("SOURCE_CHANGED", "A discovery database changed during admission.", 409);
+          throw new RuntimeError(
+            "SOURCE_CHANGED",
+            "A discovery database changed during admission.",
+            409,
+          );
         await this.verifyLocation(location);
         return databasePhysicalIdentity(lease);
       } finally {
@@ -184,7 +210,11 @@ export class SourceDiscovery {
           422,
         );
       if (set.databaseIdentity("database") !== expectedIdentity)
-        throw new RuntimeError("SOURCE_CHANGED", "A discovery database rotated between identity admission and opening.", 409);
+        throw new RuntimeError(
+          "SOURCE_CHANGED",
+          "A discovery database rotated between identity admission and opening.",
+          409,
+        );
       this.locators.push({ evidenceSourceId: input.sourceId, ...location });
       const result = await read(input);
       const observations = await set.finish();
@@ -239,11 +269,12 @@ export class SourceDiscovery {
         relativePath: root.relativePath,
       };
       try {
-        const kind = await this.access.kind(root.sourceId, root.relativePath, this.signal);
-        if (
-          root.layout === "catalog" ||
-          kind === "file"
-        ) {
+        const kind = await this.access.kind(
+          root.sourceId,
+          root.relativePath,
+          this.signal,
+        );
+        if (root.layout === "catalog" || kind === "file") {
           if (root.layout === "settings")
             throw new RuntimeError(
               "NOT_A_DIRECTORY",
@@ -278,8 +309,16 @@ export class SourceDiscovery {
               root.sourceId,
               profiles,
               this.signal,
-            ))
-              if (entry.kind === "directory")
+            )) {
+              if (entry.kind === "link")
+                this.issues.push({
+                  ...location,
+                  relativePath: path.join(profiles, entry.name),
+                  code: "SOURCE_LINK",
+                  message:
+                    "Linked discovery children are excluded; select an alias explicitly.",
+                });
+              else if (entry.kind === "directory")
                 add(
                   "catalog",
                   {
@@ -293,6 +332,7 @@ export class SourceDiscovery {
                   },
                   root.relativePath,
                 );
+            }
           } catch (error) {
             if (
               !(error instanceof RuntimeError) ||
@@ -315,7 +355,15 @@ export class SourceDiscovery {
             root.relativePath,
             this.signal,
           )) {
-            if (entry.kind === "file" && entry.name === filename)
+            if (entry.kind === "link")
+              this.issues.push({
+                ...location,
+                relativePath: path.join(root.relativePath, entry.name),
+                code: "SOURCE_LINK",
+                message:
+                  "Linked discovery children are excluded; select an alias explicitly.",
+              });
+            else if (entry.kind === "file" && entry.name === filename)
               add(
                 root.layout,
                 {
@@ -347,15 +395,25 @@ export class SourceDiscovery {
   }
 
   /** Read the bounded first line only from the admitted inode; full session reads still reopen/qualify current inputs. */
-  private async header(location: Location, expectedIdentity: string): Promise<HistoryCandidate | null> {
+  private async header(
+    location: Location,
+    expectedIdentity: string,
+  ): Promise<HistoryCandidate | null> {
     await this.verifyLocation(location);
     return this.access.withStream(
       location.sourceId,
       location.relativePath,
       this.signal,
       async (source) => {
-        if (JSON.stringify([source.identity.dev, source.identity.ino]) !== expectedIdentity)
-          throw new RuntimeError("SOURCE_CHANGED", "Native history rotated between identity admission and opening.", 409);
+        if (
+          JSON.stringify([source.identity.dev, source.identity.ino]) !==
+          expectedIdentity
+        )
+          throw new RuntimeError(
+            "SOURCE_CHANGED",
+            "Native history rotated between identity admission and opening.",
+            409,
+          );
         const chunks: Uint8Array[] = [];
         let size = 0;
         for await (const chunk of source.chunks()) {
@@ -417,7 +475,10 @@ export class SourceDiscovery {
     );
   }
 
-  /** Resolve one manual request; duplicates require physical identity, not text, timestamps or path proximity. */
+  /**
+   * Resolve one manual request; duplicates require physical identity, not text, timestamps or path proximity.
+   * An unavailable reason skips inspection and returns one READER_UNAVAILABLE issue per selected root.
+   */
   async run(
     request: DiscoveryRequest,
     unavailableReason?: string,
@@ -551,14 +612,16 @@ export class SourceDiscovery {
                   );
                   const chats = ownership.ok
                     ? ownership.value.identities.filter((identity) =>
-                        [
-                          "agent-host-chat",
-                          "agent-host-storage-chat",
-                        ].includes(identity.namespace),
+                        ["agent-host-chat", "agent-host-storage-chat"].includes(
+                          identity.namespace,
+                        ),
                       )
                     : [];
                   if (ownership.ok)
-                    catalogChats.set(sdk, chats.map((identity) => identity.value));
+                    catalogChats.set(
+                      sdk,
+                      chats.map((identity) => identity.value),
+                    );
                   const overlayMatches = ownership.ok
                     ? overlays.filter((overlay) =>
                         chats.some(
@@ -593,7 +656,11 @@ export class SourceDiscovery {
                           ],
                         }
                       : null;
-                  if (selection && Buffer.byteLength(JSON.stringify(selection)) > MAX_CONTROL_BODY_BYTES)
+                  if (
+                    selection &&
+                    Buffer.byteLength(JSON.stringify(selection)) >
+                      MAX_CONTROL_BODY_BYTES
+                  )
                     throw new RuntimeError(
                       "DISCOVERY_LIMIT",
                       "A discovered session exceeds the 8-KiB reopen control limit; no session list was published.",

@@ -442,6 +442,7 @@ export class SourceAccess {
 
   /**
    * List one approved directory, never recursively or through child links.
+   * Return links as distinct entries so callers can report their exclusion without following them.
    * Reject over 256 entries rather than silently truncating discovery. Revalidate
    * its locator after iteration; callers must still admit each selected file.
    */
@@ -449,18 +450,20 @@ export class SourceAccess {
     sourceId: string,
     relativePath: string,
     signal: AbortSignal,
-  ): Promise<readonly { name: string; kind: "file" | "directory" }[]> {
+  ): Promise<readonly { name: string; kind: "file" | "directory" | "link" }[]> {
     const { canonical } = await this.resolve(sourceId, relativePath, signal, "directory");
     try {
       const before = await stat(canonical, { bigint: true });
       const directory = await opendir(canonical);
-      const entries: { name: string; kind: "file" | "directory" }[] = [];
+      const entries: { name: string; kind: "file" | "directory" | "link" }[] = [];
       let count = 0;
       for await (const entry of directory) {
         if (signal.aborted) throw cancelledRead(signal);
         if (++count > 256)
           throw new RuntimeError("DISCOVERY_LIMIT", "A discovery directory exceeds 256 entries; select a narrower root.", 413);
-        if (entry.isFile() || entry.isDirectory())
+        if (entry.isSymbolicLink())
+          entries.push({ name: entry.name, kind: "link" });
+        else if (entry.isFile() || entry.isDirectory())
           entries.push({ name: entry.name, kind: entry.isFile() ? "file" : "directory" });
       }
       const after = await this.resolve(sourceId, relativePath, signal, "directory");
