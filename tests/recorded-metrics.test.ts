@@ -372,6 +372,7 @@ test("tool identities include unknown names and missing optional IDs, without co
     ],
   );
   assert.equal(result.exclusions[0]?.reason, "bridge-wrapper");
+  assert.deepEqual(result.tools.identities[0]?.callIds, []);
   assert.equal(result.timing.agentActivity.metric.value, 60_000);
   assert.equal(result.timing.elapsed.metric.value, 90_000);
 });
@@ -567,6 +568,38 @@ test("unavailable dimension evidence cannot turn into a complete zero through a 
     calculate(measured).tools.identities[0]?.calls.metric.coverage.status,
     "partial",
   );
+});
+
+test("unavailable session sources limit positive metrics and source-anchored zeros even without events", () => {
+  const base = read([]);
+  const unavailable = {
+    status: "unavailable" as const,
+    reason: "Source was not captured",
+  };
+  const view = read([execution("call")], {
+    sources: [
+      ...base.sources,
+      {
+        ...base.sources[0]!,
+        id: "uncaptured",
+        coverage: {
+          messages: unavailable,
+          timing: unavailable,
+          tools: unavailable,
+          tokens: unavailable,
+        },
+      },
+    ],
+    sessions: base.sessions.map((session) => ({
+      ...session,
+      sourceIds: [...session.sourceIds, "uncaptured"],
+    })),
+  });
+  const result = calculate(view);
+  assert.equal(result.tokens.input.metric.value, 20);
+  assert.equal(result.tokens.input.metric.coverage.status, "partial");
+  assert.equal(result.timing.agentActivity.metric.coverage.status, "partial");
+  assert.equal(result.tools.calls.metric.value, null);
 });
 
 test("unsafe sums are unavailable and fractional milliseconds are preserved", () => {

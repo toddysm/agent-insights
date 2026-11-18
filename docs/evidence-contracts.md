@@ -600,6 +600,9 @@ observation bounds; these are not session start/end times. Every numeric
 contributor is attributable to the selected session and available for the
 metric's dimension. Source/dimension coverage remains an upper bound;
 missing fields, conflicts and unresolved attribution reduce availability.
+All session sources conservatively constrain dimensional coverage, including
+unavailable sources with no normalized events. An available source cannot hide
+another source's missing contributions or establish a source-anchored zero alone.
 
 - **Observed start/end** are the earliest/latest selected message or execution
   boundary timestamps, in Unix milliseconds. **Elapsed** is their difference,
@@ -616,7 +619,8 @@ missing fields, conflicts and unresolved attribution reduce availability.
   time. Incomplete intervals remain partial/unavailable, not zero-length spans.
 - **Tool calls/identities** count distinct recorded executions, including
   incomplete calls. Missing names remain `null`; optional absent call IDs
-  are not fabricated. Qualified native bridge wrappers are excluded.
+  are not fabricated or replaced by span IDs. Qualified native bridge wrappers
+  are excluded.
 - **Input/output tokens** sum only model-call `per-call` measurements.
   Parent usage, cumulative/unknown reports, whole/direct-turn totals,
   assistant-output reports and shutdown snapshots are not added to these

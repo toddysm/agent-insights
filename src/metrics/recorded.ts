@@ -355,12 +355,10 @@ export function calculateRecordedMetrics(
               "unavailable",
           );
     const coverageReasons = new Set(reasons);
-    const availableSources = view.sources.filter(
-      (source) =>
-        session.sourceIds.includes(source.id) &&
-        source.coverage[dimension].status !== "unavailable",
+    const sessionSources = view.sources.filter((source) =>
+      session.sourceIds.includes(source.id),
     );
-    for (const source of availableSources) {
+    for (const source of sessionSources) {
       const coverage = source.coverage[dimension];
       if (coverage.status !== "complete") coverageReasons.add(coverage.reason);
     }
@@ -373,7 +371,7 @@ export function calculateRecordedMetrics(
       references.length === 0 &&
       value === 0 &&
       metricScope.kind === "session" &&
-      availableSources.length > 0 &&
+      sessionSources.length > 0 &&
       coverageReasons.size === 0
     ) {
       references.push(
@@ -583,7 +581,7 @@ export function calculateRecordedMetrics(
                   ? [
                       event.tool?.callId ??
                         event.nativeExecution?.toolCallId ??
-                        event.nativeId,
+                        null,
                     ].filter((id) => id !== null)
                   : [],
               ),
