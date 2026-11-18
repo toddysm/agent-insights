@@ -564,6 +564,51 @@ td small {
   font: 10px var(--mono);
   color: var(--muted);
 }
+.activity-panel {
+  margin: 24px 0;
+}
+.activity-lanes {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.activity-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 11px;
+  color: var(--muted);
+}
+.activity-lane .timeline {
+  margin-top: 6px;
+  background: var(--paper);
+  gap: 0;
+  height: 22px;
+}
+.activity-lane .timeline button {
+  border: 1px solid var(--panel);
+  background: var(--teal);
+}
+.lane-work .timeline button {
+  background: repeating-linear-gradient(135deg, var(--teal), var(--teal) 4px, var(--teal-soft) 4px, var(--teal-soft) 6px);
+}
+.lane-waiting .timeline button {
+  background: var(--amber-soft);
+  border-color: var(--amber);
+}
+.lane-quiet .timeline button {
+  background: var(--panel);
+  border: 1px dashed var(--muted);
+}
+.lane-unknown .timeline button {
+  background: var(--line);
+  border-color: var(--muted);
+}
+.span-42 {
+  grid-column: span 42;
+}
 .legend {
   display: flex;
   gap: 15px;

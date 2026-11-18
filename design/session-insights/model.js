@@ -61,6 +61,35 @@ const InsightsModel = (() => {
     [16, 16, 17, 18, 19, 20, 20, 21, 22],
     [24, 25, 26, 27],
   ];
+  const toolInputs = [
+    { path: "src/table.ts", startLine: 1, endLine: 160 },
+    { path: "src", pattern: "export.*csv|filteredRows", regex: true },
+    { path: "src/utils" },
+    { path: "src/utils/csv.ts", startLine: 1, endLine: 120 },
+    { patch: "*** Begin Patch\n*** Add File: src/export.ts\n+import { toCsv } from './utils/csv';\n+export const exportRows = (rows) => toCsv(rows);\n*** End Patch" },
+    { command: "npm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "Export tests: 1 failed, 7 passed.", stderr: "Expected filtered rows; received all rows.", exitCode: 1 },
+    { path: "src/table.ts", startLine: 80, endLine: 140 },
+    { patch: "*** Begin Patch\n*** Update File: src/export.ts\n@@\n-export const exportRows = (rows) => toCsv(rows);\n+export const exportRows = (table) => toCsv(table.filteredRows);\n*** Add File: tests/export.test.ts\n+import { test, expect } from 'vitest';\n+import { exportRows } from '../src/export';\n+test('exports filtered rows', () => {\n+  expect(exportRows({ filteredRows: [['visible']] })).toContain('visible');\n+});\n*** End Patch" },
+    { command: "mkdir -p temp\nprintf '%s\\n' 'print(\"name,value\")' 'print(\"sample,1\")' > temp/make-fixtures.py\npython3 temp/make-fixtures.py\nnpm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "name,value\nsample,1\nExport tests: 8 passed, 0 failed.", stderr: "", exitCode: 0 },
+    { prompt: "Check filtered-row handling and CSV escaping. Inspect src/export.ts and tests/export.test.ts. Remaining instructions were not captured." },
+    { path: "tests/export.test.ts", startLine: 1, endLine: 120 },
+    { path: "src/utils", pattern: "toCsv", regex: false },
+    { question: "Can I use the existing CSV utility and remove the temporary fixture helper?", choices: ["Use existing utility", "Explain the alternative"] },
+    { command: "npm test -- --run tests/export.test.ts && rm temp/make-fixtures.py", workingDirectory: "/workspace/sample-reports", stdout: "CSV export filtered-row and escaping tests: 8 passed, 0 failed (synthetic).\nDeleted: temp/make-fixtures.py", stderr: "", exitCode: 0 },
+    { path: "src/date-filter.ts", startLine: 1, endLine: 100 },
+    { path: "src", pattern: "endDate", regex: false },
+    { patch: "*** Begin Patch\n*** Update File: src/date-filter.ts\n@@\n-return date < end;\n+return date <= end;\n*** End Patch" },
+    { command: "npm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "Date-filter checks passed; end-date boundary case not yet covered.", stderr: "", exitCode: 0 },
+    { path: "tests/export.test.ts", startLine: 1, endLine: 160 },
+    { patch: "*** Begin Patch\n*** Update File: src/date-filter.ts\n@@\n-return date <= end;\n+return date >= start && date <= end;\n*** Update File: tests/export.test.ts\n@@\n import { test, expect } from 'vitest';\n+import { includesDate } from '../src/date-filter';\n+test('includes the end date', () => {\n+  expect(includesDate('2026-10-29', '2026-10-01', '2026-10-29')).toBe(true);\n+});\n*** End Patch" },
+    { command: "npm test -- --run tests/export.test.ts", workingDirectory: "/workspace/sample-reports", stdout: "Date-filter boundary tests passed, including the selected end date.", stderr: "", exitCode: 0 },
+    null,
+    { path: "src/date-filter.ts", startLine: 1, endLine: 100 },
+    { path: "docs/README.md", startLine: 1, endLine: 120 },
+    { url: "https://example.invalid/csv-reference", headers: { Authorization: "[REDACTED BY HARNESS / SYNTHETIC]" } },
+    { patch: "*** Begin Patch\n*** Add File: docs/export.md\n+# CSV export\n+Export uses the visible filtered rows and the existing CSV utility.\n+Usage example remains unfinished.\n*** End Patch" },
+    { command: "mkdir -p temp\nprintf '%s\\n' 'Export <filtered> rows & preserve \"quotes\".' > temp/session-notes.md\ncat temp/session-notes.md\nrm temp/session-notes.md", workingDirectory: "/workspace/sample-reports", stdout: "Export <filtered> rows & preserve \"quotes\".\nCreated and deleted: temp/session-notes.md", stderr: "", exitCode: 0 },
+  ];
   const usage = [
     [
       [1200, 150, 2],
@@ -199,12 +228,26 @@ const InsightsModel = (() => {
     },
   ];
   const intervals = [
-    { taskId: "t1", turn: 6, start: 2, end: 8 },
-    { taskId: "t1", turn: 12, start: 12, end: 16 },
-    { taskId: "t2", turn: 17, start: 22, end: 26 },
-    { taskId: "t2", turn: 20, start: 30, end: 32 },
-    { taskId: "t3", turn: 26, start: 36, end: 38 },
-    { taskId: "t1", turn: 6, start: 4, end: 6 },
+    { taskId: "t1", turn: 6, start: 2, end: 8, kind: "model", sourceId: "m1" },
+    { taskId: "t1", turn: 12, start: 12, end: 16, kind: "model", sourceId: "m6" },
+    { taskId: "t2", turn: 17, start: 22, end: 26, kind: "model", sourceId: "m8" },
+    { taskId: "t2", turn: 20, start: 30, end: 32, kind: "work", sourceId: "c21" },
+    { taskId: "t3", turn: 26, start: 36, end: 38, kind: "work", sourceId: "c26" },
+    { taskId: "t1", turn: 6, start: 4, end: 6, kind: "work", sourceId: "c6" },
+  ];
+  const stateIntervals = [
+    { kind: "waiting", start: 8, end: 12, evidence: [
+      { id: "H01", text: "Approval requested at 09:08: may I continue with the filtered-row approach?" },
+      { id: "H02", text: "Human response at 09:12: continue with that approach." },
+    ] },
+    { kind: "quiet", start: 0, end: 2, evidence: [
+      { id: "L01", text: "Session open at 09:00; no pending execution or input request." },
+      { id: "L02", text: "Model execution starts at 09:02; complete lifecycle coverage between these records." },
+    ] },
+    { kind: "quiet", start: 26, end: 30, evidence: [
+      { id: "L03", text: "Session open at 09:26; no pending execution or input request." },
+      { id: "L04", text: "Tool execution starts at 09:30; complete lifecycle coverage between these records." },
+    ] },
   ];
   const steeringCategories = [
     "Correction",
@@ -261,14 +304,22 @@ const InsightsModel = (() => {
       signals: structuredClone(signalSeeds),
       artifacts: structuredClone(artifactSeeds),
       intervals: structuredClone(intervals),
+      stateIntervals: ["partial", "transcript"].includes(mode) ? null : structuredClone(stateIntervals),
+      observedMinutes: 42,
       tools: toolNames.flatMap((names, group) =>
         names.map((name, index) => ({
           id: `c${++toolIndex}`,
           name,
           taskId: `t${group + 1}`,
           turn: toolTurns[group][index],
-          durationMs: name === "terminal" ? 1400 + index * 80 : 40 + index * 17,
+          durationMs: [6, 21, 26].includes(toolIndex) ? 120000 : name === "terminal" ? 1400 + index * 80 : 40 + index * 17,
           status: toolIndex === 6 ? "Failed, recovered later" : "Succeeded",
+          input: mode === "partial" ? null : name === "terminal"
+            ? { command: toolInputs[toolIndex - 1].command, workingDirectory: toolInputs[toolIndex - 1].workingDirectory }
+            : structuredClone(toolInputs[toolIndex - 1]),
+          output: mode === "partial" || name !== "terminal" ? null
+            : { stdout: toolInputs[toolIndex - 1].stdout, stderr: toolInputs[toolIndex - 1].stderr, exitCode: toolInputs[toolIndex - 1].exitCode },
+          inputStatus: mode === "partial" || toolIndex === 22 ? "missing" : toolIndex === 10 ? "truncated" : toolIndex === 25 ? "redacted" : "complete",
           testResult: toolIndex === 14
             ? "CSV export filtered-row and escaping tests: 8 passed, 0 failed (synthetic)."
             : null,
@@ -346,6 +397,38 @@ const InsightsModel = (() => {
       end = Math.max(end, interval.end);
     }
     return total;
+  }
+
+  /** Separate evidence-backed timeline lanes; missing state coverage stays unknown, and overlapping execution counts once overall. */
+  function activitySummary(state) {
+    const totals = metrics(state);
+    const execution = state.telemetry ? state.intervals : [];
+    const lifecycle = state.telemetry ? state.stateIntervals : null;
+    const known = [...execution, ...(lifecycle || [])].toSorted((a, b) => a.start - b.start);
+    const unknown = [];
+    let end = 0;
+    for (const interval of known) {
+      if (interval.start > end) unknown.push({ start: end, end: interval.start });
+      end = Math.max(end, interval.end);
+    }
+    if (end < state.observedMinutes) unknown.push({ start: end, end: state.observedMinutes });
+    const definitions = [
+      ["model", "Model processing / thinking", "Recorded", "Model-request boundaries include queueing, network and generation; they do not measure private reasoning.", state.telemetry ? execution.filter((item) => item.kind === "model") : null],
+      ["work", "Executing work", "Recorded", "Recorded tool spans, including time a tool spends waiting. Background work can overlap model processing.", state.telemetry ? execution.filter((item) => item.kind === "work") : null],
+      ["waiting", "Waiting for you", "Recorded", "An explicit input/approval request through its response or cancellation; silence between messages is insufficient.", lifecycle ? lifecycle.filter((item) => item.kind === "waiting") : null],
+      ["quiet", "Session quiet / idle", "Inferred", "An open session with complete lifecycle coverage and no pending execution or input request. Not a measurement of human inactivity.", lifecycle ? lifecycle.filter((item) => item.kind === "quiet") : null],
+      ["unknown", "Unknown / unobserved", "Unavailable", "These intervals lack enough evidence to classify. They may include unrecorded work, reading, thinking or absence.", unknown],
+    ];
+    return {
+      observedMinutes: state.observedMinutes,
+      executionMinutes: totals.activeMinutes,
+      outsideExecutionMinutes: state.telemetry ? state.observedMinutes - totals.activeMinutes : null,
+      lanes: definitions.map(([id, label, basis, explanation, spans]) => ({
+        id, label, basis, explanation,
+        spans: spans === null ? null : structuredClone(spans).toSorted((a, b) => a.start - b.start),
+        minutes: spans === null ? null : unionMinutes(spans),
+      })),
+    };
   }
 
   /** Derive recorded metrics for the whole capture or an event-attributed task; null denotes unavailable coverage. */
@@ -464,6 +547,7 @@ const InsightsModel = (() => {
     taskLabel,
     artifactTasks,
     unionMinutes,
+    activitySummary,
     metrics,
     refreshSource,
     beginAnalysis,

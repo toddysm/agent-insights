@@ -10,7 +10,7 @@
   let lastOpener = null;
   let dirty = true;
   const scrollPositions = new Map();
-  const filters = { search: "", purpose: "All", artifactTask: "All" };
+  const filters = { search: "", purpose: "All", artifactTask: "All", tool: "All" };
   let noticeTimer;
   const scenarioDescriptions = {
     report: "Start with outcomes. Every metric leads to its evidence.",
@@ -223,7 +223,7 @@
         "Reporting improvements",
         "SESSION INSIGHTS",
         "sample-reports / VS Code Copilot Chat / observed 09:00-09:42 UTC (synthetic)",
-        `<button class="secondary" data-action="refresh">Refresh source</button><button class="button" data-action="analysis">Analysis setup</button>`,
+        `<a class="secondary" href="#tools">Tools &amp; commands</a><button class="secondary" data-action="refresh">Refresh source</button><button class="button" data-action="analysis">Analysis setup</button>`,
       ) +
       `<div class="badge-row">${badge(state.content && state.telemetry ? "Captured content + execution" : "Limited evidence", state.mode === "complete" ? "" : "warning")}${badge(state.analyzed ? "Task interpretations: inferred" : "Interpretations: not analyzed", "neutral")}${badge("Synthetic example", "neutral")}</div>` +
       coverageNotice() +
@@ -232,15 +232,14 @@
       <div class="metrics">
       ${metric("Human steering", totals.steering, state.analyzed ? "Distinct messages / inferred categories" : "Not analyzed", "steering")}
       ${metric("Unique artifacts", totals.artifacts, totals.deliverables === null ? "Purpose assessment unavailable" : `${totals.deliverables} deliverables / ${totals.helpers} temporary helpers`, "artifacts")}
-      ${metric("Tool activity", totals.toolCalls, totals.distinctTools === null ? "Execution records unavailable" : `${totals.distinctTools} distinct tools / recorded`, "tools")}
+      ${metric("Tools & commands", totals.toolCalls, totals.distinctTools === null ? "Execution records unavailable" : `${totals.distinctTools} distinct tools / inspect full inputs`, "tools")}
       ${metric("Model tokens", totals.input === null ? null : `${(totals.input / 1000).toFixed(1)}k / ${(totals.output / 1000).toFixed(1)}k`, "Input / output / recorded usage", "tokens")}
       </div>
       <div class="section-heading"><h2>The task story</h2><span class="small muted">Read-only / inspect evidence and uncertainty</span></div>
       ${state.analyzed ? taskTable(tasks) : `<div class="panel"><h3>Tasks have not been analyzed.</h3><p class="small muted">${state.content ? "Enable the simulated analysis to explore task interpretations. Recorded metrics above remain available." : "Message content is missing, so this example cannot support task or steering analysis."}</p><button class="text-button" data-action="${state.content ? "analysis" : "capture-help"}">${state.content ? "Review analysis setup" : "Inspect capture prerequisites"}</button></div>`}
-      <div class="two-column"><section class="panel"><div class="section-heading"><div><p class="eyebrow">42 MINUTES OBSERVED</p><h3>Activity is not the whole story.</h3></div><button class="text-button" data-action="metric" data-metric="time">Inspect time</button></div>
-      ${timeline()}<div class="legend"><span><i></i>${state.telemetry ? `${totals.activeMinutes}m recorded agent activity` : "Agent activity unavailable"}</span><span><i class="gap"></i>${state.telemetry ? "24m unobserved gaps" : "No execution trace"}</span></div>
-      <p class="small muted">Gaps may include thinking, reviewing, or being away. <button class="text-button" data-action="metric" data-metric="typing">Human typing: unavailable</button></p></section>
-      <section class="panel"><p class="eyebrow">A BETTER NEXT INSTRUCTION</p><h3>What would you ask differently?</h3><p class="small muted">Review the initial prompt and each task prompt in context. Ratings are model judgments; suggestions are grounded in visible evidence.</p><a class="button" href="#prompts">Explore prompt coaching</a><p class="small muted">No overall productivity score. No invented time saved.</p></section></div>`
+      <section class="panel activity-panel"><div class="section-heading"><div><p class="eyebrow">42 MINUTES OBSERVED / SYNTHETIC</p><h3>Where did the time go?</h3></div><button class="text-button" data-action="metric" data-metric="time">Inspect time</button></div>
+      ${timeline()}<p class="small muted">${state.telemetry ? `${totals.activeMinutes}m recorded agent activity / ${totals.cumulativeMinutes}m cumulative spans. 24m outside recorded execution, not 24m of human inactivity. Lanes can overlap; do not add their durations.` : "Execution and lifecycle timing unavailable. Conversation duration is not agent runtime."} <button class="text-button" data-action="metric" data-metric="typing">Human typing: unavailable</button></p></section>
+      <section class="panel"><p class="eyebrow">A BETTER NEXT INSTRUCTION</p><h3>What would you ask differently?</h3><p class="small muted">Review the initial prompt and each task prompt in context. Ratings are model judgments; suggestions are grounded in visible evidence.</p><a class="button" href="#prompts">Explore prompt coaching</a><p class="small muted">No overall productivity score. No invented time saved.</p></section>`
     );
   }
 
@@ -256,24 +255,44 @@
       )}</tbody></table></div><p class="table-note">A shared artifact can appear under more than one task, but counts once for the session. Task grouping is inferred; capture coverage is not interpretation confidence.</p>`;
   }
 
-  /** Draw the exact synthetic active/gap intervals; the time drawer provides the accessible record table. */
+  /** Draw evidence-labeled, overlapping session lanes; every recorded segment opens its supporting records. */
   function timeline() {
+    const summary = M.activitySummary(state);
+    return `<div class="activity-lanes">${summary.lanes.map((lane) => {
+      let end = 0;
+      const segments = (lane.spans || []).map((span) => {
+        const gap = '<span aria-hidden="true"></span>'.repeat(span.start - end);
+        end = span.end;
+        return gap + `<button class="span-${span.end - span.start}" data-action="activity" data-id="${h(lane.id)}" aria-label="${h(lane.label)}: minutes ${span.start}-${span.end}; ${h(lane.basis)}. Inspect evidence."></button>`;
+      }).join("");
+      return `<section class="activity-lane lane-${h(lane.id)}"><div class="activity-label"><button class="text-button" data-action="activity" data-id="${h(lane.id)}">${h(lane.label)}</button><span>${lane.minutes === null ? "Unavailable" : `${lane.minutes}m`} / ${h(lane.basis)}</span></div><div class="timeline" role="group" aria-label="${h(lane.label)} timeline">${segments}</div></section>`;
+    }).join("")}</div><div class="timeline-labels"><span>09:00</span><span>09:21</span><span>09:42 UTC</span></div>`;
+  }
+
+  /** Explain a selected lane with source boundaries; quiet is inferred and unknown time never becomes measured idle. */
+  function activityPanel(id) {
+    const lane = M.activitySummary(state).lanes.find((item) => item.id === id);
+    if (!lane) throw new RangeError("That activity lane does not exist.");
+    return panelShell(lane.label, `${lane.basis} / ${lane.minutes === null ? "TIMING UNAVAILABLE" : `${lane.minutes}m`} / SYNTHETIC`,
+      `<p>${h(lane.explanation)}</p>${lane.spans === null ? '<div class="callout">Required timing/state records were not captured. This is unavailable, not zero.</div>' :
+        lane.spans.map((span) => `<section class="context-block"><h3>Minutes ${span.start}-${span.end} from session start</h3>${span.sourceId ? `<p>Recorded start/end boundaries for ${h(span.sourceId.toUpperCase())}.</p><button class="text-button" data-action="${lane.id === "model" ? "request" : "tool"}" data-id="${h(span.sourceId)}">Inspect ${h(span.sourceId.toUpperCase())}</button>` : span.evidence ? `<ul>${span.evidence.map((record) => `<li><strong>${h(record.id)}</strong>: ${h(record.text)}</li>`).join("")}</ul>` : '<p>No sufficient execution or lifecycle records cover this interval. No human activity is inferred.</p>'}</section>`).join("")}
+        <button class="text-button" data-action="metric" data-metric="time">Back to time overview</button>`);
+  }
+
+  /** Share the session/task invocation ledger without reconstructing missing arguments or treating programs as extra tool calls. */
+  function toolsTable(taskId = "", toolName = "All") {
+    const tools = state.tools.filter((item) => (!taskId || item.taskId === taskId) && (toolName === "All" || item.name === toolName));
+    return `<p class="small muted">${tools.length} recorded invocations in this view. A shell invocation can contain several commands; it still counts once.</p><div class="table-wrap"><table><thead><tr><th>Invocation / tool</th><th>Duration</th><th>Outcome</th><th>Input</th></tr></thead><tbody>${tools.map((item) => `<tr><td><button class="text-button" data-action="tool" data-id="${h(item.id)}">${h(item.id.toUpperCase())} / ${h(item.name)}</button><small>${h(M.taskLabel(state, item.taskId))} / U${item.turn}</small></td><td>${number(item.durationMs)} ms</td><td>${h(item.status)}</td><td>${h(item.inputStatus)}<br><button class="text-button" data-action="tool" data-id="${h(item.id)}" aria-label="Inspect full input for ${h(item.id.toUpperCase())}">Inspect full input</button></td></tr>`).join("")}</tbody></table></div>`;
+  }
+
+  /** Make all recorded tools and full captured inputs discoverable at session scope, independent of analysis. */
+  function toolsPage() {
+    const intro = heading("Tools & commands", "RECORDED EXECUTION", "Reporting improvements / inspect captured inputs, results and source references.");
     if (!state.telemetry)
-      return `<div class="callout">No execution intervals were captured. Elapsed conversation time is not agent runtime.</div>`;
-    const spans = [
-      [2, false],
-      [6, true],
-      [4, false],
-      [4, true],
-      [6, false],
-      [4, true],
-      [4, false],
-      [2, true],
-      [4, false],
-      [2, true],
-      [4, false],
-    ];
-    return `<div class="timeline" role="group" aria-label="Recorded agent activity and unobserved gaps">${spans.map(([minutes, active]) => `<button class="span-${minutes} ${active ? "active" : ""}" data-action="metric" data-metric="time" aria-label="${minutes} minutes ${active ? "recorded agent activity" : "unobserved gap"}"></button>`).join("")}</div><div class="timeline-labels"><span>09:00</span><span>09:21</span><span>09:42 UTC</span></div>`;
+      return intro + '<div class="callout">No execution records were captured. Tool names, commands and arguments cannot be reconstructed from transcript text.</div>';
+    const names = [...new Set(state.tools.map((item) => item.name))].toSorted();
+    return intro + coverageNotice() +
+      `<p>${state.tools.length} invocations / ${names.length} distinct tools. Display only: no command or tool input on this page is executed.</p><div class="badge-row">${names.map((name) => badge(`${name}: ${state.tools.filter((tool) => tool.name === name).length}`, "neutral")).join("")}</div><div class="filter-bar"><div class="filter-control"><label for="tool-filter">Tool</label><select id="tool-filter">${["All", ...names].map((name) => `<option ${filters.tool === name ? "selected" : ""}>${h(name)}</option>`).join("")}</select></div></div>${toolsTable("", filters.tool)}`;
   }
 
   /** Show a task's original request and outcome basis before any inferred explanation. */
@@ -552,7 +571,12 @@
       M.taskLabel(state, tool.taskId),
       `<div class="badge-row">${badge(tool.status, tool.status.startsWith("Failed") ? "danger" : "")}${badge(`${tool.durationMs} ms`, "neutral")}${badge(`Turn U${tool.turn}`, "neutral")}</div>
       <p class="small muted">This is one recorded tool invocation. Durations include waiting; they are not processor time.</p>
-      ${state.content ? `<h3>Recorded result / synthetic</h3><pre>${h([...operations, result].join("\n"))}</pre><details><summary>Arguments and source anchor</summary><p>Example reference: ${h(tool.id)} / turn U${tool.turn}. No command on this page is executed.</p><code>${h(tool.name)}(synthetic task context)</code></details>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}`,
+      <p>Source ${h(tool.id.toUpperCase())} / read ${state.readId} / synthetic. Display only; nothing is executed.</p>
+      <h3>${tool.name === "terminal" ? "Full captured command" : "Captured arguments"} / synthetic</h3>
+      ${tool.inputStatus !== "complete" ? `<div class="callout">Input ${h(tool.inputStatus)} in the source. ${tool.inputStatus === "missing" ? "Arguments are unavailable, not an empty invocation." : tool.inputStatus === "truncated" ? "Only the captured portion is shown; the remainder is unavailable." : "Redacted values are not recoverable or reconstructed."}</div>` : ""}
+      ${tool.input === null ? "" : `<pre id="tool-input">${h(tool.name === "terminal" ? tool.input.command : JSON.stringify(tool.input, null, 2))}</pre>${tool.name === "terminal" ? `<p class="small">Working directory: <code>${h(tool.input.workingDirectory)}</code></p>` : ""}`}
+      ${state.content ? `<h3>Recorded result / synthetic</h3><pre id="tool-result">${h(tool.output ? `stdout:\n${tool.output.stdout}\n\nstderr:\n${tool.output.stderr || "(empty)"}\n\nExit code: ${tool.output.exitCode}` : [...operations, result].join("\n"))}</pre>` : `<div class="callout">Arguments and result content are missing. Name, duration, and outcome remain recorded.</div>`}
+      <button class="text-button" data-action="metric" data-metric="tools" data-task="${h(route().params.get("task") || "")}">Back to tool calls</button>`,
     );
   }
 
@@ -608,6 +632,7 @@
       taskId ? M.taskLabel(state, taskId) : "OBSERVED 09:00-09:42 UTC / SYNTHETIC",
       `<p>The session spans <strong>42 minutes</strong> between captured boundaries. This is not a claim of 42 minutes of productive work.</p>
       ${state.telemetry ? `<div class="badge-row">${badge(`${values.activeMinutes}m interval-union activity`)}${badge(`${values.cumulativeMinutes}m cumulative spans`, "neutral")}</div><div class="table-wrap"><table><thead><tr><th>Recorded span</th><th>Minutes from start</th><th>Task</th></tr></thead><tbody>${intervals.map((item, index) => `<tr><td>A${index + 1}${item.start === 4 ? " / overlapping child" : ""}</td><td>${item.start}-${item.end}</td><td>${h(M.taskLabel(state, item.taskId))}</td></tr>`).join("")}</tbody></table></div><p class="small muted">The overlapping child adds to cumulative duration, not elapsed activity. Model/tool durations can include waiting.</p>` : `<div class="callout">No execution intervals were captured. Agent runtime is unavailable.</div>`}
+      ${taskId ? '<p>Waiting, quiet and unknown intervals are not attributed to an inferred task. Inspect the session timeline for those states.</p>' : timeline()}
       <div class="callout"><strong>Human typing: unavailable.</strong> Message submission is not typing start. Unobserved gaps may include reading, thinking, other work, or absence. They are not labeled exact idle time.</div>`,
     );
   }
@@ -719,6 +744,7 @@
     if (panel === "request") return requestPanel(params.get("id"));
     if (panel === "tokens") return tokensPanel(taskId);
     if (panel === "time" || panel === "typing") return timePanel(taskId);
+    if (panel === "activity") return activityPanel(params.get("id"));
     if (panel === "coverage") return coveragePanel();
     if (panel === "analysis") return analysisPanel();
     if (panel === "outcome") return outcomePanel(taskId);
@@ -754,13 +780,11 @@
           "TRANSCRIPT ONLY",
           "<p>No execution records were captured. Transcript text is not an authoritative invocation log.</p>",
         );
-      const tools = state.tools.filter(
-        (item) => !taskId || item.taskId === taskId,
-      );
+      const tools = state.tools.filter((item) => !taskId || item.taskId === taskId);
       return panelShell(
         `${tools.length} recorded tool calls`,
         taskId ? M.taskLabel(state, taskId) : "WHOLE SESSION",
-        `<p class="small muted">${new Set(tools.map((item) => item.name)).size} distinct tools. Open a row for its exact synthetic result.</p><div class="table-wrap"><table><thead><tr><th>Invocation</th><th>Duration</th><th>Outcome</th></tr></thead><tbody>${tools.map((item) => `<tr><td><button class="text-button" data-action="tool" data-id="${h(item.id)}">${h(item.id.toUpperCase())} / ${h(item.name)}</button><small>${h(M.taskLabel(state, item.taskId))}</small></td><td>${item.durationMs} ms</td><td>${h(item.status)}</td></tr>`).join("")}</tbody></table></div>`,
+        `<p class="small muted">${new Set(tools.map((item) => item.name)).size} distinct tools. Inspect full captured inputs and results; missing, truncated and redacted content stays explicit.</p>${toolsTable(taskId)}`,
       );
     }
     if (panel === "completed" || panel === "tasks")
@@ -802,6 +826,7 @@
         else if (view === "report") main.innerHTML = reportPage();
         else if (view === "task") main.innerHTML = taskPage(id);
         else if (view === "artifacts") main.innerHTML = artifactsPage();
+        else if (view === "tools") main.innerHTML = toolsPage();
         else if (view === "prompts") main.innerHTML = promptsPage(id);
         else
           throw new RangeError(
@@ -882,6 +907,7 @@
     filters.search = "";
     filters.purpose = "All";
     filters.artifactTask = "All";
+    filters.tool = "All";
     dirty = true;
     document.getElementById("scenario").value = name;
     document.getElementById("scenario-note").textContent =
@@ -952,6 +978,7 @@
     else if (action === "session-origin")
       openPanel("interaction", "", { event: "session-origin" });
     else if (action === "outcome") openPanel("outcome", task);
+    else if (action === "activity") openPanel("activity", "", { id });
     else if (["artifact", "tool", "request"].includes(action))
       openPanel(action, contextTask, { id });
     else if (action === "capture-help") openPanel("capture");
@@ -963,6 +990,7 @@
       M.refreshSource(state);
       filters.purpose = "All";
       filters.artifactTask = "All";
+      filters.tool = "All";
       dirty = true;
       navigate(route().base);
       if (restoreFocus)
@@ -980,6 +1008,7 @@
       );
       filters.purpose = "All";
       filters.artifactTask = "All";
+      filters.tool = "All";
       dirty = true;
       navigate("report");
       announce("Bundled example opened. No real source was accessed or copied.");
@@ -1052,9 +1081,10 @@
     if (element.id === "scenario") loadScenario(element.value);
     else if (
       element.id === "purpose-filter" ||
-      element.id === "artifact-task-filter"
+      element.id === "artifact-task-filter" ||
+      element.id === "tool-filter"
     ) {
-      filters[element.id === "purpose-filter" ? "purpose" : "artifactTask"] =
+      filters[element.id === "purpose-filter" ? "purpose" : element.id === "tool-filter" ? "tool" : "artifactTask"] =
         element.value;
       dirty = true;
       render();

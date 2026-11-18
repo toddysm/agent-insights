@@ -31,6 +31,34 @@ test("parallel or duplicate intervals do not inflate elapsed activity", () => {
   assert.equal(M.unionMinutes([{ start: 0, end: 60 }, { start: 0, end: 60 }]), 60);
 });
 
+test("activity lanes reconcile known states and unknown gaps without adding overlapping execution", () => {
+  const state = M.createState();
+  const summary = M.activitySummary(state);
+  const lanes = Object.fromEntries(summary.lanes.map((lane) => [lane.id, lane]));
+  assert.equal(lanes.model.minutes + lanes.work.minutes, 20);
+  assert.equal(summary.executionMinutes, 18);
+  assert.equal(summary.outsideExecutionMinutes, 24);
+  assert.equal(summary.executionMinutes + lanes.waiting.minutes + lanes.quiet.minutes + lanes.unknown.minutes, summary.observedMinutes);
+  assert.deepEqual(lanes.unknown.spans, [{ start: 16, end: 22 }, { start: 32, end: 36 }, { start: 38, end: 42 }]);
+  assert.equal(lanes.waiting.basis, "Recorded");
+  assert.equal(lanes.quiet.basis, "Inferred");
+  state.intervals.push({ ...state.intervals[0] });
+  assert.equal(M.activitySummary(state).executionMinutes, 18);
+  assert.equal(M.activitySummary(state).lanes[0].minutes, lanes.model.minutes);
+});
+
+test("missing lifecycle coverage never becomes measured waiting or idle time", () => {
+  for (const mode of ["partial", "transcript"]) {
+    const summary = M.activitySummary(M.createState(mode));
+    for (const lane of summary.lanes.filter((item) => ["waiting", "quiet"].includes(item.id))) {
+      assert.equal(lane.minutes, null);
+      assert.equal(lane.spans, null);
+    }
+    assert.equal(summary.lanes.find((item) => item.id === "unknown").minutes, mode === "partial" ? 24 : 42);
+    assert.equal(summary.executionMinutes, mode === "partial" ? 18 : null);
+  }
+});
+
 test("partial and transcript-only captures do not use zero for unavailable values", () => {
   const partial = M.metrics(M.createState("partial"));
   assert.equal(partial.input, null);

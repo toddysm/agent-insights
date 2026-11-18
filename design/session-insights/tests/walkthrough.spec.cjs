@@ -124,6 +124,75 @@ test("S5 request evidence returns to the same scope and timing exposes overlap",
   await expect(page.locator("#detail")).toContainText("Human typing: unavailable");
 });
 
+test("activity lanes separate recorded, inferred and unknown time with evidence drill-down", async ({ page }) => {
+  await open(page);
+  await expect(page.locator("#main .activity-lane")).toHaveCount(5);
+  await expect(page.locator("#main .lane-model .activity-label")).toContainText("14m / Recorded");
+  await expect(page.locator("#main .lane-work .activity-label")).toContainText("6m / Recorded");
+  await expect(page.locator("#main .lane-unknown .activity-label")).toContainText("14m / Unavailable");
+  await page.locator("#main .lane-waiting .text-button").click();
+  await expect(page.locator("#detail")).toContainText("H01");
+  await expect(page.locator("#detail")).toContainText("Human response at 09:12");
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await page.locator("#main .lane-quiet .text-button").click();
+  await expect(page.locator("#detail")).toContainText("Inferred");
+  await expect(page.locator("#detail")).toContainText("L01");
+  await expect(page.locator("#detail")).toContainText("Not a measurement of human inactivity");
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await page.locator("#main .lane-work .text-button").click();
+  await page.getByRole("button", { name: "Inspect C6", exact: true }).click();
+  await expect(page.locator("#tool-input")).toHaveText("npm test -- --run tests/export.test.ts");
+  await expect(page.locator("#tool-result")).toContainText("Exit code: 1");
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await scenario(page, "partial");
+  await expect(page.locator("#main .lane-quiet .activity-label")).toContainText("Unavailable");
+  await expect(page.locator("#main .lane-unknown .activity-label")).toContainText("24m");
+  await page.locator("#main .lane-waiting .text-button").click();
+  await expect(page.locator("#detail")).toContainText("unavailable, not zero");
+});
+
+test("Tools and commands shows every full shell command and structured input without executing it", async ({ page }) => {
+  await open(page);
+  await page.locator("[data-nav=tools]").click();
+  await expect(page.getByRole("heading", { name: "Tools & commands", exact: true })).toBeVisible();
+  await expect(page.locator("#main tbody tr")).toHaveCount(27);
+  await page.getByLabel("Tool", { exact: true }).selectOption("terminal");
+  await expect(page.locator("#main tbody tr")).toHaveCount(6);
+  await page.getByRole("button", { name: "Inspect full input for C27", exact: true }).click();
+  await expect(page.locator("#tool-input")).toHaveText("mkdir -p temp\nprintf '%s\\n' 'Export <filtered> rows & preserve \"quotes\".' > temp/session-notes.md\ncat temp/session-notes.md\nrm temp/session-notes.md");
+  await expect(page.locator("#detail")).toContainText("/workspace/sample-reports");
+  await expect(page.locator("#tool-result")).toContainText("stderr:\n(empty)");
+  await expect(page.locator("#tool-result")).toContainText("Exit code: 0");
+  await expect(page.locator("#detail filtered")).toHaveCount(0);
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await expect(page.getByLabel("Tool", { exact: true })).toHaveValue("terminal");
+  await page.getByLabel("Tool", { exact: true }).selectOption("read_file");
+  await page.getByRole("button", { name: "Inspect full input for C1", exact: true }).click();
+  await expect(page.locator("#tool-input")).toHaveText('{\n  "path": "src/table.ts",\n  "startLine": 1,\n  "endLine": 160\n}');
+});
+
+test("tool input gaps, truncation and redaction remain explicit in every coverage mode", async ({ page }) => {
+  await open(page);
+  for (const [id, status] of [["c10", "truncated"], ["c22", "missing"], ["c25", "redacted"]]) {
+    await page.evaluate((hash) => { location.hash = hash; }, `report?panel=tool&id=${id}`);
+    await expect(page.locator("#detail .callout")).toContainText(`Input ${status}`);
+    if (status === "missing") await expect(page.locator("#tool-input")).toHaveCount(0);
+    if (status === "redacted") await expect(page.locator("#tool-input")).toContainText("[REDACTED BY HARNESS / SYNTHETIC]");
+  }
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await scenario(page, "partial");
+  await page.locator("[data-nav=tools]").click();
+  await page.getByRole("button", { name: "Inspect full input for C6", exact: true }).click();
+  await expect(page.locator("#tool-input, #tool-result")).toHaveCount(0);
+  await expect(page.locator("#detail")).toContainText("Input missing");
+  await page.getByRole("button", { name: "Close detail" }).click();
+  await page.locator("[data-nav=sessions]").click();
+  await page.getByRole("button", { name: "Open transcript-only demonstration", exact: true }).click();
+  await page.locator("[data-nav=tools]").click();
+  await expect(page.locator("#main")).toContainText("cannot be reconstructed from transcript text");
+  await expect(page.locator("#main tbody tr")).toHaveCount(0);
+});
+
 test("artifact filters do not hide recorded identities after cancelled or failed analysis", async ({ page }) => {
   await open(page, "artifacts");
   await page.getByLabel("Purpose", { exact: true }).selectOption("Temporary helper");
@@ -172,8 +241,8 @@ test("evidence-backed completion links actual synthetic passing tests alongside 
   await open(page, "task/t1");
   await page.getByRole("button", { name: "Inspect outcome evidence" }).click();
   await page.getByRole("button", { name: "Inspect recorded test result" }).click();
-  await expect(page.locator("#detail pre")).toContainText("8 passed, 0 failed");
-  await expect(page.locator("#detail pre")).toContainText("Deleted: temp/make-fixtures.py");
+  await expect(page.locator("#tool-result")).toContainText("8 passed, 0 failed");
+  await expect(page.locator("#tool-result")).toContainText("Deleted: temp/make-fixtures.py");
 });
 
 test("S8 missing content and usage remain unavailable rather than becoming zero", async ({ page }) => {
@@ -382,4 +451,8 @@ test("desktop and narrow evidence layouts remain usable", async ({ page }, testI
   expect(Math.round((await page.locator("#detail").boundingBox()).width)).toBeLessThanOrEqual(390);
   await page.getByRole("button", { name: "Close detail" }).click();
   await expect(page.locator("#detail")).not.toBeVisible();
+  await page.locator("[data-nav=tools]").click();
+  await page.getByRole("button", { name: "Inspect full input for C27", exact: true }).click();
+  expect(await page.locator("#tool-input").evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
