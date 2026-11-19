@@ -49,6 +49,10 @@ as real results.
 The [bounded JSONL scan](docs/local-runtime.md#scan-large-jsonl-captures-in-place)
 reads large extension exports in place, discovers sessions without returning
 payloads, and opens whole-admitted-session reports without a whole-file read.
+**Read source** accepts at most 64 MiB. Its size-limit error links to the existing
+scan control without starting work or changing the selected source. Explicitly
+scan, choose a **Scanned session**, then **Open session report**; a session catalog
+or original-evidence page alone is not a report.
 Metrics drill down through bounded original-contributor pages; duplicate physical
 records never inflate totals. Report calculation has a separate explicit
 cardinality budget, so a valid catalog does not promise report availability.

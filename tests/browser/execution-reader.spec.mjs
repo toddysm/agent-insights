@@ -64,6 +64,9 @@ test("the normal application reads execution evidence, shows coverage and clears
         exact: false,
       }),
     ).toBeVisible();
+    await expect(page.getByLabel("Report session (from source read)")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Go to Scan JSONL source" })).toHaveCount(0);
+    expect(requests.some((url) => url.endsWith("/api/scan"))).toBe(false);
     const coverage = page.getByRole("region", { name: "Read coverage" });
     await expect(coverage).toBeVisible();
     await expect(

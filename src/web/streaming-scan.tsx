@@ -22,6 +22,7 @@ interface ScanPanelProps {
 /**
  * Replace (never append) catalog/evidence pages. Polls only a user-started operation;
  * cancellation remains distinct from confirmed cleanup and stale responses cannot publish.
+ * Discovery, original evidence and explicit whole-session report actions stay distinct.
  */
 export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onStart, onBusy, onReport }: ScanPanelProps): ReactElement {
   const [scan, setScan] = useState<ScanStatus | null>(null);
@@ -207,9 +208,10 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
 
   return <section className="streaming-scan" aria-labelledby="scan-heading">
     <h3 id="scan-heading">Bounded JSONL scan</h3>
-    <p>Scan the original file in place, including files over 64 MiB. No model is called.
-      Only session counts load initially; evidence loads after selection.</p>
-    <button type="button" disabled={disabled || locked} onClick={() => void start()}>
+    <p id="scan-guidance">Scan the original file in place, including supported extension exports over 64 MiB.
+      No model is called. Scanning discovers sessions, not a report.
+      Then select a Scanned session and choose Open session report, or load paged original evidence.</p>
+    <button id="scan-source" type="button" aria-describedby="scan-guidance" disabled={disabled || locked} onClick={() => void start()}>
       {scan ? "Rescan JSONL source" : "Scan JSONL source"}
     </button>
     {(scan || reconciling) && (working || reconciling || scan?.phase === "scanning") &&
@@ -236,11 +238,23 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       </p>}
       {scan.appended && <p>Append-only growth was observed beyond the admitted interval. Refresh to include later bytes.</p>}
       {scan.reason && <p>{scan.reason}</p>}
+      {!["scanning", "complete", "partial"].includes(scan.phase) && <p>
+        No session report is available from this scan. Review the diagnostic above and the selected
+        source/format before explicitly retrying. Source cleanup must finish before new work.
+      </p>}
     </div>}
     {catalog && <div>
       <p>Sessions in this page: {catalog.sessions.length}. Unassigned executions: {catalog.unassigned}.</p>
-      <label htmlFor="scan-session">Scanned session</label>
-      <select id="scan-session" value={session} disabled={locked} onChange={(event) => { setSession(event.target.value); setDetails(null); onReport(null); }}>
+      {catalog.sessions.length === 0 && !catalog.next && <p role="status">
+        No reportable sessions were found. No session report was created.
+        {catalog.unassigned > 0
+          ? " Unassigned executions can be inspected with Load original evidence, but cannot form a session report."
+          : " Check the selected export and scan diagnostics; no other session was substituted."}
+      </p>}
+      <label htmlFor="scan-session">Scanned session (discovery and evidence)</label>
+      <select id="scan-session" aria-describedby="scan-report-guidance" value={session}
+        disabled={locked || (catalog.sessions.length === 0 && catalog.unassigned === 0)}
+        onChange={(event) => { setSession(event.target.value); setDetails(null); onReport(null); }}>
         <option value="">Select a session</option>
         {catalog.sessions.map((entry) => <option key={entry.id} value={entry.id}>
           Session {entry.id.split(":").at(-1)} · {entry.executions} executions
@@ -248,13 +262,15 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         {catalog.unassigned > 0 && <option value="unassigned">Unassigned executions</option>}
       </select>
       <button type="button" disabled={locked || !catalog.next} onClick={() => void nextCatalog()}>Next session page</button>
-      <button type="button" disabled={locked || !session || session === "unassigned"} onClick={() => {
+      <button type="button" aria-describedby="scan-report-guidance" disabled={locked || !session || session === "unassigned"} onClick={() => {
         generation.current++;
         onBusy(true);
         onReport({ id: scan!.id, sessionId: session });
         window.history.replaceState(null, "", "#session-report");
       }}>Open session report</button>
-      <p>Reports cover the entire admitted session, not this evidence page or the optional time filter.
+      <p id="scan-report-guidance">Select a Scanned session, then choose Open session report to calculate its recorded metrics locally.
+        Selecting a session alone does not open a report.
+        Reports cover the entire admitted session, not this evidence page or the optional time filter.
         Unassigned executions cannot form a session report.</p>
       <label htmlFor="scan-from">Recorded start from (epoch ms, optional)</label>
       <input id="scan-from" value={from} disabled={locked} onChange={(event) => { setFrom(event.target.value); setDetails(null); }} />

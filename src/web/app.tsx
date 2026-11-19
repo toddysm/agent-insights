@@ -52,6 +52,14 @@ function launchAccess(): string {
 
 const token = launchAccess();
 
+/** Retain a validated backend diagnostic so recovery never depends on matching display text. */
+class RequestError extends Error {
+  /** Carry only the public code/message; no response body or captured content is retained. */
+  constructor(readonly code: string, message: string) {
+    super(message);
+  }
+}
+
 /**
  * Send one local control/status request and validate its successful response.
  * @typeParam T - Result shape produced by the supplied Zod schema.
@@ -91,11 +99,9 @@ async function request<T>(
   }
   if (!response.ok) {
     const failure = errorSchema.safeParse(data);
-    throw new Error(
-      failure.success
-        ? failure.data.error.message
-        : "The local service returned an unexpected error.",
-    );
+    if (failure.success)
+      throw new RequestError(failure.data.error.code, failure.data.error.message);
+    throw new Error("The local service returned an unexpected error.");
   }
   const parsed = schema.safeParse(data);
   if (!parsed.success)
@@ -173,6 +179,7 @@ function App(): ReactElement {
   const [relativePath, setRelativePath] = useState("");
   const [format, setFormat] = useState("");
   const [readNotice, setReadNotice] = useState("");
+  const [oversizedRead, setOversizedRead] = useState(false);
   const [view, setView] = useState<ReadView | null>(null);
   const [scannedReport, setScannedReport] = useState<ScanReportRequest | null>(null);
   const [scannedReportAttempt, setScannedReportAttempt] = useState(0);
@@ -226,6 +233,8 @@ function App(): ReactElement {
    */
   function clearView(resetScan = true): void {
     if (resetScan) setScanReset((previous) => previous + 1);
+    setError("");
+    setOversizedRead(false);
     setStartAttempt(null);
     setAnalysisNotice("");
     setPollError("");
@@ -441,7 +450,8 @@ function App(): ReactElement {
   /**
    * Request the selected source grant, relative path and registered reader format.
    * @returns Resolves after retaining a current-generation read/status or displaying an
-   * error. This resets analysis acknowledgement and does not invoke a model.
+   * error. A whole-file size rejection offers navigation, never an automatic scan.
+   * This resets analysis acknowledgement and does not invoke a model.
    * The backend owns parsing; absent readers are not replaced with synthetic evidence.
    */
   async function read(selection?: ReadSetRequest): Promise<void> {
@@ -482,12 +492,14 @@ function App(): ReactElement {
         `${summary} ${limitations}`,
       );
     } catch (failure) {
-      if (current === generation.current)
+      if (current === generation.current) {
+        setOversizedRead(!selection && failure instanceof RequestError && failure.code === "SOURCE_TOO_LARGE");
         setError(
           failure instanceof Error
             ? failure.message
             : "The source could not be read.",
         );
+      }
     } finally {
       if (current === generation.current) setBusy(false);
     }
@@ -507,7 +519,7 @@ function App(): ReactElement {
             Sources
           </a>
           {view || scannedReport ? <a href="#session-report">Session report</a> : <span aria-disabled="true">
-            Session report <small>Read a source first</small>
+            Session report <small>Read a supported source, or scan JSONL and open a session report.</small>
           </span>}
         </nav>
         <p className="sidebar-note">
@@ -540,6 +552,21 @@ function App(): ReactElement {
                 {error}
                 {status && (
                   <span> Previously checked source status is shown below.</span>
+                )}
+                {oversizedRead && (
+                  <div>
+                    <p>Read source accepts at most 64 MiB. No report was created from this failed read.</p>
+                    {format === "vscode-otel-jsonl" && selected?.available ? <>
+                      <p>For a supported extension JSONL export, scan the original file in place.
+                        Scanning discovers sessions; then select a Scanned session and choose Open session report.
+                        Original evidence pages are separate from whole-admitted-session reports.</p>
+                      <a href="#scan-source">Go to Scan JSONL source</a>
+                      <p>Your source location, relative file and reader format are unchanged.
+                        Scanning starts only when you activate the scan button. No model is called.</p>
+                    </> : <p>Large-file scanning supports only vscode-otel-jsonl extension exports,
+                      not SQLite, saved chats or arbitrary JSONL. Select that reader only for a matching export.
+                      Source grants and database safety limits still apply.</p>}
+                  </div>
                 )}
               </div>
             )}
@@ -675,9 +702,17 @@ function App(): ReactElement {
                           ))
                         )}
                       </select>
+                      <p id="read-limit" className="notice">
+                        Read source accepts files up to 64 MiB and opens a report selector for sessions in that read.
+                        {format === "vscode-otel-jsonl"
+                          ? " For larger supported extension exports, use Scan JSONL source below, select a Scanned session, then Open session report."
+                          : " Larger-file scanning is available only for supported vscode-otel-jsonl extension exports, not SQLite or other formats."}
+                        {" "}Neither action calls a model.
+                      </p>
                       <button
                         className="primary"
                         type="submit"
+                        aria-describedby="read-limit"
                         disabled={
                           busy ||
                           analysisLocked ||

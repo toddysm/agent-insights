@@ -1,7 +1,7 @@
 /** Real >64 MiB scan/report/browser regressions using independently generated owned exporter-shaped data. */
 import { test, expect } from "@playwright/test";
 import { createHash } from "node:crypto";
-import { mkdtemp, open, rm, stat, appendFile, readdir } from "node:fs/promises";
+import { mkdtemp, open, rm, stat, appendFile, readdir, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
@@ -209,8 +209,8 @@ function execution(index, attributes = {}) {
   };
 }
 
-/** Write over 64 MiB incrementally, interleaving sessions and distant conflicts without a file-sized buffer. */
-async function fixture(minBytes = 64 * 1024 * 1024) {
+/** Write fictional interleaved records incrementally, optionally authorizing only their parent directory. */
+async function fixture(minBytes = 64 * 1024 * 1024, directoryGrant = false) {
   const root = await mkdtemp(
     path.join(tmpdir(), "agent-insights-scanned-report-"),
   );
@@ -270,7 +270,7 @@ async function fixture(minBytes = 64 * 1024 * 1024) {
   }
   const runtime = await startRuntime(
     {
-      sources: [file],
+      sources: [directoryGrant ? root : file],
       port: 0,
       harness: "copilot",
       model: null,
@@ -292,11 +292,37 @@ async function fixture(minBytes = 64 * 1024 * 1024) {
   };
 }
 
-test("large scan opens exact whole-session totals and paged original metrics without Read source", async ({
+test("an oversized reread discards the previous report and changing the path clears its recovery", async ({ page }) => {
+  const source = await fixture(0, true);
+  try {
+    await page.goto(source.runtime.launchUrl);
+    await page.getByLabel("File inside this directory").fill("large.jsonl");
+    const read = page.getByRole("button", { name: "Read source", exact: true });
+    await read.click();
+    const report = page.getByRole("region", { name: "Session report", exact: true });
+    await expect(report.getByLabel("Report session")).toBeVisible();
+    await expect(report.locator(".metric-card").first()).toBeVisible();
+    await truncate(source.file, 64 * 1024 * 1024 + 1);
+    await read.click();
+    const recovery = page.getByRole("link", { name: "Go to Scan JSONL source" });
+    await expect(recovery).toBeVisible();
+    await expect(report).toHaveCount(0);
+    expect(source.runtime.service.view).toBeNull();
+    await page.getByLabel("File inside this directory").fill("another.jsonl");
+    await expect(recovery).toHaveCount(0);
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(report).toHaveCount(0);
+    expect(source.runtime.service.scanCatalog.status).toBeNull();
+  } finally {
+    await source.close();
+  }
+});
+
+test("oversized read recovers by explicit keyboard scan into exact whole-session totals and original metrics", async ({
   page,
 }) => {
   test.setTimeout(120_000);
-  const source = await fixture();
+  const source = await fixture(64 * 1024 * 1024, true);
   const requests = [];
   const errors = [];
   page.on("request", (request) => requests.push(request.url()));
@@ -304,14 +330,38 @@ test("large scan opens exact whole-session totals and paged original metrics wit
   try {
     expect(source.bytes).toBeGreaterThan(64 * 1024 * 1024);
     await page.goto(source.runtime.launchUrl);
+    await page.getByLabel("File inside this directory").fill("large.jsonl");
+    const sourceId = await page.getByLabel("Source location", { exact: true }).inputValue();
+    const readResponse = page.waitForResponse((response) => response.url().endsWith("/api/read"));
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    expect((await readResponse).status()).toBe(413);
+    const recovery = page.getByRole("link", { name: "Go to Scan JSONL source" });
+    await expect(recovery).toBeVisible();
+    await expect(page.getByRole("alert")).toContainText("No partial read was substituted.");
+    await expect(page.getByRole("alert")).toContainText("No report was created");
+    await expect(page.getByLabel("Source location", { exact: true })).toHaveValue(sourceId);
+    await expect(page.getByLabel("File inside this directory")).toHaveValue("large.jsonl");
+    await expect(page.getByLabel("Reader format")).toHaveValue("vscode-otel-jsonl");
+    await expect(page.getByRole("link", { name: "Session report", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "Session report", exact: true })).toHaveCount(0);
+    expect(requests.some((url) => url.endsWith("/api/scan"))).toBe(false);
+    await recovery.focus();
+    await page.keyboard.press("Enter");
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
-    await scan
-      .getByRole("button", { name: "Scan JSONL source", exact: true })
-      .click();
+    const startScan = scan.getByRole("button", { name: "Scan JSONL source", exact: true });
+    await expect(startScan).toBeFocused();
+    expect(requests.some((url) => url.endsWith("/api/scan"))).toBe(false);
+    await page.keyboard.press("Enter");
     await expect(
       scan.getByRole("button", { name: "Rescan JSONL source" }),
     ).toBeEnabled({ timeout: 30_000 });
+    await expect(recovery).toHaveCount(0);
+    await expect(page.getByRole("navigation")).not.toContainText("Read a source first");
+    await expect(page.getByRole("navigation")).toContainText("scan JSONL and open a session report");
+    await expect(scan.getByRole("button", { name: "Open session report" })).toBeDisabled();
     await scan.getByLabel("Scanned session").selectOption({ index: 1 });
+    await expect(page.getByRole("region", { name: "Session report", exact: true })).toHaveCount(0);
+    expect(requests.some((url) => url.endsWith("/api/scan/report"))).toBe(false);
     await scan.getByLabel("Recorded start from").fill("1760000003000");
     await scan.getByRole("button", { name: "Open session report" }).click();
     const report = page.getByRole("region", {
@@ -447,9 +497,8 @@ test("large scan opens exact whole-session totals and paged original metrics wit
     );
     await page.keyboard.press("Escape");
     expect(source.runtime.service.view).toBeNull();
-    expect(
-      requests.some((url) => /\/api\/(read|analysis\/start)$/.test(url)),
-    ).toBe(false);
+    expect(requests.filter((url) => url.endsWith("/api/read"))).toHaveLength(1);
+    expect(requests.some((url) => url.endsWith("/api/analysis/start"))).toBe(false);
     expect(
       requests.every((url) => url.startsWith(source.runtime.origin + "/")),
     ).toBe(true);

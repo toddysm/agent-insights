@@ -875,7 +875,7 @@ function SelectedReport({
   );
 }
 
-/** Select among sessions in the current read, without inventing reports for an empty/wrong-runtime source. */
+/** Select among sessions in the current read, distinct from scan discovery; never substitute an empty/wrong-runtime source. */
 export function SessionReportPanel({ view, send }: ReportProps): ReactElement {
   const [sessionId, setSessionId] = useState(view.sessions[0]?.id ?? "");
   return (
@@ -897,7 +897,7 @@ export function SessionReportPanel({ view, send }: ReportProps): ReactElement {
         </div>
       ) : (
         <>
-          <label htmlFor="report-session">Report session</label>
+          <label htmlFor="report-session">Report session (from source read)</label>
           <select
             id="report-session"
             value={sessionId}

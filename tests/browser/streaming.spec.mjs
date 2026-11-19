@@ -16,6 +16,100 @@ async function fixture(text) {
   return { root, file, runtime };
 }
 
+for (const outcome of ["empty", "unassigned", "failed", "unsupported"]) {
+  test(`oversized-read recovery keeps ${outcome} scans honest and permits an explicit retry`, async ({ page }) => {
+    let text = outcome === "unsupported" ? "{}\n" : '{"scopeMetrics":[]}\n';
+    if (outcome === "unassigned") {
+      const record = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+      delete record.attributes["gen_ai.conversation.id"];
+      text = JSON.stringify(record) + "\n";
+    }
+    const { root, file, runtime } = await fixture(text);
+    let scans = 0;
+    page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
+    // Isolate recovery rendering from the physical size gate, exercised with a real large source in scanned-report.
+    await page.route("**/api/read", (route) => route.fulfill({
+      status: 413, json: { error: { code: "SOURCE_TOO_LARGE", message: "Synthetic size diagnostic." } },
+    }));
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByRole("button", { name: "Read source", exact: true }).click();
+      const recovery = page.getByRole("link", { name: "Go to Scan JSONL source" });
+      await expect(recovery).toBeVisible();
+      expect(scans).toBe(0);
+      if (outcome === "failed") await rm(file);
+      await recovery.click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+      if (outcome === "empty" || outcome === "unassigned") {
+        await expect(panel.getByText(/No reportable sessions were found/)).toBeVisible();
+        if (outcome === "empty") await expect(panel.getByLabel("Scanned session")).toBeDisabled();
+        else {
+          await panel.getByLabel("Scanned session").selectOption("unassigned");
+          await panel.getByRole("button", { name: "Load original evidence" }).click();
+          await expect(panel.getByLabel("Original evidence page")).toBeVisible();
+          await expect(panel.getByText(/Unassigned executions can be inspected/)).toBeVisible();
+        }
+        await expect(panel.getByRole("button", { name: "Open session report" })).toBeDisabled();
+      } else {
+        await expect(panel.getByText(outcome === "failed" ? "failed" : "format-unsupported", { exact: true })).toBeVisible();
+        await expect(panel.getByText(/No session report is available from this scan/)).toBeVisible();
+        await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
+      }
+      await expect(page.getByRole("region", { name: "Session report", exact: true })).toHaveCount(0);
+      await expect(page.getByRole("navigation")).not.toContainText("Read a source first");
+      expect(scans).toBe(1);
+      await writeFile(file, await readFile(new URL("../fixtures/otel.jsonl", import.meta.url)));
+      await panel.getByRole("button", { name: "Rescan JSONL source" }).click();
+      await expect(panel.getByLabel("Scanned session")).toBeEnabled();
+      await expect(panel.getByRole("button", { name: "Open session report" })).toBeDisabled();
+      expect(scans).toBe(2);
+      expect(runtime.service.view).toBeNull();
+    } finally {
+      await runtime.close();
+      await rm(root, { recursive: true });
+    }
+  });
+}
+
+test("size recovery is code-specific, never offers scanning for another format, and clears on selection changes", async ({ page }) => {
+  const { root, runtime } = await fixture('{"scopeMetrics":[]}\n');
+  let code = "READ_LIMIT";
+  await page.route("**/api/status", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.readers.push("vscode-agenthost-session-sqlite");
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/read", (route) => route.fulfill({
+    status: 413, json: { error: { code, message: "The source exceeds the 64 MiB read limit." } },
+  }));
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(page.getByRole("alert")).toBeVisible();
+    await expect(page.getByRole("link", { name: "Go to Scan JSONL source" })).toHaveCount(0);
+    code = "SOURCE_TOO_LARGE";
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(page.getByRole("link", { name: "Go to Scan JSONL source" })).toBeVisible();
+    await page.getByLabel("Reader format").selectOption("vscode-agenthost-session-sqlite");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "Go to Scan JSONL source" })).toHaveCount(0);
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(page.getByRole("alert")).toContainText("not SQLite, saved chats or arbitrary JSONL");
+    await expect(page.getByRole("link", { name: "Go to Scan JSONL source" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Scan JSONL source", exact: true })).toHaveCount(0);
+    await page.getByLabel("Reader format").selectOption("vscode-otel-jsonl");
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    expect(runtime.service.scanCatalog.status).toBeNull();
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 test("scan keeps payloads out of discovery, replaces pages, refreshes generations and remains usable on mobile", async ({ page }, testInfo) => {
   const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
   raw.attributes["gen_ai.input.messages"] = "FICTIONAL_DETAIL_AFTER_SELECTION";

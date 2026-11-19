@@ -69,8 +69,11 @@ rechecked with "Refresh sources."
 
 ### Read the session report
 
-After **Read source** or **Open retained session**, use **Report session** to
-choose among sessions in that read. The report computes recorded timing, tool
+After **Read source** (files up to 64 MiB) or **Open retained session**, use
+**Report session (from source read)** to choose among sessions in that read.
+For larger supported extension JSONL exports, use the separate
+[scan -> session -> report workflow](#scan-large-jsonl-captures-in-place) instead.
+The report computes recorded timing, tool
 and token metrics locally without a model request. The Agent Host
 discovery/combined-reader path is primary; its existing incompatible-helper
 gate is not bypassed by report availability. An extension-export report does
@@ -128,7 +131,12 @@ record, metadata and selected-detail budgets below. There are no filesystem watc
 ### Scan large JSONL captures in place
 
 Select the authorized file/directory and `vscode-otel-jsonl`, then choose
-**Scan JSONL source**. Do not truncate, split or copy normal captures. The scan
+**Scan JSONL source**. For a directory grant, keep the relative capture filename.
+If **Read source** rejects a file over 64 MiB, **Go to Scan JSONL source** moves
+keyboard focus to the existing scan button, preserving the source, relative path
+and format. Following that link does not read or scan anything; activate the
+scan button explicitly. The failed read produces no partial report and does
+not restore a previous report. Do not truncate, split or copy normal captures. The scan
 admits the original descriptor's starting byte length, reads 64 KiB chunks and
 finishes at that boundary rather than chasing an active writer.
 It does not invoke a model or transmit source content.
@@ -142,12 +150,25 @@ identities and unassigned executions reduce coverage. A metrics/log-only source
 reports telemetry but unavailable execution timing/tools/tokens, **not zero usage**.
 Messages/conversation coverage remains separate.
 
-Choose a **Scanned session**, then **Open session report**, without first using
+Choose a **Scanned session (discovery and evidence)**, then **Open session report**, without first using
 **Read source**. This report uses the same recorded timing, tool and per-call
 token definitions as the small-source report, over **all admitted contributing
 session records**, not an evidence page or the optional time filter. Unassigned
 executions cannot form a session report. Source identity, the admitted byte
 boundary, prefix fingerprint and coverage remain inspectable.
+Scanning or selecting a session alone does not open a report. Until the explicit
+report action, the sidebar explains the read-or-scan prerequisite instead of
+requiring another whole-file read. The scanned-session selector is not the
+**Report session (from source read)** selector used for small reads.
+An empty scan shows **No reportable sessions were found**; unassigned executions
+can expose original evidence but cannot form a report. Failed/unsupported scans
+show their diagnostic and no report action. Correct the source/format or retry
+explicitly after cleanup; no alternative session is selected for you.
+
+The scan-to-report integration is available in this build. It remains limited to
+the supported `vscode-otel-jsonl` extension-export format, not SQLite, saved chats,
+Agent Debug Log exports or arbitrary JSONL. It does not bypass source grants,
+native-helper gates, cancellation/cleanup barriers or report-calculation budgets.
 
 Select any report metric, including **Unavailable**, to page its exact original
 physical contributors. Each page replaces the previous one; repeated physical
@@ -247,8 +268,11 @@ smoke test. Synthetic success is not live-producer or Agent Host certification.
    or its authorized parent directory. Do not copy the capture into this project.
 2. Open the private launch URL and select the configured source. For a directory,
    enter the relative capture filename.
-3. Select `vscode-otel-jsonl` and choose **Read source**.
-4. Inspect the observed session/record counts, **Read coverage** and expandable
+3. Select `vscode-otel-jsonl`. For a capture up to 64 MiB, choose **Read source**.
+   For a larger capture, choose **Scan JSONL source**, select a **Scanned session**,
+   then **Open session report** as described [above](#scan-large-jsonl-captures-in-place).
+   Do not route a large capture back through **Read source**.
+4. For a small read, inspect the observed session/record counts, **Read coverage** and expandable
    **Read limitations**. Reading does not invoke a model.
    **Operation classification** separates model calls (chat/embeddings), tool
    calls, agent executions and hook executions. Missing/empty, malformed and
@@ -276,7 +300,8 @@ IDs, parent-chat relationships and scoped coverage remain tracked in
 
 Malformed independent records can yield a partial read with valid records
 retained. A trailing unfinished record is reported, not silently discarded.
-After the writer finishes, choose **Read source** again. Unsupported input without
+After the writer finishes, choose **Read source** again for a small capture or
+**Rescan JSONL source** for the large-file workflow. Unsupported input without
 usable evidence reports unavailable data rather than successful zero totals.
 Records without an unambiguous reported session remain unassigned; paths and
 timestamps are not used to invent one. The
@@ -782,6 +807,16 @@ individual interpretation definitions remain separate work.
   no example data or zero-valued report replaces it.
 - **Read cancelled / timed out:** retry through the interface. A stale result is
   never attached to a newer read.
+- **The source exceeds the 64 MiB read limit:** for a supported
+  `vscode-otel-jsonl` export, follow **Go to Scan JSONL source**, explicitly
+  activate the scan button, select a **Scanned session**, then **Open session
+  report**. Selection is preserved; nothing is scanned automatically. Original
+  evidence pages are not a complete report. Other formats/SQLite retain their
+  safety limits; changing a reader label does not convert an unsupported capture.
+- **Scan complete but no report is open:** select a reportable **Scanned session**
+  and choose **Open session report**. Empty catalogs and unassigned executions
+  cannot form a report. Check scan diagnostics rather than retrying a large
+  whole-file read; failed scans never restore a stale report.
 - **Database schema, sidecar or recovery error:** use a supported source and let
   the owning harness finish its operation; do not copy/repair it through this app.
 - **Source cleanup failed:** retry cancellation/shutdown. A successful view or
@@ -797,6 +832,13 @@ npm test
 npx playwright install chromium
 npm run test:browser
 ```
+
+For the oversized-read recovery, scan outcomes and unchanged small-read flow,
+run `npm run test:browser -- tests/browser/scanned-report.spec.mjs tests/browser/streaming.spec.mjs tests/browser/execution-reader.spec.mjs`.
+These browser tests use only owned synthetic captures; the large recovery case
+actually exceeds 64 MiB and follows the recovery link with the keyboard.
+The existing runtime boundary test separately checks exactly 64 MiB versus one
+additional byte. These suites are included in the existing application CI.
 
 The application workflow runs Node.js 24 type/unit/integration checks on Ubuntu,
 Windows and macOS, plus the real runtime walkthrough in Chromium on Ubuntu.
