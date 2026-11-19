@@ -215,7 +215,11 @@ A single giant session and very many sessions can both exhaust metadata before
 the file ends. Such a scan returns **budget-exceeded**, admitted/scanned bounds
 and unavailable totals, not a sampled complete catalog. A catalog within scan
 budgets can still exceed the stricter report-calculation budget; this is an
-explicit **budget-exceeded** report outcome, not a partial-session success.
+explicit **SCAN_BUDGET** report error, not a partial-session success. After
+confirmed source cleanup, this calculation-only failure preserves the catalog,
+session selection and ordinary evidence pages; it does not change the scan's
+complete/partial state. Other resource, source-integrity and cleanup failures
+still invalidate the scan.
 No persistent cursor,
 session index, copied corpus, temporary disk spill or application database exists.
 Restarting loses the catalog and requires another scan. Cursors are signed,

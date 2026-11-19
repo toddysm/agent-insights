@@ -150,6 +150,30 @@ test("scan reports preserve measured-zero witnesses and explain unavailable usag
     assert.deepEqual((await metricPage(service, id, sessionId, metric)).contributors.map((entry) => entry.line), [1, 2]);
 });
 
+test("one-sided token usage retains exact provenance but labels unavailable totals as coverage witnesses", async (t) => {
+  for (const [missing, present, value] of [["input", "output", 5], ["output", "input", 0]] as const) {
+    const { service } = await fixture(t, JSON.stringify(span(1, {
+      [`gen_ai.usage.${missing}_tokens`]: undefined, [`gen_ai.usage.${present}_tokens`]: value,
+    })));
+    const { id } = await scan(service);
+    const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+    const result = await report(service, id, sessionId);
+    const unavailable = result.measurements.find((entry) => entry.id === missing)!;
+    assert.equal(unavailable.value, null);
+    assert.equal(unavailable.coverage.status, "unavailable");
+    assert.equal(unavailable.evidenceKind, "coverage-witnesses");
+    const measured = result.measurements.find((entry) => entry.id === present)!;
+    assert.equal(measured.value, value);
+    assert.equal(measured.evidenceKind, "contributors");
+    for (const metric of [missing, present]) {
+      const page = await metricPage(service, id, sessionId, metric);
+      assert.equal(page.evidenceKind, metric === missing ? "coverage-witnesses" : "contributors");
+      assert.deepEqual(page.contributors.map((entry) => entry.line), [1]);
+      assert.equal(page.contributors[0]?.event.nativeId, "0000000000000001");
+    }
+  }
+});
+
 test("report selection/metric authority rejects stale or foreign IDs and source changes, admitting appends only on rescan", async (t) => {
   for (const change of ["append", "prefix", "truncate", "replace"]) {
     const text = JSON.stringify(span(1)) + "\n";
@@ -220,15 +244,64 @@ test("reports and metric pages enforce response, work and monotonic expiry bound
   ]) await assert.rejects(operation(), (error) => error instanceof RuntimeError && error.code === "SCAN_EXPIRED");
 });
 
-test("one high-cardinality session can be scanned but its over-budget report is explicitly unavailable", async (t) => {
+test("report-only budget misses preserve the catalog and ordinary evidence for every session after cleanup", async (t) => {
+  const rows = [...Array.from({ length: STREAM_LIMITS.reportEvents + 1 }, (_, index) => span(index + 1)),
+    span(STREAM_LIMITS.reportEvents + 2, { "gen_ai.conversation.id": "another-session" })];
+  const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n"));
+  const { id } = await scan(service);
+  const catalog = service.scanCatalog.catalog(id, null);
+  assert.equal(catalog.sessions.length, 2);
+  for (const session of catalog.sessions) {
+    for (const operation of [
+      () => report(service, id, session.id),
+      () => metricPage(service, id, session.id, "input"),
+    ]) {
+      const before = service.scanCatalog.status;
+      await assert.rejects(operation(), (error) => error instanceof RuntimeError && error.code === "SCAN_BUDGET");
+      assert.deepEqual(service.scanCatalog.status, before);
+      assert.deepEqual(service.scanCatalog.catalog(id, null), catalog);
+    }
+    const page = await details(service, id, session.id);
+    assert.equal(page.contributors.length, Math.min(STREAM_LIMITS.pageRecords, session.executions));
+    assert.ok(page.contributors.every((entry) => entry.event.sessionId === session.id));
+    if (page.next)
+      assert.equal((await details(service, id, session.id, page.next)).contributors.length, STREAM_LIMITS.pageRecords);
+  }
+  assert.equal(service.view, null);
+  await fs.writeFile(file, JSON.stringify(span()));
+  await assert.rejects(details(service, id, catalog.sessions[1]!.id),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CHANGED");
+  assert.equal(service.scanCatalog.status?.phase, "source-changed");
+});
+
+test("descriptor cleanup failure still invalidates an over-budget report's catalog and blocks reuse", async (t) => {
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
   const { service } = await fixture(t, Array.from({ length: STREAM_LIMITS.reportEvents + 1 }, (_, index) =>
     JSON.stringify(span(index + 1))).join("\n"));
   const { id } = await scan(service);
   const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
-  await assert.rejects(report(service, id, sessionId), (error) => error instanceof RuntimeError && error.code === "SCAN_BUDGET");
-  assert.equal(service.scanCatalog.status?.phase, "budget-exceeded");
+  const originalOpen = fs.open;
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    const close = handle.close.bind(handle);
+    let attempts = 0;
+    t.mock.method(handle, "close", async () => {
+      if (++attempts === 1) throw new Error("FICTIONAL_REPORT_CLOSE_FAILURE");
+      await close();
+    });
+    return handle;
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(report(service, id, sessionId),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED");
+  assert.equal(service.scanCatalog.status?.phase, "cleanup-failed");
   assert.equal(service.scanCatalog.status?.sessions, null);
-  assert.equal(service.view, null);
+  assert.throws(() => service.scanCatalog.catalog(id, null), RuntimeError);
+  await assert.rejects(details(service, id, sessionId),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED");
+  t.mock.restoreAll(); syncBuiltinESMExports();
+  await service.close();
+  assert.equal((await scan(service)).sessions, 1);
 });
 
 test("cancelled report late-open retains the actual five-second cleanup barrier and cannot publish", async (t) => {

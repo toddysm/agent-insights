@@ -253,11 +253,17 @@ export function ScannedSessionReportPanel({
     }
   }, [send, selection.id, onBusy]);
 
-  /** Do not publish even a successful response until authoritative status and descriptor cleanup are confirmed. */
+  /** Lock every request, including history navigation; publish only after authority and cleanup are confirmed. */
   const operate: Props["send"] = useCallback(
     <T,>(route: string, schema: z.ZodType<T>, body?: unknown): Promise<T> => {
       const current = generation.current;
-      return send(route, schema, body)
+      return Promise.resolve()
+        .then(() => {
+          setWorking(true);
+          onBusy(true);
+          setError("");
+          return send(route, schema, body);
+        })
         .then(
           async (result) => {
             if (!(await reconcile()))
@@ -279,7 +285,7 @@ export function ScannedSessionReportPanel({
           if (mounted.current) setWorking(false);
         });
     },
-    [send, reconcile],
+    [send, reconcile, onBusy],
   );
 
   useEffect(() => {

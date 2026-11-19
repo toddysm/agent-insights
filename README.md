@@ -52,6 +52,8 @@ payloads, and opens whole-admitted-session reports without a whole-file read.
 Metrics drill down through bounded original-contributor pages; duplicate physical
 records never inflate totals. Report calculation has a separate explicit
 cardinality budget, so a valid catalog does not promise report availability.
+Exceeding only that calculation budget leaves the catalog and ordinary evidence
+pages available after source cleanup is confirmed.
 Metadata/work limits produce explicit coverage outcomes; no copied corpus or
 disk-backed index is used. Synthetic scale qualification does not establish
 real-producer compatibility.

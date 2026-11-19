@@ -7,6 +7,77 @@ import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { productionReaders } from "../../.build/src/evidence/readers/index.js";
 
+test("browser Forward locks source controls until its metric request settles even after the drawer closes", async ({
+  page,
+}) => {
+  const source = await fixture(0);
+  let arrived;
+  const responseArrived = new Promise((resolve) => {
+    arrived = resolve;
+  });
+  let release;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  try {
+    await page.goto(source.runtime.launchUrl);
+    const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
+    const rescan = scan.getByRole("button", { name: "Rescan JSONL source" });
+    const session = scan.getByLabel("Scanned session");
+    await scan
+      .getByRole("button", { name: "Scan JSONL source", exact: true })
+      .click();
+    await expect(rescan).toBeEnabled();
+    await session.selectOption({ index: 1 });
+    await scan.getByRole("button", { name: "Open session report" }).click();
+    const report = page.getByRole("region", {
+      name: "Session report",
+      exact: true,
+    });
+    const input = report.getByRole("button", {
+      name: "Recorded input tokens: 27; partial coverage",
+      exact: true,
+    });
+    await input.click();
+    const dialog = page.getByRole("dialog");
+    await expect(
+      dialog.getByRole("button", { name: /^Original line / }),
+    ).toHaveCount(20);
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(rescan).toBeEnabled();
+    await page.route("**/api/scan/metric", async (route) => {
+      const response = await route.fetch();
+      arrived();
+      await held;
+      await route.fulfill({ response });
+    });
+    await page.goForward();
+    await responseArrived;
+    await expect(dialog).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(rescan).toBeDisabled();
+    await expect(session).toBeDisabled();
+    await expect(
+      scan.getByRole("button", { name: "Load original evidence" }),
+    ).toBeDisabled();
+    await expect(
+      report.getByRole("button", { name: "Cancel report operation" }),
+    ).toBeVisible();
+    release();
+    await expect(rescan).toBeEnabled();
+    await expect(session).toBeEnabled();
+    await expect(input).toBeEnabled();
+    await expect(
+      report.getByRole("button", { name: "Cancel report operation" }),
+    ).toHaveCount(0);
+  } finally {
+    release();
+    await source.close();
+  }
+});
+
 test("lost cancellation cannot publish a late report even when the backend generation remains valid", async ({
   page,
 }) => {
@@ -181,7 +252,6 @@ async function fixture(minBytes = 64 * 1024 * 1024) {
       execution(9, {
         "gen_ai.conversation.id": "foreign",
         "gen_ai.usage.input_tokens": undefined,
-        "gen_ai.usage.output_tokens": undefined,
       }),
     );
     await write(execution(4, { "gen_ai.input.messages": "conflict first" }));
@@ -363,6 +433,19 @@ test("large scan opens exact whole-session totals and paged original metrics wit
         exact: true,
       }),
     ).toBeEnabled({ timeout: 30_000 });
+    await report
+      .getByRole("button", {
+        name: "Recorded input tokens: Unavailable; unavailable coverage",
+        exact: true,
+      })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: /^Original line / }),
+    ).toHaveCount(1);
+    await expect(dialog.locator(".notice")).toContainText(
+      "coverage witnesses for a measured zero or unavailable measurement, not additive contributors",
+    );
+    await page.keyboard.press("Escape");
     expect(source.runtime.service.view).toBeNull();
     expect(
       requests.some((url) => /\/api\/(read|analysis\/start)$/.test(url)),

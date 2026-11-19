@@ -306,7 +306,7 @@ export class JsonlScan {
 
   /** Distinguish exact calculator contributors from records explaining absent or measured-zero fields. */
   private evidenceKind(measurement: ReportMeasurement): ScanMetricPage["evidenceKind"] {
-    return measurement.contributorEventIds.length ? "contributors" : "coverage-witnesses";
+    return measurement.metric.value !== null && measurement.contributorEventIds.length ? "contributors" : "coverage-witnesses";
   }
 
   /**

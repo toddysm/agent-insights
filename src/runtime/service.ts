@@ -424,7 +424,11 @@ export class RuntimeService {
     return this.scanOperation(request.id, externalSignal, (source, signal) => this.scanCatalog.metricDetails(request, source, signal));
   }
 
-  /** Serialize scan consumers through the same cancellation, generation and descriptor-cleanup publication gate. */
+  /**
+   * Serialize scan consumers through the cancellation, generation and descriptor-cleanup publication gate.
+   * Report-calculation ceilings reject only that operation after confirmed cleanup, retaining the catalog;
+   * source/resource/cleanup failures still invalidate it.
+   */
   private async scanOperation<T>(id: string, externalSignal: AbortSignal,
     read: (source: StreamedSource, signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.cleanupFailed)
@@ -451,7 +455,8 @@ export class RuntimeService {
     } catch (error) {
       if (error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED") this.cleanupFailed = true;
       if (this.scanCatalog.status?.id === id) {
-        if (!(error instanceof RuntimeError) || !["SCAN_CURSOR", "SCAN_SELECTION", "SCAN_STALE", "SCAN_EXPIRED"].includes(error.code))
+        const reportBudget = error instanceof ScanBudgetExceeded && error.budget === "report";
+        if (!reportBudget && (!(error instanceof RuntimeError) || !["SCAN_CURSOR", "SCAN_SELECTION", "SCAN_STALE", "SCAN_EXPIRED"].includes(error.code)))
           this.scanCatalog.fail(error);
         else this.scanCatalog.cleanupConfirmed(id);
       }
