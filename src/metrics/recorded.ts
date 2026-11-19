@@ -7,6 +7,8 @@ import { isDeepStrictEqual } from "node:util";
 import { associatedWithSession } from "../evidence/relationships.js";
 import {
   evidenceReferenceKey as referenceKey,
+  evidenceRecordKey,
+  coverageForReferences,
   metricSchema,
   type EvidenceReference,
   type Metric,
@@ -41,6 +43,7 @@ export interface MetricExclusion {
   readonly eventIds: readonly string[];
   readonly reason:
     | "ambiguous-attribution"
+    | "unassigned"
     | "associated-only"
     | "conflicting-replay"
     | "bridge-wrapper"
@@ -330,6 +333,14 @@ export function calculateRecordedMetrics(
     }
   }
   const groups: RecordGroup[] = [];
+  const sourcesWithScopedCoverage = new Set(
+    view.sources.filter((source) => source.coverageDetails).map((source) => source.id),
+  );
+  const ambiguousIssues = view.issues.filter((issue) => issue.code === "ambiguous-session");
+  const ambiguousRecords = new Set(ambiguousIssues.flatMap((issue) => issue.references?.map(evidenceRecordKey) ?? []));
+  const ambiguousSources = new Set(ambiguousIssues.filter((issue) =>
+    !issue.references?.length || (issue.count !== undefined && issue.count > issue.references.length),
+  ).map((issue) => issue.sourceId));
   for (const group of new Set(grouped.values())) {
     if (requested !== null && !group.eventIds.some((id) => requested.has(id)))
       continue;
@@ -337,7 +348,11 @@ export function calculateRecordedMetrics(
       group.event.sessionId === null
         ? associatedWithSession(group.event, session.id)
           ? "associated-only"
-          : "ambiguous-attribution"
+          : group.references.some((ref) => sourcesWithScopedCoverage.has(ref.sourceId)) &&
+              !group.references.some((ref) =>
+                ambiguousSources.has(ref.sourceId) || ambiguousRecords.has(evidenceRecordKey(ref)))
+            ? "unassigned"
+            : "ambiguous-attribution"
         : group.conflict
           ? "conflicting-replay"
           : group.references.some((reference) => {
@@ -390,12 +405,22 @@ export function calculateRecordedMetrics(
       session.sourceIds.includes(source.id),
     );
     for (const source of sessionSources) {
-      const coverage = source.coverage[dimension];
+      const coverage = coverageForReferences(view, source, dimension, original);
       if (coverage.status !== "complete") coverageReasons.add(coverage.reason);
     }
-    if (exclusions.some((entry) => entry.reason !== "bridge-wrapper"))
+    if (exclusions.some((entry) =>
+      entry.reason !== "bridge-wrapper" && entry.reason !== "associated-only" &&
+      entry.eventIds.some((id) => {
+        const event = byId.get(id);
+        if (!event) return false;
+        if (dimension === "timing") return event.kind !== "usage-observation";
+        if (dimension === "tools") return event.kind === "tool-call";
+        if (dimension === "tokens")
+          return event.kind === "model-call" || (event.kind !== "message" && event.usage !== null);
+        return event.kind === "message";
+      })))
       coverageReasons.add(
-        "Shared, conflicting or ambiguous evidence was excluded.",
+        "Unassigned, shared or conflicting evidence affecting this dimension was excluded from direct-session totals.",
       );
     if (
       allowEmptyZero &&
@@ -789,14 +814,14 @@ export function calculateRecordedMetrics(
     tokens: Object.freeze({
       input: tokenTotal(
         "input-tokens",
-        additive,
+        models,
         counters(additive, "input"),
         models.length,
         "Sum of distinct model-call per-call input usage; excludes parent and non-additive reports.",
       ),
       output: tokenTotal(
         "output-tokens",
-        additive,
+        models,
         counters(additive, "output"),
         models.length,
         "Sum of distinct model-call per-call output usage; components are not added again.",

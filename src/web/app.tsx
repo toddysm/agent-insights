@@ -36,6 +36,7 @@ import { StreamingScanPanel } from "./streaming-scan.js";
 import { SourceDiscoveryPanel } from "./source-discovery.js";
 import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
+import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
 import type { ScanReportRequest } from "../metrics/report.js";
 
 /**
@@ -484,7 +485,10 @@ function App(): ReactElement {
         );
       const summary =
         view.sessions.length === 0 && view.events.length === 0
-          ? "No session evidence is available from this read."
+          ? view.sources.some((source) => source.classification &&
+              Object.values(source.classification.nonExecutionRecords).some((count) => count > 0))
+            ? "Non-execution telemetry was found; no supported executions or sessions are available."
+            : "No session evidence is available from this read."
           : view.sessions.length === 0
             ? `${view.events.length} record${view.events.length === 1 ? " was" : "s were"} read, but no session could be identified.`
             : `${partial ? "Partial read" : "Read completed"}: ${view.sessions.length} session${view.sessions.length === 1 ? "" : "s"} and ${view.events.length} record${view.events.length === 1 ? "" : "s"}.`;
@@ -790,6 +794,9 @@ function App(): ReactElement {
                           );
                         })}
                       </dl>
+                      {source.coverageDetails && (
+                        <SourceCoverageDetails details={source.coverageDetails} />
+                      )}
                       {source.classification && (
                         <SourceClassification
                           classification={source.classification}
@@ -802,7 +809,7 @@ function App(): ReactElement {
                       <summary>Read limitations ({view.issues.length})</summary>
                       <ul>
                         {view.issues.map((issue, index) => (
-                          <li key={index}>{issue.message}</li>
+                          <li key={index}><DiagnosticMessage issue={issue} /></li>
                         ))}
                       </ul>
                     </details>

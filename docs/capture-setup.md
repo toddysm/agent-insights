@@ -486,6 +486,15 @@ or trace ID alone. See [direct versus associated reporting](local-runtime.md#rea
 final integrated capture/usage acceptance remains tracked in
 [#1](https://github.com/toddysm/agent-insights/issues/1) and
 [#21](https://github.com/toddysm/agent-insights/issues/21).
+Interpret extension-export coverage by evidence dimension: valid retained
+timestamps do not prove complete session capture. Chat usage and embedding
+usage can have different availability; missing embedding counts remain
+unavailable, not zero, and limit combined applicable totals. Empty optional
+tool-call IDs do not erase otherwise valid timing/tokens. Unassigned records
+can retain valid fields without contributing to any specific session's totals.
+Unknown operations, malformed structure, conflicting identities and source
+changes remain visible limitations; missing linkage alone is not an identity
+conflict. See [field availability and capture scope](evidence-contracts.md#evidence-scoped-coverage).
 No setup wizard, automatic source discovery, archive or automatic settings
 configuration is shipped by this documentation.
 

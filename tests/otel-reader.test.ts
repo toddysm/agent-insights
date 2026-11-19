@@ -106,6 +106,124 @@ function read(records: readonly unknown[]): Promise<ReadView> {
   );
 }
 
+test("mixed retained evidence separates timestamps, model operations, attribution and capture history", async () => {
+  const operations = ["chat", "embeddings", "execute_tool", "execute_tool", "execute_hook", "chat", "chat"];
+  const view = await read(operations.map((operation, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": operation,
+      "gen_ai.conversation.id": index < 4 ? nativeSession : undefined,
+      "copilot_chat.chat_session_id": index === 0 ? "parent" : undefined,
+      "copilot_chat.parent_chat_session_id": index === 6 ? "parent" : undefined,
+      "gen_ai.tool.name": operation === "execute_tool" ? "fictional_tool" : undefined,
+      "gen_ai.tool.call.id": operation === "execute_tool" ? "" : undefined,
+      "gen_ai.usage.input_tokens": operation === "chat" ? 20 : undefined,
+      "gen_ai.usage.output_tokens": operation === "chat" ? 5 : undefined,
+    },
+  )));
+  const source = view.sources[0]!;
+  assert.equal(source.coverage.timing.status, "complete");
+  assert.equal(source.coverage.tools.status, "complete");
+  assert.equal(source.coverage.tokens.status, "partial");
+  assert.equal(source.coverage.messages.status, "unavailable");
+  assert.equal(source.coverageDetails?.retainedTiming.status, "complete");
+  assert.equal(source.coverageDetails?.chatUsage.status, "complete");
+  assert.equal(source.coverageDetails?.embeddingUsage.status, "unavailable");
+  assert.equal(source.coverageDetails?.sessionAttribution.status, "partial");
+  assert.equal(source.coverageDetails?.history.status, "partial");
+  assert.equal(source.identity.executionHost, "unknown");
+  assert.equal(source.classification?.executions.hookExecutions, 1);
+  const emptyIds = view.issues.find((issue) => /identifier unavailable/.test(issue.message));
+  assert.equal(emptyIds?.count, 2);
+  assert.equal(emptyIds.affectsCoverage, false);
+  assert.deepEqual(emptyIds.impact, { scope: "records", dimensions: ["tools"] });
+  const sessionId = view.sessions[0]!.id;
+  const whole = calculateRecordedMetrics(view, { sessionId });
+  assert.equal(whole.tools.calls.metric.value, 2);
+  assert.equal(whole.tools.calls.metric.coverage.status, "complete");
+  assert.equal(whole.tokens.input.metric.value, 20);
+  assert.equal(whole.tokens.input.metric.coverage.status, "partial");
+  assert.deepEqual(whole.tokens.input.contributorEventIds, [view.events[0]!.id]);
+  assert.deepEqual(whole.tokens.input.metric.contributors, view.events[0]!.references);
+  assert.ok(whole.tokens.input.scope.eventIds.includes(view.events[1]!.id));
+  assert.equal(whole.exclusions.filter((entry) => entry.reason === "unassigned").length, 2);
+  assert.equal(whole.exclusions.filter((entry) => entry.reason === "associated-only").length, 1);
+  for (const [index, value, status] of [[0, 20, "complete"], [1, null, "unavailable"]] as const) {
+    const event = view.events[index]!;
+    const selected = calculateRecordedMetrics(view, { sessionId, eventIds: [event.id] });
+    assert.equal(selected.tokens.input.metric.value, value);
+    assert.equal(selected.tokens.input.metric.coverage.status, status);
+    assert.deepEqual(selected.tokens.input.contributorEventIds, [event.id]);
+    assert.deepEqual(selected.tokens.input.scope.eventIds, [event.id]);
+    assert.deepEqual(selected.tokens.input.metric.contributors, event.references);
+    assert.deepEqual(parseMetric(selected.tokens.input.metric, view), selected.tokens.input.metric);
+    assert.equal(selected.timing.elapsed.metric.coverage.status, "complete");
+  }
+  assert.deepEqual(parseReadView(JSON.parse(JSON.stringify(view))), view);
+});
+
+test("record-scoped malformed usage limits tokens, not timestamps or another selected model call", async () => {
+  const view = await read([
+    record(),
+    record({ spanId: "2".repeat(16) }, { "gen_ai.usage.input_tokens": -1 }),
+  ]);
+  const issue = view.issues.find((issue) => /Invalid reported token/.test(issue.message));
+  assert.deepEqual(issue?.impact, { scope: "records", dimensions: ["tokens"] });
+  assert.equal(issue.severity, "error");
+  assert.equal(view.sources[0]?.coverage.timing.status, "complete");
+  const sessionId = view.sessions[0]!.id;
+  const selected = calculateRecordedMetrics(view, { sessionId, eventIds: [view.events[0]!.id] });
+  assert.equal(selected.tokens.input.metric.coverage.status, "complete");
+  assert.deepEqual(parseMetric(selected.tokens.input.metric, view), selected.tokens.input.metric);
+  const whole = calculateRecordedMetrics(view, { sessionId });
+  assert.equal(whole.tokens.input.metric.value, 20);
+  assert.equal(whole.tokens.input.metric.coverage.status, "partial");
+});
+
+test("unknown operations, malformed/truncated input, changed sources and identity conflicts limit totals, not retained timestamp validity", async () => {
+  const valid = record();
+  for (const tail of [
+    JSON.stringify(record({ spanId: "2".repeat(16) }, { "gen_ai.operation.name": "unqualified" })),
+    "{malformed}\n",
+    '{"incomplete":',
+    JSON.stringify(record({}, { "gen_ai.usage.input_tokens": 99 })),
+  ]) {
+    const view = await vscodeOtelReader.read(input(`${JSON.stringify(valid)}\n${JSON.stringify(record({ spanId: "3".repeat(16) }))}\n${tail}`));
+    const sessionId = view.sessions[0]!.id;
+    assert.equal(view.sources[0]?.coverageDetails?.retainedTiming.status, "complete");
+    const metrics = calculateRecordedMetrics(view, { sessionId });
+    for (const entry of [metrics.tokens.input, metrics.timing.elapsed, metrics.tools.calls])
+      assert.notEqual(entry.metric.coverage.status, "complete");
+    assert.ok(view.issues.some((issue) => issue.severity === "error" && issue.impact?.scope === "source"));
+  }
+  const original = await read([valid]);
+  const partial = { status: "partial", reason: "Source changed during read" };
+  const changed = parseReadView({
+    ...original,
+    sources: original.sources.map((source) => ({
+      ...source, changedDuringRead: true,
+      coverage: { messages: source.coverage.messages, timing: partial, tokens: partial, tools: partial },
+    })),
+    issues: [{ sourceId: original.sources[0]!.id, code: "source-changed", message: partial.reason }],
+  });
+  assert.equal(changed.sources[0]?.coverageDetails?.retainedTiming.status, "complete");
+  assert.equal(calculateRecordedMetrics(changed, { sessionId: changed.sessions[0]!.id }).tokens.input.metric.coverage.status, "partial");
+});
+
+test("log, metric and content-event-only inputs describe non-execution telemetry without invented calls", async () => {
+  for (const raw of [
+    { scopeMetrics: [] },
+    { hrTime: [1760000000, 0], resource: {}, instrumentationScope: {} },
+    record({}, { "gen_ai.operation.name": "content_event" }),
+  ]) {
+    const view = await read([raw]);
+    assert.equal(view.events.length, 0);
+    assert.equal(view.sessions.length, 0);
+    assert.match(view.issues[0]!.message, /Non-execution telemetry was found/);
+    assert.ok(Object.values(view.sources[0]!.coverage).every((coverage) => coverage.status === "unavailable"));
+  }
+});
+
 test("normalizes exact identity, time units, content, status and usage with original anchors", async () => {
   const original = record(
     {},
@@ -391,7 +509,8 @@ test("hook metadata omission does not manufacture a hook type and malformed cont
     malformed.sources[0]?.classification?.executions.hookExecutions,
     1,
   );
-  assert.equal(malformed.sources[0]?.coverage.timing.status, "partial");
+  assert.equal(malformed.sources[0]?.coverage.timing.status, "complete");
+  assert.ok(malformed.issues.every((issue) => issue.severity === "error"));
   assert.ok(
     malformed.issues.some((issue) => issue.message.includes("hook_type")),
   );
@@ -1051,7 +1170,8 @@ test("associated-only exclusions refer only to the selected parent and keep memb
   const b = recordedReport(view, { readId: view.id, sessionId: view.sessions[1]!.id });
   assert.ok(!a.exclusions.some((entry) => entry.reason === "associated-only"));
   assert.ok(b.exclusions.some((entry) => entry.reason === "associated-only"));
-  assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+  assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+  assert.equal(view.sources[0]?.coverageDetails?.sessionAttribution.status, "partial");
   assert.match(view.issues.map((issue) => issue.message).join(" "), /parent-chat association does not establish own-session identity/);
 });
 
@@ -1209,12 +1329,13 @@ test("optional tool-call IDs distinguish absent, empty and invalid types without
       code: "missing-field",
       message: `${message} (1 occurrence(s); first line 1).`,
       ...(message === empty ? { affectsCoverage: false } : {}),
+      impact: { scope: "records", dimensions: ["tools"] },
+      severity: message === empty ? "info" : "error",
       count: 1,
       references: [fieldRef],
     }]);
     assert.ok(!JSON.stringify(view.issues).includes("PRIVATE_ID_MARKER"));
-    if (value === undefined || typeof value === "string")
-      assert.equal(view.sources[0]?.coverage.timing.status, "complete");
+    assert.equal(view.sources[0]?.coverage.timing.status, "complete");
   }
 });
 
@@ -1452,7 +1573,7 @@ test("malformed status containers and absent status codes are not silently disca
         issue.message.includes("Unsupported recorded span status"),
       ),
     );
-    assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
   }
   for (const status of [undefined, { code: 0 }]) {
     const view = await read([record({ status })]);

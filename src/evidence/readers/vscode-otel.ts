@@ -28,6 +28,15 @@ type Identity = NonNullable<
 type Coverage = ReadView["sources"][number]["coverage"]["timing"];
 /** Public issue vocabulary accepted by the shared contract. */
 type IssueCode = ReadView["issues"][number]["code"];
+/** Public diagnostic scope; unknown integrity impacts conservatively affect all dimensions. */
+type Impact = NonNullable<ReadView["issues"][number]["impact"]>;
+const sourceImpact: Impact = { scope: "source", dimensions: ["messages", "timing", "tools", "tokens"] };
+const timingImpact: Impact = { scope: "records", dimensions: ["timing"] };
+const tokenImpact: Impact = { scope: "records", dimensions: ["tokens"] };
+const toolImpact: Impact = { scope: "records", dimensions: ["tools"] };
+const attributionImpact: Impact = { scope: "attribution", dimensions: [] };
+const contentImpact: Impact = { scope: "content", dimensions: ["messages"] };
+const metadataImpact: Impact = { scope: "metadata", dimensions: [] };
 
 /** Classification uses only explicit operation metadata, never span labels or runtime identity. */
 type OperationClassification =
@@ -65,7 +74,7 @@ interface Candidate {
 class Diagnostics {
   /** Compact scans preserve the first affected anchor and exact occurrence count, not an unbounded reference list. */
   constructor(private readonly compact = false) {}
-  private coverageLimited = false;
+  private currentReference: Reference | null = null;
   private readonly entries = new Map<
     string,
     {
@@ -75,8 +84,15 @@ class Diagnostics {
       line: number;
       references: Reference[];
       affectsCoverage: boolean;
+      impact: Impact;
+      severity: NonNullable<ReadView["issues"][number]["severity"]>;
     }
   >();
+
+  /** Supply a physical record anchor for field diagnostics; clear it outside record normalization. */
+  at(reference: Reference | null): void {
+    this.currentReference = reference;
+  }
 
   /**
    * Accumulate a controlled message, count and first physical line, preserving
@@ -85,7 +101,9 @@ class Diagnostics {
    * @param message - Application-owned description, never source text or exception text.
    * @param line - First affected one-based source line.
    * @param references - Optional original anchors; never captured payloads.
-   * @param affectsCoverage - False only for informational absence of an optional tool-call ID.
+   * @param affectsCoverage - False for informational absence of an optional tool-call ID.
+   * @param impact - Affected fields/scope; unknown impacts conservatively limit the source.
+   * @param severity - Malformed/conflicting evidence stays an error; missing linkage may be a warning.
    */
   add(
     code: IssueCode,
@@ -93,9 +111,11 @@ class Diagnostics {
     line: number,
     references: readonly Reference[] = [],
     affectsCoverage = true,
+    impact: Impact = sourceImpact,
+    severity: NonNullable<ReadView["issues"][number]["severity"]> = affectsCoverage ? "error" : "info",
   ): void {
-    this.coverageLimited ||= affectsCoverage;
-    const key = `${code}:${message}`;
+    if (references.length === 0 && this.currentReference) references = [this.currentReference];
+    const key = JSON.stringify([code, message, impact]);
     const previous = this.entries.get(key);
     if (previous) {
       previous.count++;
@@ -110,12 +130,16 @@ class Diagnostics {
         line,
         references: this.compact ? references.slice(0, 1) : [...references],
         affectsCoverage,
+        impact,
+        severity,
       });
   }
 
-  /** Whether limitations prevent a complete-coverage claim for this source. */
-  get partial(): boolean {
-    return this.coverageLimited;
+  /** Reasons affecting this field dimension; linkage/content notices do not poison numeric fields. */
+  reasons(dimension: Impact["dimensions"][number]): string[] {
+    return [...this.entries.values()]
+      .filter((entry) => entry.affectsCoverage && entry.impact.dimensions.includes(dimension))
+      .map((entry) => entry.message);
   }
 
   /**
@@ -129,6 +153,8 @@ class Diagnostics {
       code: value.code,
       message: `${value.message} (${value.count} occurrence(s); first line ${value.line}).`,
       count: value.count,
+      impact: value.impact,
+      severity: value.severity,
       ...(!value.affectsCoverage ? { affectsCoverage: false } : {}),
       ...(value.references.length ? { references: value.references } : {}),
     }));
@@ -202,6 +228,7 @@ function classifyOperation(attributes: unknown): OperationClassification {
  * @param key - Application-owned field name, never a key taken from captured content.
  * @param diagnostics - Receives a payload-free limitation for a present invalid value.
  * @param line - Original physical source line.
+ * @param impact - Known field scope; producer identity remains conservatively source-scoped.
  * @returns The verbatim nonempty string, or null without coercion.
  */
 function reportedName(
@@ -209,10 +236,11 @@ function reportedName(
   key: string,
   diagnostics: Diagnostics,
   line: number,
+  impact: Impact = metadataImpact,
 ): string | null {
   const value = name(fields[key]);
   if (Object.hasOwn(fields, key) && value === null)
-    diagnostics.add("missing-field", `Invalid reported ${key}`, line);
+    diagnostics.add("missing-field", `Invalid reported ${key}`, line, [], true, impact);
   return value;
 }
 
@@ -330,7 +358,7 @@ function usage(
   if (!keys.some((key) => Object.hasOwn(attributes, key))) return null;
   for (const key of keys) {
     if (Object.hasOwn(attributes, key) && count(attributes[key]) === null)
-      diagnostics.add("missing-field", "Invalid reported token count", line);
+      diagnostics.add("missing-field", "Invalid reported token count", line, [], true, tokenImpact);
   }
   for (const [component, key] of componentKeys) {
     let value = count(attributes[key]);
@@ -341,6 +369,7 @@ function usage(
           "unknown-record",
           "Conflicting reasoning-token aliases",
           line,
+          [], true, tokenImpact,
         );
         value = null;
       } else value ??= legacy;
@@ -396,7 +425,7 @@ function span(
       line,
     );
   if (raw.parentSpanContext !== undefined && !validParent)
-    diagnostics.add("missing-field", "Invalid native parent context", line);
+    diagnostics.add("missing-field", "Invalid native parent context", line, [], true, attributionImpact);
   const start = milliseconds(raw.startTime);
   const validCompletion =
     raw.ended === undefined || typeof raw.ended === "boolean";
@@ -405,6 +434,7 @@ function span(
       "unknown-record",
       "Unsupported recorded completion flag",
       line,
+      [], true, timingImpact,
     );
   if (
     raw.kind !== undefined &&
@@ -422,10 +452,11 @@ function span(
       "missing-field",
       "Recorded span end precedes its start",
       line,
+      [], true, timingImpact,
     );
   }
   if (start === null || end === null)
-    diagnostics.add("missing-field", "Incomplete recorded timing", line);
+    diagnostics.add("missing-field", "Incomplete recorded timing", line, [], true, timingImpact);
   const refs = [reference(input, line, recordId)];
   const identities: Identity[] = [];
   for (const [namespace, key] of [
@@ -438,6 +469,7 @@ function span(
         "missing-field",
         "Invalid reported session identifier",
         line,
+        [], true, attributionImpact,
       );
     if (value !== null) {
       identities.push({ namespace, value });
@@ -449,7 +481,7 @@ function span(
   if (Object.hasOwn(attributes, "copilot_chat.parent_chat_session_id")) {
     refs.push(parentChatReference);
     if (parentChatValue === null)
-      diagnostics.add("missing-field", "Invalid reported parent-chat identifier", line, [parentChatReference]);
+      diagnostics.add("missing-field", "Invalid reported parent-chat identifier", line, [parentChatReference], true, attributionImpact);
   }
   /**
    * Retain a known captured content attribute without interpreting instructions.
@@ -464,6 +496,7 @@ function span(
         "missing-field",
         "Unsupported captured content representation",
         line,
+        [], true, contentImpact,
       );
       return null;
     }
@@ -473,6 +506,7 @@ function span(
         "truncated-record",
         "Captured content contains a producer truncation marker",
         line,
+        [], true, contentImpact,
       );
     return value;
   };
@@ -481,7 +515,7 @@ function span(
     Object.hasOwn(raw, "status") &&
     (!object(raw.status) || (status !== 0 && status !== 1 && status !== 2))
   )
-    diagnostics.add("unknown-record", "Unsupported recorded span status", line);
+    diagnostics.add("unknown-record", "Unsupported recorded span status", line, [], true, metadataImpact);
   for (const key of [
     "droppedAttributesCount",
     "droppedEventsCount",
@@ -540,6 +574,7 @@ function span(
     "gen_ai.tool.name",
     diagnostics,
     line,
+    toolImpact,
   );
   const toolCallId = name(attributes["gen_ai.tool.call.id"]);
   if (Object.hasOwn(attributes, "gen_ai.tool.call.id")) {
@@ -560,6 +595,7 @@ function span(
         line,
         [ref],
         !empty,
+        toolImpact,
       );
     }
   }
@@ -591,13 +627,14 @@ function span(
       "unknown-record",
       "Unsupported reported hook result kind",
       line,
+      [], true, metadataImpact,
     );
   if (
     kind === "tool-call" &&
     toolName === null &&
     !Object.hasOwn(attributes, "gen_ai.tool.name")
   )
-    diagnostics.add("missing-field", "Tool name was not reported", line);
+    diagnostics.add("missing-field", "Tool name was not reported", line, [], true, toolImpact);
   return {
     line,
     key: vscodeOtelRecordKey(raw, line),
@@ -638,8 +675,8 @@ function span(
     },
     references: refs,
     identities,
-    producer: reportedName(resource, "service.name", diagnostics, line),
-    version: reportedName(resource, "service.version", diagnostics, line),
+    producer: reportedName(resource, "service.name", diagnostics, line, sourceImpact),
+    version: reportedName(resource, "service.version", diagnostics, line, sourceImpact),
     conflict: false,
   };
 }
@@ -724,6 +761,7 @@ function associate(
         "unknown-record",
         "Cycle in captured parent relationships",
         current.line,
+        current.references.slice(0, 1), true, attributionImpact,
       );
     for (const key of chain) checkedParents.add(key);
   }
@@ -753,6 +791,8 @@ function associate(
               : "Execution has no reported session identity, span-parent linkage or parent-chat linkage; direct membership unavailable",
         candidate.line,
         candidate.parentChat ? [candidate.parentChat.reference] : candidate.references.slice(0, 1),
+        true, attributionImpact,
+        ambiguous.has(candidate.key) ? "error" : "warning",
       );
   }
   const groups = new Map<
@@ -839,6 +879,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
       if (line.blank) policy.counts.blank++;
     },
   })) {
+    diagnostics.at(null);
     if ("error" in record) {
       if (policy) {
         if (record.error === "oversized") policy.counts.oversized++;
@@ -857,6 +898,14 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
       continue;
     }
     const raw = record.value;
+    const ref: Reference = {
+      ...reference(input, record.line, record.recordId),
+      ...(policy ? { location: {
+        kind: "jsonl" as const, line: record.line, pointer: "",
+        byteOffset: record.byteOffset, byteLength: record.byteLength,
+      } } : {}),
+    };
+    diagnostics.at(ref);
     if (!object(raw)) {
       if (policy) policy.counts.unknown++;
       diagnostics.add(
@@ -911,13 +960,6 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
       if (classification.kind === "execution") policy.counts.executionRecords++;
       else policy.counts.unclassifiedRecords++;
     }
-    const ref: Reference = {
-      ...reference(input, record.line, record.recordId),
-      ...(policy ? { location: {
-        kind: "jsonl" as const, line: record.line, pointer: "",
-        byteOffset: record.byteOffset, byteLength: record.byteLength,
-      } } : {}),
-    };
     // Filtering an unqualified execution must not hide a conflicting native identity.
     const key = vscodeOtelRecordKey(raw, record.line);
     const earlier = operations.get(key);
@@ -1025,13 +1067,16 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
     }
   }
   input.signal.throwIfAborted();
+  diagnostics.at(null);
   const trusted = [...candidates.values()].filter(
     (candidate) => !candidate.conflict,
   );
   if (trusted.length === 0)
     diagnostics.add(
       "unsupported-schema",
-      "No supported execution evidence is available",
+      Object.values(nonExecutionRecords).some((count) => count > 0)
+        ? "Non-execution telemetry was found; no supported executions are available"
+        : "No supported execution evidence is available",
       1,
     );
   const { sessions, assignments } = associate(trusted, input, diagnostics);
@@ -1062,6 +1107,8 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
         messages[resolution.status],
         event.parentChat.reference.location.kind === "jsonl" ? event.parentChat.reference.location.line : 1,
         [event.parentChat.reference],
+        true, attributionImpact,
+        resolution.status === "unresolved" ? "warning" : "error",
       );
     }
     return { ...event, parentChat: { ...event.parentChat, ...resolution } };
@@ -1071,19 +1118,34 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
    * @param available - At least one relevant value/record was captured.
    * @param complete - Every applicable captured record has the required fields.
    * @param reason - Controlled explanation used for unavailable or partial evidence.
-   * @returns Coverage conservatively reduced by limiting diagnostics, not optional-ID absence notices.
+   * @returns Coverage reduced only by diagnostics affecting the requested dimension.
    */
   const coverage = (
     available: boolean,
     complete: boolean,
     reason: string,
+    dimension?: Impact["dimensions"][number],
   ): Coverage =>
     !available
       ? { status: "unavailable", reason }
-      : complete && !diagnostics.partial
+      : complete && (!dimension || diagnostics.reasons(dimension).length === 0)
         ? { status: "complete" }
-        : { status: "partial", reason };
+        : { status: "partial", reason: [reason, ...(dimension ? diagnostics.reasons(dimension) : [])].join("; ") };
   const modelCalls = events.filter((event) => event.kind === "model-call");
+  /** Field availability for this operation only; absent embedding usage never becomes zero. */
+  const modelUsage = (operation: "chat" | "embeddings"): Coverage => {
+    const calls = modelCalls.filter((event) => event.operation === operation);
+    return coverage(
+      calls.some((event) => event.usage?.input != null || event.usage?.output != null),
+      calls.every((event) => event.usage?.input != null && event.usage?.output != null),
+      `${operation === "chat" ? "Chat" : "Embedding"} usage is missing for some or all retained calls; absent tokens are not zero`,
+    );
+  };
+  const retainedTiming = coverage(
+    events.some((event) => event.startedAtMs !== null || event.endedAtMs !== null),
+    events.every((event) => event.startedAtMs !== null && event.endedAtMs !== null),
+    "Some or all retained executions have missing or invalid timestamps",
+  );
   const unclassifiedSpans = {
     missingOperation: 0,
     malformedOperation: 0,
@@ -1128,6 +1190,22 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
           conflictingSpans,
           nonExecutionRecords,
         },
+        ...(recognized ? { coverageDetails: {
+            basis: "retained-executions",
+            retainedTiming,
+            chatUsage: modelUsage("chat"),
+            embeddingUsage: modelUsage("embeddings"),
+            sessionAttribution: coverage(
+              events.some((event) => event.sessionId !== null),
+              events.every((event) => event.sessionId !== null) &&
+                !diagnostics.values(input.sourceId).some((issue) => issue.impact?.scope === "attribution" && issue.affectsCoverage !== false),
+              "Direct session membership is missing or limited; explicit parent association is separate, and unassigned records do not enter session totals",
+            ),
+            history: {
+              status: "partial",
+              reason: "Retained exports do not establish complete source/session history",
+            },
+        } } : {}),
         coverage: {
           messages: {
             status: "unavailable",
@@ -1141,6 +1219,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
               (event) => event.startedAtMs !== null && event.endedAtMs !== null,
             ),
             "Recorded timing is missing or limited by read issues",
+            "timing",
           ),
           tools: coverage(
             events.length > 0,
@@ -1148,6 +1227,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
               .filter((event) => event.kind === "tool-call")
               .every((event) => event.name !== null),
             "Tool evidence is missing or limited by read issues",
+            "tools",
           ),
           tokens: coverage(
             modelCalls.some(
@@ -1159,6 +1239,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
                 event.usage?.input != null && event.usage?.output != null,
             ),
             "Per-call token usage is missing or limited by read issues",
+            "tokens",
           ),
         },
       },

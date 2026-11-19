@@ -241,6 +241,8 @@ export class AnalysisRunner {
         "Associated events may belong directly to another session or have no direct membership. Do not add them to direct-session totals or count a call twice.",
         "Recorded span intervals may overlap; never sum nested spans as elapsed time.",
         "Classification counts and read issues are source-wide, not selected-session metrics or proof of completeness.",
+        "Diagnostic impact identifies affected dimensions and source/record/attribution/content/metadata scope. Retained field availability is not complete source/session history; missing usage is never zero.",
+        "Diagnostic anchors are representative when count exceeds references.length; do not assume other records are unaffected.",
         operation.instructions,
       ].join("\n"),
       prompt: JSON.stringify({
@@ -266,6 +268,11 @@ export class AnalysisRunner {
             message: issue.message,
             ...(issue.affectsCoverage === undefined ? {} : { affectsCoverage: issue.affectsCoverage }),
             ...(issue.count === undefined ? {} : { count: issue.count }),
+            ...(issue.impact === undefined ? {} : { impact: issue.impact }),
+            ...(issue.severity === undefined ? {} : { severity: issue.severity }),
+            ...(issue.impact?.scope !== "records" || issue.references === undefined ? {} : {
+              references: issue.references.slice(0, 1),
+            }),
           })),
         events,
       }),

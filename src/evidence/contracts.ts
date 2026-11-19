@@ -31,6 +31,12 @@ export const coverageSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("unavailable"), reason: id }).readonly(),
 ]);
 
+/** A limitation affects source integrity, specific records, linkage, or captured content, not every metric. */
+export const diagnosticImpactSchema = z.strictObject({
+  scope: z.enum(["source", "records", "attribution", "content", "metadata"]),
+  dimensions: z.array(z.enum(["messages", "timing", "tools", "tokens"])).readonly(),
+}).readonly();
+
 /** Original record locator, independent of inferred tasks or transient event identifiers. */
 export const referenceSchema = z
   .strictObject({
@@ -114,6 +120,15 @@ export const sourceSchema = z
       .readonly(),
     changedDuringRead: z.boolean().nullable(),
     classification: classificationSchema.optional(),
+    /** Optional scoped-reader contract; older readers retain their source-wide coverage semantics. */
+    coverageDetails: z.strictObject({
+      basis: z.literal("retained-executions"),
+      retainedTiming: coverageSchema,
+      chatUsage: coverageSchema,
+      embeddingUsage: coverageSchema,
+      sessionAttribution: coverageSchema,
+      history: coverageSchema,
+    }).readonly().optional(),
     coverage: z
       .strictObject({
         messages: coverageSchema,
@@ -384,6 +399,8 @@ export const readViewSchema = z
             message: id,
             /** False marks an informational notice; omitted/true retains legacy limiting semantics. */
             affectsCoverage: z.boolean().optional(),
+            impact: diagnosticImpactSchema.optional(),
+            severity: z.enum(["info", "warning", "error"]).optional(),
             /** Optional structured diagnostics; earlier readers may supply only a message. */
             count: tokens.positive().optional(),
             references: z.array(referenceSchema).min(1).readonly().optional(),
@@ -493,8 +510,22 @@ export const readViewSchema = z
           message: "Issue references an absent or unrelated source",
         });
       }
+      if (issue.impact?.scope === "records" && !issue.references?.length)
+        context.addIssue({ code: "custom", message: "Record-scoped diagnostics require original references" });
+      if (
+        (issue.code === "source-changed" || issue.code === "unreadable-source") &&
+        (issue.affectsCoverage === false || (issue.impact !== undefined &&
+          (issue.impact.scope !== "source" || ["messages", "timing", "tools", "tokens"].some(
+            (dimension) => !issue.impact?.dimensions.some((value) => value === dimension),
+          ))))
+      )
+        context.addIssue({ code: "custom", message: "Source integrity failures must limit every dimension" });
     }
     for (const source of view.sources) {
+      if (source.coverageDetails && (
+        source.format !== "vscode-otel-jsonl" || source.coverageDetails.history.status === "complete"
+      ))
+        context.addIssue({ code: "custom", message: "Scoped extension coverage cannot certify complete source/session history" });
       if (
         source.format === null &&
         Object.values(source.coverage).some(
@@ -597,6 +628,41 @@ export function evidenceReferenceKey(reference: EvidenceReference): string {
   ]);
 }
 
+/** Group field pointers within the same physical record without merging replayed lines or source revisions. */
+export function evidenceRecordKey(reference: EvidenceReference): string {
+  return evidenceReferenceKey({ ...reference, location: { ...reference.location, pointer: "" } });
+}
+
+/**
+ * Scope qualified-reader limitations to the selected original records. Legacy readers
+ * retain source-wide semantics; integrity failures and unscoped legacy issues never disappear.
+ * This describes reported fields, not complete capture or inferred session membership.
+ */
+export function coverageForReferences(
+  view: ReadView,
+  source: ReadView["sources"][number],
+  dimension: Metric["dimension"],
+  references: readonly EvidenceReference[],
+): Metric["coverage"] {
+  const coverage = source.coverage[dimension];
+  if (!source.coverageDetails || coverage.status === "unavailable") return coverage;
+  const keys = new Set(references.map(evidenceRecordKey));
+  const reasons = view.issues.filter((issue) => {
+    if (issue.sourceId !== source.id || issue.affectsCoverage === false) return false;
+    if (!issue.impact) return true;
+    if (!issue.impact.dimensions.includes(dimension)) return false;
+    return issue.impact.scope === "source" ||
+      (issue.impact.scope === "records" && (
+        (issue.count !== undefined && issue.count > (issue.references?.length ?? 0)) ||
+        issue.references?.some((ref) => keys.has(evidenceRecordKey(ref)))
+      ));
+  }).map((issue) => issue.message);
+  if (source.changedDuringRead === true) reasons.push("Source changed during read");
+  return reasons.length
+    ? { status: "partial", reason: [...new Set(reasons)].join(" ") }
+    : { status: "complete" };
+}
+
 /** Reject stale, unavailable or misattributed evidence; zero anchors require complete relevant capture. */
 export function parseMetric(input: unknown, view: ReadView): Metric {
   const metric = metricSchema.parse(input);
@@ -612,6 +678,9 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
   const sourcesById = new Map(
     view.sources.map((source) => [source.id, source]),
   );
+  const availabilityBySource = new Map(view.sources.map((source) => [
+    source.id, coverageForReferences(view, source, metric.dimension, metric.contributors),
+  ]));
   const eventOwners = new Map<string, Set<string | null>>();
   for (const event of view.events) {
     for (const reference of event.references) {
@@ -629,7 +698,7 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     ) {
       throw new Error("Metric contributor belongs to an unrelated source");
     }
-    const availability = source.coverage[metric.dimension];
+    const availability = availabilityBySource.get(source.id)!;
     if (metric.value !== null && availability.status === "unavailable") {
       throw new Error(`Metric evidence is unavailable for ${metric.dimension}`);
     }

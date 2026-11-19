@@ -89,6 +89,7 @@ function observedView(result: ReadResult): ReadView {
       return {
         ...source,
         format: null,
+        coverageDetails: undefined,
         changedDuringRead: false,
         coverage: {
           messages: unavailable,
@@ -109,6 +110,8 @@ function observedView(result: ReadResult): ReadView {
         sourceId: source.id,
         code: "source-changed",
         message: "Source changed during read",
+        severity: "error",
+        impact: { scope: "source", dimensions: ["messages", "timing", "tools", "tokens"] },
       });
     const coverage = { ...source.coverage };
     if (changed)
@@ -124,7 +127,15 @@ function observedView(result: ReadResult): ReadView {
             reason: "Source changed during read",
           };
       }
-    return { ...source, changedDuringRead: changed, coverage };
+    return {
+      ...source, changedDuringRead: changed, coverage,
+      ...(changed && source.coverageDetails ? {
+        coverageDetails: {
+          ...source.coverageDetails,
+          history: { status: "partial" as const, reason: "Source changed during read; retained timestamps are not complete source/session history" },
+        },
+      } : {}),
+    };
   });
   return parseReadView({
     ...result.view,

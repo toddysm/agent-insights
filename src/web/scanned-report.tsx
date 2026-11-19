@@ -20,6 +20,7 @@ import {
 import { scanEnvelopeSchema } from "../evidence/streaming.js";
 import { statusSchema } from "../runtime/protocol.js";
 import { EvidenceDrawer, metricValue } from "./session-report.js";
+import { SourceCoverageDetails } from "./coverage-details.js";
 import {
   parseReportHash,
   reportHash,
@@ -508,6 +509,9 @@ export function ScannedSessionReportPanel({
                 Append beyond this boundary is excluded. Start a new scan to
                 include it.
               </p>
+            )}
+            {report.source.coverageDetails && (
+              <SourceCoverageDetails details={report.source.coverageDetails} />
             )}
             {report.issues.map((issue, index) => (
               <p className="notice" key={index}>
