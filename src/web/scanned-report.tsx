@@ -485,6 +485,11 @@ export function ScannedSessionReportPanel({
       )}
       {report && (
         <>
+          <section aria-label="Session contributions">
+            <h3>Direct versus associated evidence</h3>
+            <p>{report.contributions.directEvents} direct records; {report.contributions.associatedEvents} associated records.</p>
+            <p>Measurements use direct membership only. Associated usage is not added; inspect it with Load original evidence in the scan controls. Agent cumulative usage is not model-call usage.</p>
+          </section>
           <details>
             <summary>Source identity and admitted coverage</summary>
             <p>

@@ -55,7 +55,8 @@ export type AnalysisUsage = z.infer<typeof analysisUsageSchema>;
  * Common shape required of model-generated JSON before operation-specific checks.
  * Source identifiers retain the evidence contract's exact values. This schema
  * cannot establish that a cited event belongs to the selection; the runner checks
- * identity, uniqueness and membership before attaching original source references.
+ * identity, uniqueness and direct membership or explicit association before
+ * attaching original source references.
  */
 export const modelResultSchema = z.strictObject({
   readId: id,

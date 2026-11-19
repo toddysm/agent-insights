@@ -14,6 +14,7 @@ import {
 } from "../contracts.js";
 import { jsonLines } from "./jsonl.js";
 import { ScanBudgetExceeded, type OtelScanPolicy } from "../streaming.js";
+import { resolveParentChats } from "../relationships.js";
 
 /** Shared normalized execution event, excluding reconstructed messages. */
 type Span = Exclude<ReadView["events"][number], { kind: "message" }>;
@@ -44,7 +45,10 @@ interface Candidate {
   readonly line: number;
   readonly key: string;
   readonly parentKey: string | null;
-  readonly facts: Omit<Span, "id" | "sessionId" | "references">;
+  readonly facts: Omit<Span, "id" | "sessionId" | "references" | "parentChat">;
+  readonly parentChat: { readonly value: string; readonly reference: Reference } | null;
+  /** Field presence and unnormalized value participate in replay comparison even when invalid for resolution. */
+  readonly parentChatSignature: string;
   readonly identities: readonly Identity[];
   readonly producer: string | null;
   readonly version: string | null;
@@ -440,6 +444,13 @@ function span(
       refs.push(reference(input, line, recordId, `/attributes/${key}`));
     }
   }
+  const parentChatValue = name(attributes["copilot_chat.parent_chat_session_id"]);
+  const parentChatReference = reference(input, line, recordId, "/attributes/copilot_chat.parent_chat_session_id");
+  if (Object.hasOwn(attributes, "copilot_chat.parent_chat_session_id")) {
+    refs.push(parentChatReference);
+    if (parentChatValue === null)
+      diagnostics.add("missing-field", "Invalid reported parent-chat identifier", line, [parentChatReference]);
+  }
   /**
    * Retain a known captured content attribute without interpreting instructions.
    * @param key - Application-owned attribute name, also used in its original JSON Pointer.
@@ -591,6 +602,11 @@ function span(
     line,
     key: vscodeOtelRecordKey(raw, line),
     parentKey: validParent ? `${parentTraceId}/${parentId}` : null,
+    parentChat: parentChatValue === null ? null : { value: parentChatValue, reference: parentChatReference },
+    parentChatSignature: createHash("sha256").update(JSON.stringify([
+      Object.hasOwn(attributes, "copilot_chat.parent_chat_session_id"),
+      attributes["copilot_chat.parent_chat_session_id"],
+    ])).digest("hex"),
     facts: {
       kind,
       nativeId: spanId,
@@ -660,6 +676,7 @@ function associate(
   }
   const nativeGroups = new Map<string, Identity>();
   const assignments = new Map<string, string | null>();
+  const ambiguous = new Set<string>();
   for (const candidate of candidates) {
     const editor = candidate.identities.find(
       (i) => i.namespace === "vscode-chat",
@@ -674,7 +691,10 @@ function associate(
     } else if (conversation) {
       const key = identityKey(conversation);
       const editors = editorsByConversation.get(key);
-      if (editors && editors.size > 1) assignments.set(candidate.key, null);
+      if (editors && editors.size > 1) {
+        assignments.set(candidate.key, null);
+        ambiguous.add(candidate.key);
+      }
       else if (editors?.size === 1)
         assignments.set(candidate.key, [...editors][0] ?? null);
       else {
@@ -717,12 +737,22 @@ function associate(
       current = current.parentKey ? byKey.get(current.parentKey) : undefined;
     }
     const owner = current ? (assignments.get(current.key) ?? null) : null;
-    for (const entry of chain) assignments.set(entry.key, owner);
+    for (const entry of chain) {
+      assignments.set(entry.key, owner);
+      if (current && ambiguous.has(current.key)) ambiguous.add(entry.key);
+    }
     if (assignments.get(candidate.key) === null)
       diagnostics.add(
-        "ambiguous-session",
-        "Execution cannot be assigned to an unambiguous reported session",
+        ambiguous.has(candidate.key) ? "ambiguous-session" : "missing-field",
+        ambiguous.has(candidate.key)
+          ? "Execution cannot be assigned to an unambiguous reported session"
+          : candidate.parentChat
+            ? "Direct session membership unavailable; a parent-chat association does not establish own-session identity"
+            : candidate.parentKey
+              ? "Span-parent linkage does not resolve direct session membership in this read"
+              : "Execution has no reported session identity, span-parent linkage or parent-chat linkage; direct membership unavailable",
         candidate.line,
+        candidate.parentChat ? [candidate.parentChat.reference] : candidate.references.slice(0, 1),
       );
   }
   const groups = new Map<
@@ -942,9 +972,10 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
     );
     if (policy) {
       candidate.signature = createHash("sha256")
-        .update(JSON.stringify([candidate.facts, candidate.identities, candidate.producer, candidate.version]))
+        .update(JSON.stringify([candidate.facts, candidate.identities, candidate.parentChatSignature, candidate.producer, candidate.version]))
         .digest("hex");
-      candidate.references.splice(0, candidate.references.length, ref);
+      const identityReferences = candidate.references.filter((reference) => reference.location.pointer === "/attributes/copilot_chat.chat_session_id");
+      candidate.references.splice(0, candidate.references.length, ref, ...identityReferences);
       // Full-fact signatures still detect conflicting content after payloads are discarded.
       candidate = {
         ...candidate,
@@ -963,6 +994,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
         candidate.conflict ||
         (policy ? previous.signature !== candidate.signature : !isDeepStrictEqual(previous.facts, candidate.facts)) ||
         !isDeepStrictEqual(previous.identities, candidate.identities) ||
+        previous.parentChatSignature !== candidate.parentChatSignature ||
         previous.producer !== candidate.producer ||
         previous.version !== candidate.version
       ) {
@@ -981,7 +1013,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
         if (previous.signature === candidate.signature) policy.counts.duplicates++;
       } else previous.references.push(...candidate.references);
     } else {
-      reserve(candidate, candidate.references.length);
+      reserve(candidate, candidate.references.length + (policy && candidate.parentChat ? 1 : 0));
       candidates.set(candidate.key, candidate);
       if (candidate.conflict)
         diagnostics.add(
@@ -1003,13 +1035,37 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
       1,
     );
   const { sessions, assignments } = associate(trusted, input, diagnostics);
-  const events = trusted.map((candidate) => ({
+  const provisional = trusted.map((candidate): Span => ({
     ...candidate.facts,
     nativeIdentities: candidate.identities,
     id: `${input.readId}:event:${candidate.line}`,
     sessionId: assignments.get(candidate.key) ?? null,
+    ...(candidate.parentChat ? { parentChat: {
+      namespace: "vscode-chat" as const, value: candidate.parentChat.value,
+      reference: candidate.parentChat.reference, status: "unresolved" as const, sessionId: null,
+    } } : {}),
     references: candidate.references,
   }));
+  const resolutions = resolveParentChats(provisional, sessions);
+  const events = provisional.map((event) => {
+    const resolution = resolutions.get(event.id);
+    if (!event.parentChat || !resolution) return event;
+    if (resolution.status !== "resolved") {
+      const messages = {
+        unresolved: "Parent chat identifier reported, but its session is not present in this read",
+        ambiguous: "Parent chat identifier matches conflicting session candidates",
+        self: "Parent-chat relationship refers to the event's own session",
+        cycle: "Cycle in explicit parent-chat relationships",
+      };
+      diagnostics.add(
+        resolution.status === "ambiguous" ? "ambiguous-session" : resolution.status === "unresolved" ? "missing-field" : "unknown-record",
+        messages[resolution.status],
+        event.parentChat.reference.location.kind === "jsonl" ? event.parentChat.reference.location.line : 1,
+        [event.parentChat.reference],
+      );
+    }
+    return { ...event, parentChat: { ...event.parentChat, ...resolution } };
+  });
   /**
    * Describe supported records in this read, not whole-session capture completeness.
    * @param available - At least one relevant value/record was captured.

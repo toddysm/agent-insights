@@ -173,6 +173,88 @@ test("empty tool IDs survive compact scans, report counting and original contrib
   assert.match(malformed.reason ?? "", /Coverage is partial/);
 });
 
+test("compact scans resolve out-of-order parent-only calls and preserve full-read relationships on every physical replay", async (t) => {
+  const child = span(2, { "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent" });
+  const rows = [child, child, span(1, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 7 })];
+  const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const before = await fs.readFile(file);
+  const status = await scan(service);
+  const { id } = status;
+  assert.equal(status.phase, "partial");
+  assert.equal(status.unassigned, 1);
+  const catalog = service.scanCatalog.catalog(id, null);
+  assert.equal(catalog.unassigned, 1);
+  const session = catalog.sessions[0]!;
+  assert.equal(session.executions, 1);
+  assert.equal(session.associatedExecutions, 1);
+  const result = await report(service, id, session.id);
+  assert.deepEqual(result.contributions, { directEvents: 1, associatedEvents: 1 });
+  assert.equal(result.measurements.find((entry) => entry.id === "input")?.value, 7);
+  const originals = (await details(service, id, session.id)).contributors;
+  assert.deepEqual(originals.map((entry) => entry.line), [1, 2, 3]);
+  for (const entry of originals.slice(0, 2)) {
+    const event = entry.event;
+    assert.ok(event.kind === "model-call" && event.parentChat);
+    assert.equal(event.sessionId, null);
+    assert.equal(event.parentChat.status, "resolved");
+    assert.equal(event.parentChat.sessionId, session.id);
+    assert.equal(event.parentChat.reference.recordId, `sha256:${entry.fingerprint}`);
+    assert.equal(event.parentChat.reference.location.kind, "jsonl");
+    assert.ok(event.parentChat.reference.location.kind === "jsonl" && event.parentChat.reference.location.line === entry.line);
+  }
+  assert.deepEqual((await metricPage(service, id, session.id, "input")).contributors.map((entry) => entry.line), [3]);
+  assert.deepEqual((await details(service, id, null)).contributors.map((entry) => entry.line), [1, 2]);
+  assert.deepEqual(await fs.readFile(file), before);
+});
+
+test("compact replay signatures distinguish malformed parent values and presence from exact duplicates", async () => {
+  const policy = { maxMetadataBytes: 32768, maxIdentities: 1, maxReferences: 20,
+    maxRecordBytes: STREAM_LIMITS.recordBytes, onLine() {} };
+  for (const [first, second] of [[17, 18], [undefined, null], [null, ""], ["", false]]) {
+    const summary = counts();
+    const text = [first, second].map((value) => JSON.stringify(span(1, {
+      "copilot_chat.parent_chat_session_id": value,
+    }))).join("\n");
+    const view = await scanVscodeOtel(input(text), { ...policy, counts: summary });
+    assert.equal(view.events.length, 0);
+    assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+    assert.equal(summary.duplicates, 0);
+  }
+  const summary = counts();
+  const invalid = JSON.stringify(span(1, { "copilot_chat.parent_chat_session_id": 17 }));
+  const view = await scanVscodeOtel(input(`${invalid}\n${invalid}`), { ...policy, counts: summary });
+  assert.equal(view.events.length, 1);
+  assert.equal(summary.duplicates, 1);
+  const event = view.events[0];
+  assert.ok(event?.kind === "model-call" && !event.parentChat);
+});
+
+test("span-inherited and GenAI conversation scan membership preserve agreeing parent-chat links without extra associates", async (t) => {
+  for (const conversationLinked of [false, true]) {
+    const rows = [
+      span(1, { "copilot_chat.chat_session_id": "parent" }),
+      span(2, { "gen_ai.conversation.id": conversationLinked ? "fictional-session" : undefined,
+        "copilot_chat.parent_chat_session_id": "parent", "gen_ai.usage.input_tokens": 7 },
+      !conversationLinked ? { parentSpanContext: { traceId: "1".repeat(32), spanId: "0000000000000001" } } : {}),
+    ];
+    const { service } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n"));
+    const status = await scan(service);
+    assert.equal(status.phase, "complete");
+    assert.equal(status.unassigned, 0);
+    const session = service.scanCatalog.catalog(status.id, null).sessions[0]!;
+    assert.equal(session.executions, 2);
+    assert.equal(session.associatedExecutions, 0);
+    const result = await report(service, status.id, session.id);
+    assert.deepEqual(result.contributions, { directEvents: 2, associatedEvents: 0 });
+    assert.equal(result.measurements.find((entry) => entry.id === "input")?.value, 27);
+    const originals = (await details(service, status.id, session.id)).contributors;
+    assert.equal(originals.length, 2);
+    const child = originals[1]!.event;
+    assert.ok(child.kind === "model-call" && child.parentChat?.status === "resolved");
+    assert.equal(child.parentChat.sessionId, child.sessionId);
+  }
+});
+
 test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {
   const { service } = await fixture(t, [span(1, {
     "gen_ai.usage.input_tokens": undefined, "gen_ai.usage.output_tokens": undefined,
@@ -451,6 +533,11 @@ test("metadata, identity and reference ceilings stop explicitly at the boundary,
     { ...policy, counts: counts() }), ScanBudgetExceeded);
   await assert.rejects(scanVscodeOtel(input(JSON.stringify(span())), { ...policy, maxMetadataBytes: 1 }), ScanBudgetExceeded);
   await assert.rejects(scanVscodeOtel(input(JSON.stringify(span())), { ...policy, maxReferences: 1 }), ScanBudgetExceeded);
+  const ownChat = JSON.stringify(span(1, { "copilot_chat.chat_session_id": "parent" }));
+  const view = await scanVscodeOtel(input(ownChat), { ...policy, counts: counts(), maxReferences: 3 });
+  assert.ok(view.events[0]?.references.some((ref) => ref.location.pointer === "/attributes/copilot_chat.chat_session_id"));
+  await assert.rejects(scanVscodeOtel(input(ownChat), { ...policy, counts: counts(), maxReferences: 2 }),
+    (error) => error instanceof ScanBudgetExceeded && error.budget === "references");
 });
 
 test("metrics-only, malformed, incomplete, oversized, blank and unknown records are distinct", async (t) => {
@@ -984,8 +1071,8 @@ test("a detail-close failure stays latched even when the automatic descriptor re
 });
 
 test("the metadata charge passes its exact boundary and rejects one additional charged byte", async () => {
-  const text = JSON.stringify(span());
-  const policy = { counts: counts(), maxMetadataBytes: 32768, maxIdentities: 1, maxReferences: 2,
+  const text = JSON.stringify(span(1, { "copilot_chat.chat_session_id": "parent" }));
+  const policy = { counts: counts(), maxMetadataBytes: 32768, maxIdentities: 1, maxReferences: 3,
     maxRecordBytes: STREAM_LIMITS.recordBytes, onLine() {} };
   let low = 0;
   let high = policy.maxMetadataBytes;

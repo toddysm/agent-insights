@@ -480,6 +480,12 @@ remain separate gates.
 The installed extension-file reader has its own
 [explicit selection and coverage flow](local-runtime.md#read-an-existing-execution-capture).
 Do not feed Agent Host captures to it to bypass unavailable native readers.
+Its explicit parent-chat field establishes an association, not the call's own
+session identity. Missing linkage cannot be reconstructed from timing, paths
+or trace ID alone. See [direct versus associated reporting](local-runtime.md#read-the-session-report);
+final integrated capture/usage acceptance remains tracked in
+[#1](https://github.com/toddysm/agent-insights/issues/1) and
+[#21](https://github.com/toddysm/agent-insights/issues/21).
 No setup wizard, automatic source discovery, archive or automatic settings
 configuration is shipped by this documentation.
 

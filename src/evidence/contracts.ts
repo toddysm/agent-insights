@@ -10,6 +10,7 @@
  */
 import { z } from "zod";
 import { sqliteKeySchema, sourceFormatSchema } from "./source-access.js";
+import { resolveParentChats } from "./relationships.js";
 export { sourceFormatSchema } from "./source-access.js";
 
 /** Preserve nonempty evidence identifiers verbatim; transport limits must not truncate their contents. */
@@ -179,6 +180,22 @@ export const nativeIdentitySchema = z
   })
   .readonly();
 
+/** An explicit extension association, never a substitute for the event's own identity or membership. */
+export const parentChatSchema = z.strictObject({
+  namespace: z.literal("vscode-chat"),
+  value: id,
+  status: z.enum(["resolved", "unresolved", "ambiguous", "self", "cycle"]),
+  sessionId: id.nullable(),
+  reference: referenceSchema,
+}).refine(
+  (link) => (link.status === "resolved") === (link.sessionId !== null),
+  { message: "Only resolved parent-chat relationships may name a session" },
+).refine(
+  (link) => link.reference.location.kind === "jsonl" &&
+    link.reference.location.pointer === "/attributes/copilot_chat.parent_chat_session_id",
+  { message: "Parent-chat evidence must identify the original JSONL relationship field" },
+).readonly();
+
 /** Source-reported execution content; null means absent/unsupported, never an empty substitute. */
 export const executionContentSchema = z
   .strictObject({
@@ -246,6 +263,7 @@ export const eventSchema = z.discriminatedUnion("kind", [
       operation: id.optional(),
       /** Identifiers actually reported on this event, independent of resolved session membership. */
       nativeIdentities: z.array(nativeIdentitySchema).readonly().optional(),
+      parentChat: parentChatSchema.optional(),
       spanName: id.nullable().optional(),
       /** Call IDs are optional reported strings, never native execution/deduplication keys; null means unavailable. */
       tool: z
@@ -298,6 +316,16 @@ export const eventSchema = z.discriminatedUnion("kind", [
       (event) => event.kind !== "usage-observation" ||
         (event.observation !== undefined && event.usage !== null && event.usage.basis !== "per-call"),
       { message: "Usage observations must state their non-additive scope" },
+    )
+    .refine(
+      (event) => !event.parentChat || event.references.some((anchor) => {
+        const ref = event.parentChat?.reference;
+        return ref !== undefined &&
+          anchor.sourceId === ref.sourceId && anchor.recordId === ref.recordId &&
+          anchor.location.kind === "jsonl" && ref.location.kind === "jsonl" &&
+          anchor.location.line === ref.location.line;
+      }),
+      { message: "Parent-chat field evidence belongs to an unrelated record or source" },
     )
     .readonly(),
 ]);
@@ -432,6 +460,20 @@ export const readViewSchema = z
           message: "Event references an absent or unrelated source",
         });
       }
+      if (event.kind !== "message" && event.parentChat) {
+        const ref = event.parentChat.reference;
+        if (
+          view.sources.find((source) => source.id === ref.sourceId)?.format !== "vscode-otel-jsonl"
+        )
+          context.addIssue({ code: "custom", message: "Parent-chat field evidence belongs to an unrelated record or source" });
+      }
+    }
+    const parentChats = resolveParentChats(view.events, view.sessions);
+    for (const event of view.events) {
+      if (event.kind === "message" || !event.parentChat) continue;
+      const expected = parentChats.get(event.id);
+      if (expected?.status !== event.parentChat.status || expected.sessionId !== event.parentChat.sessionId)
+        context.addIssue({ code: "custom", message: "Parent-chat resolution disagrees with observed same-source session identities" });
     }
     for (const issue of view.issues) {
       if (!sourceIds.has(issue.sourceId)) {

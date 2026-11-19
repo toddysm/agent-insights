@@ -5,6 +5,7 @@
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { z } from "zod";
 import type { EvidenceReference, ReadView } from "../evidence/contracts.js";
+import { associatedWithSession } from "../evidence/relationships.js";
 import {
   sessionReportSchema,
   type ReportMeasurement,
@@ -241,6 +242,16 @@ function OriginalEvent({
       ) : (
         <>
           <p>
+            Direct session membership: {event.sessionId ?? "unavailable"}
+            {event.parentChat && <>; explicit parent chat: {event.parentChat.status}</>}
+          </p>
+          {event.parentChat && <>
+            <p>{event.parentChat.status === "unresolved"
+              ? "Parent chat identifier reported, but its session is not present in this read"
+              : `Reported parent chat (${event.parentChat.namespace}): ${event.parentChat.value}`}</p>
+            <SourceAnchors references={[event.parentChat.reference]} />
+          </>}
+          <p>
             Start:{" "}
             {event.startedAtMs === null
               ? "Unavailable"
@@ -286,6 +297,7 @@ function OriginalEvent({
                   nativeExecution: event.nativeExecution,
                   observation: event.observation,
                   nativeIdentities: event.nativeIdentities,
+                  parentChat: event.parentChat,
                 },
                 null,
                 2,
@@ -415,6 +427,7 @@ function SelectedReport({
   const [toolFilter, setToolFilter] = useState("");
   const session = view.sessions.find((item) => item.id === sessionId);
   const events = view.events.filter((event) => event.sessionId === sessionId);
+  const associated = view.events.filter((event) => associatedWithSession(event, sessionId));
   const tools = events.filter(
     (event): event is ReadView["events"][number] & { kind: "tool-call" } =>
       event.kind === "tool-call",
@@ -638,7 +651,7 @@ function SelectedReport({
         );
       }
     } else {
-      const event = events.find((item) => item.id === route.id);
+      const event = [...events, ...associated].find((item) => item.id === route.id);
       if (
         !event ||
         (route.from &&
@@ -732,6 +745,16 @@ function SelectedReport({
       )}
       {report && (
         <>
+          <section aria-label="Session contributions">
+            <h3>Direct versus associated evidence</h3>
+            <p>{report.contributions.directEvents} direct records; {report.contributions.associatedEvents} associated records.</p>
+            <p>Measurements use direct membership only. Associated usage is inspectable separately, never added to these totals. Agent cumulative usage is not model-call usage.</p>
+            {associated.map((event) => <p key={event.id}>
+              <button type="button" onClick={() => navigate("event", event.id)}>
+                Associated {eventLabel(event)} · {event.nativeId ?? event.id}
+              </button>
+            </p>)}
+          </section>
           {(
             [
               "Timing",

@@ -118,7 +118,7 @@ export type DetailRequest = z.infer<typeof detailRequestSchema>;
 /** Stable bounded session catalog, not event content or a complete report. */
 export const catalogPageSchema = z.strictObject({
   id: z.string(),
-  sessions: z.array(z.strictObject({ id: z.string(), executions: integer })).max(STREAM_LIMITS.pageRecords),
+  sessions: z.array(z.strictObject({ id: z.string(), executions: integer, associatedExecutions: integer })).max(STREAM_LIMITS.pageRecords),
   unassigned: integer,
   next: z.string().nullable(),
 });

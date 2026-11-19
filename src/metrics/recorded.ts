@@ -4,6 +4,7 @@
  * contributors accompany every number. Nothing here persists evidence or results.
  */
 import { isDeepStrictEqual } from "node:util";
+import { associatedWithSession } from "../evidence/relationships.js";
 import {
   evidenceReferenceKey as referenceKey,
   metricSchema,
@@ -40,6 +41,7 @@ export interface MetricExclusion {
   readonly eventIds: readonly string[];
   readonly reason:
     | "ambiguous-attribution"
+    | "associated-only"
     | "conflicting-replay"
     | "bridge-wrapper"
     | "ambiguous-accounting";
@@ -333,7 +335,9 @@ export function calculateRecordedMetrics(
       continue;
     const reason =
       group.event.sessionId === null
-        ? "ambiguous-attribution"
+        ? associatedWithSession(group.event, session.id)
+          ? "associated-only"
+          : "ambiguous-attribution"
         : group.conflict
           ? "conflicting-replay"
           : group.references.some((reference) => {

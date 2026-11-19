@@ -20,6 +20,7 @@ import {
 import { createRoot } from "react-dom/client";
 import { z } from "zod";
 import { readViewSchema, type ReadView } from "../evidence/contracts.js";
+import { sessionEvidence, sessionContributions } from "../evidence/relationships.js";
 import {
   ANALYSIS_ACKNOWLEDGEMENT,
   analysisRunSchema,
@@ -199,6 +200,8 @@ function App(): ReactElement {
   const run = status?.analysis.run;
   const analysisRunning = run?.state === "running";
   const analysisLocked = analysisRunning || reconciling;
+  const selectedEvidence = view && sessionId ? sessionEvidence(view, sessionId) : [];
+  const contributions = view && sessionId ? sessionContributions(view, sessionId) : null;
   const selectedRun =
     run?.readId === view?.id &&
     run?.sessionId === sessionId &&
@@ -918,10 +921,14 @@ function App(): ReactElement {
                     ))}
                   </select>
                   <p>
-                    {view && sessionId
-                      ? `${view.events.filter((event) => event.sessionId === sessionId).length} captured records from this session will be sent.`
+                    {contributions
+                      ? `${selectedEvidence.length} captured records will be sent: ${contributions.directEvents} direct members and ${contributions.associatedEvents} explicit associates.`
                       : "No session evidence selected."}
                   </p>
+                  {contributions && contributions.associatedEvents > 0 && <p>
+                    Associated records can have no direct session membership or belong directly to another session.
+                    Their captured content is included in this remote analysis, but their usage is not added to direct-session totals.
+                  </p>}
                   <label className="consent" htmlFor="analysis-consent">
                     <input
                       id="analysis-consent"

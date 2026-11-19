@@ -10,11 +10,13 @@ import { vscodeOtelReader } from "../src/evidence/readers/vscode-otel.js";
 import { jsonLines } from "../src/evidence/readers/jsonl.js";
 import {
   parseReadView,
+  eventSchema,
   parseMetric,
   type ReaderInput,
   type ReadView,
 } from "../src/evidence/contracts.js";
 import { calculateRecordedMetrics } from "../src/metrics/recorded.js";
+import { recordedReport } from "../src/runtime/report.js";
 
 const trace = "1".repeat(32);
 const otherTrace = "2".repeat(32);
@@ -810,7 +812,247 @@ test("missing identities and missing or cyclic parents do not create synthetic n
   ]);
   assert.equal(view.sessions.length, 0);
   assert.ok(view.events.every((event) => event.sessionId === null));
-  assert.ok(view.issues.some((issue) => issue.code === "ambiguous-session"));
+  assert.ok(view.issues.some((issue) => issue.code === "missing-field" && /Span-parent linkage/.test(issue.message)));
+  assert.ok(view.issues.some((issue) => /Cycle in captured parent/.test(issue.message)));
+  assert.ok(!view.issues.some((issue) => issue.code === "ambiguous-session"));
+});
+
+test("four parent-only calls preserve explicit associations, original fields and nullable membership", async () => {
+  const auxiliary = Array.from({ length: 4 }, (_, index) => record(
+    { spanId: (index + 2).toString(16).padStart(16, "0") },
+    { "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent" },
+  ));
+  const parent = record({}, {
+    "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 7,
+  });
+  const view = await read([...auxiliary, auxiliary[0], parent]);
+  assert.equal(view.sessions.length, 1);
+  const sessionId = view.sessions[0]!.id;
+  assert.equal(view.events.length, 5);
+  for (const event of view.events.slice(0, 4)) {
+    assert.ok(event.kind === "model-call" && event.parentChat);
+    assert.equal(event.sessionId, null);
+    assert.deepEqual(event.nativeIdentities, []);
+    assert.equal(event.parentChat.namespace, "vscode-chat");
+    assert.equal(event.parentChat.value, "parent");
+    assert.equal(event.parentChat.status, "resolved");
+    assert.equal(event.parentChat.sessionId, sessionId);
+    assert.equal(event.parentChat.reference.location.pointer, "/attributes/copilot_chat.parent_chat_session_id");
+    assert.ok(event.references.some((ref) => ref.recordId === event.parentChat?.reference.recordId));
+  }
+  const report = recordedReport(view, { readId: view.id, sessionId });
+  assert.deepEqual(report.contributions, { directEvents: 1, associatedEvents: 4 });
+  assert.equal(report.measurements.find((entry) => entry.id === "input")?.metric.value, 7);
+  for (const entry of report.measurements) parseMetric(entry.metric, view);
+  assert.deepEqual(parseReadView(JSON.parse(JSON.stringify(view))), view);
+});
+
+test("own identity stays independent and parent lookup never crosses GenAI identity namespaces or invents absent sessions", async () => {
+  const rows = [
+    record({}, { "gen_ai.conversation.id": "only-conversation" }),
+    record({ spanId: "2".repeat(16) }, {
+      "gen_ai.conversation.id": "own-conversation", "copilot_chat.chat_session_id": "own-editor",
+      "copilot_chat.parent_chat_session_id": "only-conversation",
+    }),
+    record({ spanId: "3".repeat(16) }, {
+      "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "out-of-read",
+    }),
+  ];
+  const view = await read(rows);
+  assert.equal(view.sessions.length, 2);
+  const own = view.events[1];
+  assert.ok(own?.kind === "model-call");
+  assert.equal(own.sessionId, view.sessions[1]?.id);
+  assert.deepEqual(own.nativeIdentities, [
+    { namespace: "vscode-chat", value: "own-editor" },
+    { namespace: "gen-ai-conversation", value: "own-conversation" },
+  ]);
+  assert.equal(own.parentChat?.status, "unresolved");
+  assert.equal(own.parentChat.sessionId, null);
+  const missing = view.events[2];
+  assert.ok(missing?.kind === "model-call");
+  assert.equal(missing.sessionId, null);
+  assert.equal(missing.parentChat?.value, "out-of-read");
+  assert.match(view.issues.map((issue) => issue.message).join(" "), /session is not present in this read/);
+  const withParent = await read([...rows, record({ spanId: "4".repeat(16) }, {
+    "gen_ai.conversation.id": undefined, "copilot_chat.chat_session_id": "only-conversation",
+  })]);
+  const resolved = withParent.events[1];
+  assert.ok(resolved?.kind === "model-call" && resolved.parentChat);
+  assert.equal(resolved.parentChat.status, "resolved");
+  assert.equal(resolved.parentChat.sessionId, withParent.sessions[2]?.id);
+  assert.equal(resolved.sessionId, withParent.sessions[1]?.id);
+  assert.deepEqual(resolved.nativeIdentities, own.nativeIdentities);
+});
+
+test("resolved associations do not conceal ambiguous own identity and malformed parent values stay evidenced", async () => {
+  const view = await read([
+    record({}, { "copilot_chat.chat_session_id": "one" }),
+    record({ spanId: "2".repeat(16) }, { "copilot_chat.chat_session_id": "two" }),
+    record({ spanId: "3".repeat(16) }, { "copilot_chat.parent_chat_session_id": "one" }),
+    record({ spanId: "4".repeat(16), parentSpanContext: { traceId: trace, spanId: "3".repeat(16) } }, {
+      "gen_ai.conversation.id": undefined,
+    }),
+  ]);
+  const child = view.events[2];
+  assert.ok(child?.kind === "model-call");
+  assert.equal(child.sessionId, null);
+  assert.equal(child.parentChat?.status, "resolved");
+  assert.equal(view.issues.find((issue) => issue.code === "ambiguous-session")?.count, 2);
+  for (const value of ["", null, 17]) {
+    const invalid = await read([record({}, { "copilot_chat.parent_chat_session_id": value })]);
+    const event = invalid.events[0];
+    assert.ok(event?.kind === "model-call" && !event.parentChat);
+    assert.ok(event.references.some((ref) => ref.location.pointer === "/attributes/copilot_chat.parent_chat_session_id"));
+    assert.match(invalid.issues.map((issue) => issue.message).join(" "), /Invalid reported parent-chat identifier/);
+  }
+});
+
+test("parent-only identity does not fabricate sessions and ten truly unlinked calls have missing, not conflicting linkage", async () => {
+  const rows = Array.from({ length: 10 }, (_, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    { "gen_ai.operation.name": index < 3 ? "chat" : "embeddings", "gen_ai.conversation.id": undefined },
+  ));
+  const view = await read(rows);
+  assert.equal(view.sessions.length, 0);
+  assert.equal(view.events.length, 10);
+  assert.ok(view.events.every((event) => event.sessionId === null));
+  const missing = view.issues.find((issue) => /no reported session identity/.test(issue.message));
+  assert.equal(missing?.code, "missing-field");
+  assert.equal(missing.count, 10);
+  assert.ok(!view.issues.some((issue) => issue.code === "ambiguous-session"));
+  const parentOnly = await read([record({}, {
+    "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "absent",
+  })]);
+  assert.equal(parentOnly.sessions.length, 0);
+  assert.equal(parentOnly.events[0]?.sessionId, null);
+});
+
+test("self/cyclic parent-chat edges and conflicting replays never resolve or overwrite direct sessions", async () => {
+  const rows = [["a", "b"], ["b", "c"], ["c", "a"], ["self", "self"]].map(([own, parent], index) =>
+    record({ spanId: (index + 1).toString(16).padStart(16, "0") }, {
+      "gen_ai.conversation.id": undefined, "copilot_chat.chat_session_id": own,
+      "copilot_chat.parent_chat_session_id": parent,
+    }));
+  const view = await read(rows);
+  assert.equal(view.sessions.length, 4);
+  assert.deepEqual(view.events.map((event) => event.kind !== "message" && event.parentChat?.status), ["cycle", "cycle", "cycle", "self"]);
+  assert.ok(view.events.every((event) => event.sessionId !== null && event.kind !== "message" && event.parentChat?.sessionId === null));
+  assert.match(view.issues.map((issue) => issue.message).join(" "), /Cycle in explicit parent-chat/);
+  const conflict = await read([rows[0], record({ spanId: "0000000000000001" }, {
+    "gen_ai.conversation.id": undefined, "copilot_chat.chat_session_id": "a",
+    "copilot_chat.parent_chat_session_id": "different",
+  })]);
+  assert.equal(conflict.events.length, 0);
+  assert.equal(conflict.sessions.length, 0);
+  assert.equal(conflict.sources[0]?.classification?.conflictingSpans, 1);
+});
+
+test("malformed parent values and field presence remain conflicting native-span facts", async () => {
+  for (const [first, second] of [[17, 18], [undefined, null], [null, ""], ["", false]]) {
+    const view = await read([
+      record({}, { "copilot_chat.parent_chat_session_id": first }),
+      record({}, { "copilot_chat.parent_chat_session_id": second }),
+    ]);
+    assert.equal(view.events.length, 0);
+    assert.equal(view.sessions.length, 0);
+    assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+  }
+  const invalid = record({}, { "copilot_chat.parent_chat_session_id": 17 });
+  const duplicate = await read([invalid, invalid]);
+  assert.equal(duplicate.events.length, 1);
+  const event = duplicate.events[0];
+  assert.ok(event?.kind === "model-call" && !event.parentChat);
+});
+
+test("span-inherited and GenAI conversation membership preserve agreeing parent-chat links without self diagnoses or double counting", async () => {
+  for (const conversationLinked of [false, true]) {
+    const view = await read([
+      record({}, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 20 }),
+      record({ spanId: "2".repeat(16), ...(!conversationLinked
+        ? { parentSpanContext: { traceId: trace, spanId: "1".repeat(16) } } : {}) }, {
+        "gen_ai.conversation.id": conversationLinked ? nativeSession : undefined,
+        "copilot_chat.parent_chat_session_id": "parent", "gen_ai.usage.input_tokens": 7,
+      }),
+    ]);
+    const child = view.events[1];
+    assert.ok(child?.kind === "model-call" && child.parentChat);
+    assert.deepEqual(child.nativeIdentities, conversationLinked
+      ? [{ namespace: "gen-ai-conversation", value: nativeSession }] : []);
+    assert.equal(child.sessionId, view.sessions[0]!.id);
+    assert.equal(child.parentChat.status, "resolved");
+    assert.equal(child.parentChat.sessionId, child.sessionId);
+    assert.ok(!view.issues.some((issue) => /own session/.test(issue.message)));
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+    const report = recordedReport(view, { readId: view.id, sessionId: child.sessionId });
+    assert.deepEqual(report.contributions, { directEvents: 2, associatedEvents: 0 });
+    assert.equal(report.measurements.find((entry) => entry.id === "input")?.metric.value, 27);
+  }
+});
+
+test("parent-chat contracts reject wrong-source/record anchors, wrong namespaces, invented and ambiguous targets", async () => {
+  const view = await read([
+    record({}, { "copilot_chat.chat_session_id": "parent" }),
+    record({ spanId: "2".repeat(16) }, {
+      "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent",
+    }),
+  ]);
+  const child = view.events[1];
+  assert.ok(child?.kind === "model-call" && child.parentChat);
+  const link = child.parentChat;
+  assert.throws(() => eventSchema.parse({ ...child, parentChat: { ...link, sessionId: null } }));
+  assert.throws(() => eventSchema.parse({ ...child, parentChat: { ...link, reference: { ...link.reference, sourceId: "foreign" } } }));
+  for (const parentChat of [
+    { ...child.parentChat, sessionId: "invented" },
+    { ...child.parentChat, namespace: "gen-ai-conversation" },
+    { ...child.parentChat, reference: { ...child.parentChat.reference, sourceId: "other-source" } },
+    { ...child.parentChat, reference: { ...child.parentChat.reference, recordId: "unrelated-record" } },
+    { ...child.parentChat, reference: { ...child.parentChat.reference, location: { kind: "jsonl", line: 1, pointer: "/attributes/copilot_chat.parent_chat_session_id" } } },
+  ])
+    assert.throws(() => parseReadView({ ...view, events: [view.events[0], { ...child, parentChat }] }));
+  const duplicate = { ...view.sessions[0], id: "another-observed-parent" };
+  assert.throws(() => parseReadView({ ...view, sessions: [...view.sessions, duplicate] }));
+  const ambiguous = parseReadView({ ...view, sessions: [...view.sessions, duplicate],
+    events: [view.events[0], { ...child, parentChat: { ...child.parentChat, status: "ambiguous", sessionId: null } }] });
+  assert.equal(ambiguous.events[1]?.sessionId, null);
+  const foreign = { ...view.sessions[0], id: "foreign-session", sourceIds: ["foreign"],
+    references: view.sessions[0]!.references.map((ref) => ({ ...ref, sourceId: "foreign" })) };
+  const isolated = parseReadView({
+    ...view, sources: [...view.sources, { ...view.sources[0], id: "foreign" }], sessions: [foreign],
+    events: [{ ...child, parentChat: { ...child.parentChat, status: "unresolved", sessionId: null } }],
+  });
+  assert.equal(isolated.events[0]?.sessionId, null);
+  assert.throws(() => parseReadView({ ...isolated,
+    events: [{ ...child, parentChat: { ...child.parentChat, sessionId: foreign.id } }] }));
+  const secondSourceChild = { ...child,
+    references: child.references.map((ref) => ({ ...ref, sourceId: "foreign" })),
+    parentChat: { ...link, status: "unresolved", sessionId: null,
+      reference: { ...link.reference, sourceId: "foreign" } } };
+  const combined = parseReadView({
+    ...view, sources: [...view.sources, { ...view.sources[0], id: "foreign" }],
+    sessions: [{ ...view.sessions[0], sourceIds: ["source-fictional", "foreign"] }],
+    events: [view.events[0], secondSourceChild],
+  });
+  assert.ok(combined.events[1]?.kind !== "message" && combined.events[1]?.parentChat?.status === "unresolved");
+  assert.throws(() => parseReadView({ ...combined, events: [
+    view.events[0], { ...secondSourceChild, parentChat: { ...secondSourceChild.parentChat, status: "resolved", sessionId: view.sessions[0]!.id } },
+  ] }));
+});
+
+test("associated-only exclusions refer only to the selected parent and keep membership coverage partial", async () => {
+  const view = await read([
+    record({}, { "copilot_chat.chat_session_id": "a" }),
+    record({ spanId: "2".repeat(16) }, { "copilot_chat.chat_session_id": "b" }),
+    record({ spanId: "3".repeat(16) }, {
+      "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "b",
+    }),
+  ]);
+  const a = recordedReport(view, { readId: view.id, sessionId: view.sessions[0]!.id });
+  const b = recordedReport(view, { readId: view.id, sessionId: view.sessions[1]!.id });
+  assert.ok(!a.exclusions.some((entry) => entry.reason === "associated-only"));
+  assert.ok(b.exclusions.some((entry) => entry.reason === "associated-only"));
+  assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+  assert.match(view.issues.map((issue) => issue.message).join(" "), /parent-chat association does not establish own-session identity/);
 });
 
 test("an invalid cross-trace parent is retained as evidence but not used to invent an association", async () => {
