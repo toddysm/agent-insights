@@ -61,6 +61,7 @@ interface Candidate {
 class Diagnostics {
   /** Compact scans preserve the first affected anchor and exact occurrence count, not an unbounded reference list. */
   constructor(private readonly compact = false) {}
+  private coverageLimited = false;
   private readonly entries = new Map<
     string,
     {
@@ -79,13 +80,16 @@ class Diagnostics {
    * @param message - Application-owned description, never source text or exception text.
    * @param line - First affected one-based source line.
    * @param references - Optional original anchors; never captured payloads.
+   * @param affectsCoverage - False only for informational absence of an optional tool-call ID.
    */
   add(
     code: IssueCode,
     message: string,
     line: number,
     references: readonly Reference[] = [],
+    affectsCoverage = true,
   ): void {
+    this.coverageLimited ||= affectsCoverage;
     const key = `${code}:${message}`;
     const previous = this.entries.get(key);
     if (previous) {
@@ -104,7 +108,7 @@ class Diagnostics {
 
   /** Whether limitations prevent a complete-coverage claim for this source. */
   get partial(): boolean {
-    return this.entries.size > 0;
+    return this.coverageLimited;
   }
 
   /**
@@ -352,7 +356,8 @@ function usage(
  * @param recordId - Original line fingerprint for later replacement detection.
  * @param diagnostics - Receives unsupported/missing-field limitations.
  * @param classification - Already classified explicit execution operation.
- * @returns A normalized candidate; hook content remains quoted evidence only.
+ * @returns A normalized candidate; optional tool-call IDs never establish native
+ * identity, and hook content remains quoted evidence only.
  */
 function span(
   raw: Record<string, unknown>,
@@ -521,12 +526,23 @@ function span(
     diagnostics,
     line,
   );
-  const toolCallId = reportedName(
-    attributes,
-    "gen_ai.tool.call.id",
-    diagnostics,
-    line,
-  );
+  const toolCallId = name(attributes["gen_ai.tool.call.id"]);
+  if (Object.hasOwn(attributes, "gen_ai.tool.call.id")) {
+    const ref = reference(input, line, recordId, "/attributes/gen_ai.tool.call.id");
+    refs.push(ref);
+    if (toolCallId === null) {
+      const empty = attributes["gen_ai.tool.call.id"] === "";
+      diagnostics.add(
+        "missing-field",
+        empty
+          ? "Tool-call identifier unavailable: empty value"
+          : "Invalid reported gen_ai.tool.call.id: expected a string",
+        line,
+        [ref],
+        !empty,
+      );
+    }
+  }
   const spanName = reportedName(raw, "name", diagnostics, line);
   const hook =
     kind === "hook-execution"
@@ -990,7 +1006,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
    * @param available - At least one relevant value/record was captured.
    * @param complete - Every applicable captured record has the required fields.
    * @param reason - Controlled explanation used for unavailable or partial evidence.
-   * @returns Coverage conservatively reduced by any read diagnostic.
+   * @returns Coverage conservatively reduced by limiting diagnostics, not optional-ID absence notices.
    */
   const coverage = (
     available: boolean,

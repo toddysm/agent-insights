@@ -132,6 +132,37 @@ test("scan reports use whole-session deduplicated timing/tools/tokens and exact 
   assert.equal((await report(service, id, sessionId)).measurements.find((entry) => entry.id === "input")?.value, 27);
 });
 
+test("empty tool IDs survive compact scans, report counting and original contributor rescans", async (t) => {
+  const first = span(1, { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "shell", "gen_ai.tool.call.id": "" });
+  const second = span(2, { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "shell", "gen_ai.tool.call.id": "" });
+  const rows = [first, second, first, span(3)];
+  const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const before = await fs.readFile(file);
+  const { id } = await scan(service);
+  const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+  const result = await report(service, id, sessionId);
+  for (const [metric, value] of [["tools", 2], ["input", 20], ["output", 5], ["cumulative", 3000]] as const) {
+    const measurement = result.measurements.find((entry) => entry.id === metric);
+    assert.equal(measurement?.value, value);
+    assert.equal(measurement?.coverage.status, "complete");
+  }
+  const contributors = (await metricPage(service, id, sessionId, "tools")).contributors;
+  assert.deepEqual(contributors.map((entry) => entry.line), [1, 2, 3]);
+  for (const entry of contributors) {
+    const event = entry.event;
+    assert.ok(event.kind === "tool-call");
+    assert.equal(event.tool?.callId, null);
+    assert.equal(event.nativeId, rows[entry.line - 1]?.spanId);
+    assert.equal(entry.fingerprint, createHash("sha256").update(JSON.stringify(rows[entry.line - 1])).digest("hex"));
+    assert.ok(event.references.some((ref) =>
+      ref.location.kind === "jsonl" && ref.location.line === entry.line &&
+      ref.location.pointer === "/attributes/gen_ai.tool.call.id",
+    ));
+  }
+  assert.deepEqual(await fs.readFile(file), before);
+  assert.equal(service.view, null);
+});
+
 test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {
   const { service } = await fixture(t, [span(1, {
     "gen_ai.usage.input_tokens": undefined, "gen_ai.usage.output_tokens": undefined,

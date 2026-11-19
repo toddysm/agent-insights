@@ -196,6 +196,54 @@ test("the normal application reads execution evidence, shows coverage and clears
       ),
     ).toBe(true);
 
+    const toolRecords = [1, 2].map((index) => ({
+      ...raw,
+      spanId: index.toString(16).padStart(16, "0"),
+      attributes: {
+        "gen_ai.conversation.id": "synthetic-session",
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": "synthetic_tool",
+        "gen_ai.tool.call.id": "",
+      },
+    }));
+    const model = {
+      ...raw,
+      spanId: "3".repeat(16),
+      attributes: {
+        "gen_ai.conversation.id": "synthetic-session",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.model": "synthetic-model",
+        "gen_ai.usage.input_tokens": 20,
+        "gen_ai.usage.output_tokens": 5,
+      },
+    };
+    await writeFile(file, [...toolRecords, model].map((record) => JSON.stringify(record)).join("\n") + "\n");
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(page.getByText(/Partial read: 1 session and 3 records/)).toBeVisible();
+    await expect(
+      coverage.locator("dl").first().locator("div")
+        .filter({ has: page.locator("dt", { hasText: /^(Timing|Tools|Tokens)$/ }) }).locator("dd"),
+    ).toHaveText(["complete", "complete", "complete"]);
+    await coverage.getByText(/Read limitations \(/).click();
+    await expect(
+      coverage.getByText("Tool-call identifier unavailable: empty value (2 occurrence(s); first line 1).", { exact: true }),
+    ).toBeVisible();
+    await expect(coverage.getByText(/Invalid reported gen_ai.tool.call.id/)).toHaveCount(0);
+
+    toolRecords[1].attributes["gen_ai.tool.call.id"] = { value: "PRIVATE_TOOL_ID_MARKER" };
+    const toolBytes = Buffer.from([...toolRecords, model].map((record) => JSON.stringify(record)).join("\n") + "\n");
+    await writeFile(file, toolBytes);
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(page.getByText(/Partial read: 1 session and 3 records/)).toBeVisible();
+    if (await coverage.locator("details:not([open])").count())
+      await coverage.getByText(/Read limitations \(/).click();
+    await expect(
+      coverage.getByText("Invalid reported gen_ai.tool.call.id: expected a string (1 occurrence(s); first line 2).", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByText("PRIVATE_TOOL_ID_MARKER", { exact: false })).toHaveCount(0);
+    expect(await readFile(file)).toEqual(toolBytes);
+    expect(await readdir(directory)).toEqual(["fictional.jsonl"]);
+
     await writeFile(file, '{"version":"unsupported"}');
     await page
       .getByRole("button", { name: "Read source", exact: true })

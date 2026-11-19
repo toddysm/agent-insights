@@ -247,6 +247,7 @@ export const eventSchema = z.discriminatedUnion("kind", [
       /** Identifiers actually reported on this event, independent of resolved session membership. */
       nativeIdentities: z.array(nativeIdentitySchema).readonly().optional(),
       spanName: id.nullable().optional(),
+      /** Call IDs are optional reported strings, never native execution/deduplication keys; null means unavailable. */
       tool: z
         .strictObject({ name: id.nullable(), callId: id.nullable() })
         .readonly()

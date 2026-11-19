@@ -554,6 +554,26 @@ The original span label is separate from the reported tool name/call ID. A gener
 `execute_tool` label does not manufacture a missing tool name. Cyclic native parent
 relationships are diagnosed even when records have explicit session identifiers.
 
+`gen_ai.tool.call.id` is optional and independent of trace/span identity. An
+absent attribute yields `tool.callId: null` without a diagnostic. An empty string
+also yields null, with the controlled `missing-field` notice
+`Tool-call identifier unavailable: empty value`. This notice alone does not
+reduce timing, tool-execution or model-token coverage. Nonempty strings,
+including whitespace, are preserved verbatim. Reported null, numeric, boolean,
+array and object values yield null and the limiting `missing-field` diagnostic
+`Invalid reported gen_ai.tool.call.id: expected a string`; values are never
+coerced or interpolated into diagnostic messages.
+Present attributes retain their original line/fingerprint/field pointer, including
+empty and malformed values; diagnostics carry that field anchor. Compact scans
+retain the first diagnostic anchor and exact occurrence count; contributor
+rescans recover original event/field references.
+Unavailable call IDs never become generated business IDs or deduplication keys.
+Two otherwise usable tool spans with distinct native identities remain two
+executions. Repeated native identities still require matching normalized facts,
+session identities and producer metadata; conflicting facts are excluded rather
+than overwritten. Broader evidence-specific coverage refinement remains
+[#49](https://github.com/toddysm/agent-insights/issues/49).
+
 Execution-event `nativeIdentities` preserve only identifiers actually reported
 on that event, even when it cannot be assigned to a session. An inherited
 association does not manufacture per-event hints. Session `nativeIdentities`
