@@ -219,7 +219,7 @@ test("the normal application reads execution evidence, shows coverage and clears
     };
     await writeFile(file, [...toolRecords, model].map((record) => JSON.stringify(record)).join("\n") + "\n");
     await page.getByRole("button", { name: "Read source", exact: true }).click();
-    await expect(page.getByText(/Partial read: 1 session and 3 records/)).toBeVisible();
+    await expect(page.getByText(/Read completed: 1 session and 3 records/)).toBeVisible();
     await expect(
       coverage.locator("dl").first().locator("div")
         .filter({ has: page.locator("dt", { hasText: /^(Timing|Tools|Tokens)$/ }) }).locator("dd"),
@@ -229,6 +229,11 @@ test("the normal application reads execution evidence, shows coverage and clears
       coverage.getByText("Tool-call identifier unavailable: empty value (2 occurrence(s); first line 1).", { exact: true }),
     ).toBeVisible();
     await expect(coverage.getByText(/Invalid reported gen_ai.tool.call.id/)).toHaveCount(0);
+
+    const scanPanel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await scanPanel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(scanPanel.getByText("complete", { exact: true })).toBeVisible();
+    await expect(scanPanel.getByText(/Coverage is partial; malformed/)).toHaveCount(0);
 
     toolRecords[1].attributes["gen_ai.tool.call.id"] = { value: "PRIVATE_TOOL_ID_MARKER" };
     const toolBytes = Buffer.from([...toolRecords, model].map((record) => JSON.stringify(record)).join("\n") + "\n");
@@ -240,6 +245,8 @@ test("the normal application reads execution evidence, shows coverage and clears
     await expect(
       coverage.getByText("Invalid reported gen_ai.tool.call.id: expected a string (1 occurrence(s); first line 2).", { exact: true }),
     ).toBeVisible();
+    await scanPanel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(scanPanel.getByText("partial", { exact: true })).toBeVisible();
     await expect(page.getByText("PRIVATE_TOOL_ID_MARKER", { exact: false })).toHaveCount(0);
     expect(await readFile(file)).toEqual(toolBytes);
     expect(await readdir(directory)).toEqual(["fictional.jsonl"]);

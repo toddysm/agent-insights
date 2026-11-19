@@ -262,6 +262,7 @@ export class AnalysisRunner {
             sourceId: issue.sourceId,
             code: issue.code,
             message: issue.message,
+            ...(issue.affectsCoverage === undefined ? {} : { affectsCoverage: issue.affectsCoverage }),
             ...(issue.count === undefined ? {} : { count: issue.count }),
           })),
         events,

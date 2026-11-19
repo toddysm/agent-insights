@@ -138,7 +138,10 @@ test("empty tool IDs survive compact scans, report counting and original contrib
   const rows = [first, second, first, span(3)];
   const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
   const before = await fs.readFile(file);
-  const { id } = await scan(service);
+  const status = await scan(service);
+  const { id } = status;
+  assert.equal(status.phase, "complete");
+  assert.equal(status.reason, null);
   const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
   const result = await report(service, id, sessionId);
   for (const [metric, value] of [["tools", 2], ["input", 20], ["output", 5], ["cumulative", 3000]] as const) {
@@ -161,6 +164,13 @@ test("empty tool IDs survive compact scans, report counting and original contrib
   }
   assert.deepEqual(await fs.readFile(file), before);
   assert.equal(service.view, null);
+  assert.match(result.issues.join(" "), /Tool-call identifier unavailable: empty value/);
+  await fs.appendFile(file, JSON.stringify(span(4, {
+    "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "shell", "gen_ai.tool.call.id": null,
+  })) + "\n");
+  const malformed = await scan(service);
+  assert.equal(malformed.phase, "partial");
+  assert.match(malformed.reason ?? "", /Coverage is partial/);
 });
 
 test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {

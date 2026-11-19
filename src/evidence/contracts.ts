@@ -354,6 +354,8 @@ export const readViewSchema = z
               "unknown-record",
             ]),
             message: id,
+            /** False marks an informational notice; omitted/true retains legacy limiting semantics. */
+            affectsCoverage: z.boolean().optional(),
             /** Optional structured diagnostics; earlier readers may supply only a message. */
             count: tokens.positive().optional(),
             references: z.array(referenceSchema).min(1).readonly().optional(),

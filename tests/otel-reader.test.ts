@@ -966,6 +966,7 @@ test("optional tool-call IDs distinguish absent, empty and invalid types without
       sourceId: "source-fictional",
       code: "missing-field",
       message: `${message} (1 occurrence(s); first line 1).`,
+      ...(message === empty ? { affectsCoverage: false } : {}),
       count: 1,
       references: [fieldRef],
     }]);

@@ -197,7 +197,7 @@ export class JsonlScan {
     return view;
   }
 
-  /** Publish only after RuntimeService confirms all source cleanup and generation ownership. */
+  /** Publish after source cleanup/ownership confirmation; informational notices do not make a scan partial. */
   publish(view: ReadView): ScanStatus {
     const status = this.statusValue;
     if (!status || status.id !== view.id || status.phase !== "scanning")
@@ -209,10 +209,11 @@ export class JsonlScan {
     status.classification = view.sources[0]?.classification ?? null;
     status.sessions = view.sessions.length;
     status.unassigned = view.events.filter((event) => event.sessionId === null).length;
-    status.phase = view.sources[0]?.format === null ? "format-unsupported" : view.issues.length ? "partial" : "complete";
+    const limited = view.issues.some((issue) => issue.affectsCoverage !== false);
+    status.phase = view.sources[0]?.format === null ? "format-unsupported" : limited ? "partial" : "complete";
     status.reason = !view.events.length
       ? "No supported execution spans in this interval; telemetry counts are separate. Timing/tools/tokens are unavailable, not zero."
-      : view.issues.length ? "Coverage is partial; malformed, excluded, incomplete or unassigned evidence is not complete-session coverage." : null;
+      : limited ? "Coverage is partial; malformed, excluded, incomplete or unassigned evidence is not complete-session coverage." : null;
     return this.status!;
   }
 

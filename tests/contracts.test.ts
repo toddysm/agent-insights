@@ -306,6 +306,16 @@ test("classification and diagnostic extensions preserve older views and reject i
   assert.equal(view.events[0]?.kind, "hook-execution");
   assert.ok(Object.isFrozen(view.sources[0]?.classification?.executions));
   assert.ok(Object.isFrozen(view.issues[0]?.references));
+  assert.equal(view.issues[0]?.affectsCoverage, undefined);
+  for (const affectsCoverage of [false, true])
+    assert.equal(
+      parseReadView({ ...extended, issues: [{ ...issue, affectsCoverage }] })
+        .issues[0]?.affectsCoverage,
+      affectsCoverage,
+    );
+  assert.throws(() =>
+    parseReadView({ ...extended, issues: [{ ...issue, affectsCoverage: "false" }] }),
+  );
   for (const count of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1])
     assert.throws(() =>
       parseReadView({

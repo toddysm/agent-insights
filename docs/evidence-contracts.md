@@ -558,7 +558,11 @@ relationships are diagnosed even when records have explicit session identifiers.
 absent attribute yields `tool.callId: null` without a diagnostic. An empty string
 also yields null, with the controlled `missing-field` notice
 `Tool-call identifier unavailable: empty value`. This notice alone does not
-reduce timing, tool-execution or model-token coverage. Nonempty strings,
+reduce timing, tool-execution or model-token coverage. Its issue carries
+`affectsCoverage: false`, so it remains visible without labeling a source read
+or bounded scan partial. Omitted or true `affectsCoverage` retains the limiting
+behavior of earlier diagnostics; analysis summaries preserve the flag.
+Nonempty strings,
 including whitespace, are preserved verbatim. Reported null, numeric, boolean,
 array and object values yield null and the limiting `missing-field` diagnostic
 `Invalid reported gen_ai.tool.call.id: expected a string`; values are never

@@ -70,6 +70,7 @@ class Diagnostics {
       count: number;
       line: number;
       references: Reference[];
+      affectsCoverage: boolean;
     }
   >();
 
@@ -94,6 +95,7 @@ class Diagnostics {
     const previous = this.entries.get(key);
     if (previous) {
       previous.count++;
+      previous.affectsCoverage ||= affectsCoverage;
       if (!this.compact)
         for (const ref of references) previous.references.push(ref);
     } else
@@ -103,6 +105,7 @@ class Diagnostics {
         count: 1,
         line,
         references: this.compact ? references.slice(0, 1) : [...references],
+        affectsCoverage,
       });
   }
 
@@ -122,6 +125,7 @@ class Diagnostics {
       code: value.code,
       message: `${value.message} (${value.count} occurrence(s); first line ${value.line}).`,
       count: value.count,
+      ...(!value.affectsCoverage ? { affectsCoverage: false } : {}),
       ...(value.references.length ? { references: value.references } : {}),
     }));
   }
@@ -528,7 +532,12 @@ function span(
   );
   const toolCallId = name(attributes["gen_ai.tool.call.id"]);
   if (Object.hasOwn(attributes, "gen_ai.tool.call.id")) {
-    const ref = reference(input, line, recordId, "/attributes/gen_ai.tool.call.id");
+    const ref = reference(
+      input,
+      line,
+      recordId,
+      "/attributes/gen_ai.tool.call.id",
+    );
     refs.push(ref);
     if (toolCallId === null) {
       const empty = attributes["gen_ai.tool.call.id"] === "";

@@ -453,6 +453,7 @@ function App(): ReactElement {
    * error. A whole-file size rejection offers navigation, never an automatic scan.
    * This resets analysis acknowledgement and does not invoke a model.
    * The backend owns parsing; absent readers are not replaced with synthetic evidence.
+   * Informational notices remain visible without relabeling a completed read as partial.
    */
   async function read(selection?: ReadSetRequest): Promise<void> {
     const current = ++generation.current;
@@ -472,7 +473,7 @@ function App(): ReactElement {
       setView(view);
       setStatus(nextStatus);
       const partial =
-        view.issues.length > 0 ||
+        view.issues.some((issue) => issue.affectsCoverage !== false) ||
         view.sources.some((source) =>
           Object.values(source.coverage).some(
             (coverage) => coverage.status === "partial",
