@@ -480,7 +480,9 @@ to direct totals. Its acknowledgement discloses the same complete selection coun
 direct/associated counts and possible cross-session captured content before sending.
 Model-call consumption and non-additive cumulative agent usage
 remain separate. Exact replays never increase these normalized counts; differing
-parent values on the same native span are conflicting evidence and excluded.
+parent values or field presence on the same native span are conflicting evidence
+and excluded, including differences between malformed values. Replay signatures
+retain this distinction without making malformed values eligible for resolution.
 
 The [bounded scan contracts](../src/evidence/streaming.ts) and
 [scan coordinator](../src/runtime/jsonl-scan.ts) reuse this adapter's operation,

@@ -47,6 +47,8 @@ interface Candidate {
   readonly parentKey: string | null;
   readonly facts: Omit<Span, "id" | "sessionId" | "references" | "parentChat">;
   readonly parentChat: { readonly value: string; readonly reference: Reference } | null;
+  /** Field presence and unnormalized value participate in replay comparison even when invalid for resolution. */
+  readonly parentChatSignature: string;
   readonly identities: readonly Identity[];
   readonly producer: string | null;
   readonly version: string | null;
@@ -601,6 +603,10 @@ function span(
     key: vscodeOtelRecordKey(raw, line),
     parentKey: validParent ? `${parentTraceId}/${parentId}` : null,
     parentChat: parentChatValue === null ? null : { value: parentChatValue, reference: parentChatReference },
+    parentChatSignature: createHash("sha256").update(JSON.stringify([
+      Object.hasOwn(attributes, "copilot_chat.parent_chat_session_id"),
+      attributes["copilot_chat.parent_chat_session_id"],
+    ])).digest("hex"),
     facts: {
       kind,
       nativeId: spanId,
@@ -966,7 +972,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
     );
     if (policy) {
       candidate.signature = createHash("sha256")
-        .update(JSON.stringify([candidate.facts, candidate.identities, candidate.parentChat?.value, candidate.producer, candidate.version]))
+        .update(JSON.stringify([candidate.facts, candidate.identities, candidate.parentChatSignature, candidate.producer, candidate.version]))
         .digest("hex");
       const identityReferences = candidate.references.filter((reference) => reference.location.pointer === "/attributes/copilot_chat.chat_session_id");
       candidate.references.splice(0, candidate.references.length, ref, ...identityReferences);
@@ -988,7 +994,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
         candidate.conflict ||
         (policy ? previous.signature !== candidate.signature : !isDeepStrictEqual(previous.facts, candidate.facts)) ||
         !isDeepStrictEqual(previous.identities, candidate.identities) ||
-        previous.parentChat?.value !== candidate.parentChat?.value ||
+        previous.parentChatSignature !== candidate.parentChatSignature ||
         previous.producer !== candidate.producer ||
         previous.version !== candidate.version
       ) {

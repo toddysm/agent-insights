@@ -948,6 +948,23 @@ test("self/cyclic parent-chat edges and conflicting replays never resolve or ove
   assert.equal(conflict.sources[0]?.classification?.conflictingSpans, 1);
 });
 
+test("malformed parent values and field presence remain conflicting native-span facts", async () => {
+  for (const [first, second] of [[17, 18], [undefined, null], [null, ""], ["", false]]) {
+    const view = await read([
+      record({}, { "copilot_chat.parent_chat_session_id": first }),
+      record({}, { "copilot_chat.parent_chat_session_id": second }),
+    ]);
+    assert.equal(view.events.length, 0);
+    assert.equal(view.sessions.length, 0);
+    assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+  }
+  const invalid = record({}, { "copilot_chat.parent_chat_session_id": 17 });
+  const duplicate = await read([invalid, invalid]);
+  assert.equal(duplicate.events.length, 1);
+  const event = duplicate.events[0];
+  assert.ok(event?.kind === "model-call" && !event.parentChat);
+});
+
 test("parent-chat contracts reject wrong-source/record anchors, wrong namespaces, invented and ambiguous targets", async () => {
   const view = await read([
     record({}, { "copilot_chat.chat_session_id": "parent" }),

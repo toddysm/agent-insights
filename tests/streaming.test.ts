@@ -207,6 +207,28 @@ test("compact scans resolve out-of-order parent-only calls and preserve full-rea
   assert.deepEqual(await fs.readFile(file), before);
 });
 
+test("compact replay signatures distinguish malformed parent values and presence from exact duplicates", async () => {
+  const policy = { maxMetadataBytes: 32768, maxIdentities: 1, maxReferences: 20,
+    maxRecordBytes: STREAM_LIMITS.recordBytes, onLine() {} };
+  for (const [first, second] of [[17, 18], [undefined, null], [null, ""], ["", false]]) {
+    const summary = counts();
+    const text = [first, second].map((value) => JSON.stringify(span(1, {
+      "copilot_chat.parent_chat_session_id": value,
+    }))).join("\n");
+    const view = await scanVscodeOtel(input(text), { ...policy, counts: summary });
+    assert.equal(view.events.length, 0);
+    assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+    assert.equal(summary.duplicates, 0);
+  }
+  const summary = counts();
+  const invalid = JSON.stringify(span(1, { "copilot_chat.parent_chat_session_id": 17 }));
+  const view = await scanVscodeOtel(input(`${invalid}\n${invalid}`), { ...policy, counts: summary });
+  assert.equal(view.events.length, 1);
+  assert.equal(summary.duplicates, 1);
+  const event = view.events[0];
+  assert.ok(event?.kind === "model-call" && !event.parentChat);
+});
+
 test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {
   const { service } = await fixture(t, [span(1, {
     "gen_ai.usage.input_tokens": undefined, "gen_ai.usage.output_tokens": undefined,
