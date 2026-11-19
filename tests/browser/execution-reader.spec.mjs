@@ -32,6 +32,15 @@ test("mixed evidence shows scoped availability, missing linkage, unchanged repor
   await writeFile(file, bytes);
   const runtime = await startRuntime({ sources: [file], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") }, { readers: productionReaders });
   try {
+    await page.route("**/api/read", async (route) => {
+      const response = await route.fetch();
+      const view = await response.json();
+      // Older readers may report impact without severity; preserve every other field.
+      for (const issue of view.issues) {
+        if (issue.severity === "info") delete issue.severity;
+      }
+      await route.fulfill({ json: view });
+    });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(runtime.launchUrl);
     await page.getByRole("button", { name: "Read source", exact: true }).click();
@@ -47,11 +56,16 @@ test("mixed evidence shows scoped availability, missing linkage, unchanged repor
       await expect(scoped.locator("dl > div").filter({ has: page.locator("dt", { hasText: label }) }).locator("dd")).toHaveText(expected);
     }
     await coverage.getByText(/Read limitations \(/).click();
+    await expect(coverage.getByText("(severity unreported; records; tools)", { exact: true })).toBeVisible();
+    await expect(coverage.getByText("(warning; attribution; attribution only)", { exact: true })).toBeVisible();
     await expect(coverage.getByText(/no reported session identity/)).toBeVisible();
     await expect(coverage.getByText(/cannot be assigned to an unambiguous reported session/)).toHaveCount(0);
     const report = page.getByRole("region", { name: "Session report", exact: true });
     await expect(report.getByRole("button", { name: /^Recorded input tokens: 20; partial/ })).toBeVisible();
     await expect(report.getByRole("button", { name: /^Tool calls: 2; complete/ })).toBeVisible();
+    await report.getByRole("button", { name: "Inspect source identity and capture coverage", exact: true }).click();
+    await expect(page.getByRole("dialog").getByText("(severity unreported; records; tools)", { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     await scan.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(scan.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
