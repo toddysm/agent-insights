@@ -229,29 +229,30 @@ test("compact replay signatures distinguish malformed parent values and presence
   assert.ok(event?.kind === "model-call" && !event.parentChat);
 });
 
-test("scan inheritance agreeing with parent-chat metadata preserves complete direct membership without extra associates", async (t) => {
-  const rows = [
-    span(1, { "copilot_chat.chat_session_id": "parent" }),
-    span(2, { "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent",
-      "gen_ai.usage.input_tokens": 7 }, {
-      parentSpanContext: { traceId: "1".repeat(32), spanId: "0000000000000001" },
-    }),
-  ];
-  const { service } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n"));
-  const status = await scan(service);
-  assert.equal(status.phase, "complete");
-  assert.equal(status.unassigned, 0);
-  const session = service.scanCatalog.catalog(status.id, null).sessions[0]!;
-  assert.equal(session.executions, 2);
-  assert.equal(session.associatedExecutions, 0);
-  const result = await report(service, status.id, session.id);
-  assert.deepEqual(result.contributions, { directEvents: 2, associatedEvents: 0 });
-  assert.equal(result.measurements.find((entry) => entry.id === "input")?.value, 27);
-  const originals = (await details(service, status.id, session.id)).contributors;
-  assert.equal(originals.length, 2);
-  const child = originals[1]!.event;
-  assert.ok(child.kind === "model-call" && child.parentChat?.status === "resolved");
-  assert.equal(child.parentChat.sessionId, child.sessionId);
+test("span-inherited and GenAI conversation scan membership preserve agreeing parent-chat links without extra associates", async (t) => {
+  for (const conversationLinked of [false, true]) {
+    const rows = [
+      span(1, { "copilot_chat.chat_session_id": "parent" }),
+      span(2, { "gen_ai.conversation.id": conversationLinked ? "fictional-session" : undefined,
+        "copilot_chat.parent_chat_session_id": "parent", "gen_ai.usage.input_tokens": 7 },
+      !conversationLinked ? { parentSpanContext: { traceId: "1".repeat(32), spanId: "0000000000000001" } } : {}),
+    ];
+    const { service } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n"));
+    const status = await scan(service);
+    assert.equal(status.phase, "complete");
+    assert.equal(status.unassigned, 0);
+    const session = service.scanCatalog.catalog(status.id, null).sessions[0]!;
+    assert.equal(session.executions, 2);
+    assert.equal(session.associatedExecutions, 0);
+    const result = await report(service, status.id, session.id);
+    assert.deepEqual(result.contributions, { directEvents: 2, associatedEvents: 0 });
+    assert.equal(result.measurements.find((entry) => entry.id === "input")?.value, 27);
+    const originals = (await details(service, status.id, session.id)).contributors;
+    assert.equal(originals.length, 2);
+    const child = originals[1]!.event;
+    assert.ok(child.kind === "model-call" && child.parentChat?.status === "resolved");
+    assert.equal(child.parentChat.sessionId, child.sessionId);
+  }
 });
 
 test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {

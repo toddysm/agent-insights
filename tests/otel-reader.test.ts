@@ -965,25 +965,29 @@ test("malformed parent values and field presence remain conflicting native-span 
   assert.ok(event?.kind === "model-call" && !event.parentChat);
 });
 
-test("inherited membership and an agreeing parent-chat link resolve without self-link diagnostics or double counting", async () => {
-  const view = await read([
-    record({}, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 20 }),
-    record({ spanId: "2".repeat(16), parentSpanContext: { traceId: trace, spanId: "1".repeat(16) } }, {
-      "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent",
-      "gen_ai.usage.input_tokens": 7,
-    }),
-  ]);
-  const child = view.events[1];
-  assert.ok(child?.kind === "model-call" && child.parentChat);
-  assert.deepEqual(child.nativeIdentities, []);
-  assert.equal(child.sessionId, view.sessions[0]!.id);
-  assert.equal(child.parentChat.status, "resolved");
-  assert.equal(child.parentChat.sessionId, child.sessionId);
-  assert.ok(!view.issues.some((issue) => /own session/.test(issue.message)));
-  assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
-  const report = recordedReport(view, { readId: view.id, sessionId: child.sessionId });
-  assert.deepEqual(report.contributions, { directEvents: 2, associatedEvents: 0 });
-  assert.equal(report.measurements.find((entry) => entry.id === "input")?.metric.value, 27);
+test("span-inherited and GenAI conversation membership preserve agreeing parent-chat links without self diagnoses or double counting", async () => {
+  for (const conversationLinked of [false, true]) {
+    const view = await read([
+      record({}, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 20 }),
+      record({ spanId: "2".repeat(16), ...(!conversationLinked
+        ? { parentSpanContext: { traceId: trace, spanId: "1".repeat(16) } } : {}) }, {
+        "gen_ai.conversation.id": conversationLinked ? nativeSession : undefined,
+        "copilot_chat.parent_chat_session_id": "parent", "gen_ai.usage.input_tokens": 7,
+      }),
+    ]);
+    const child = view.events[1];
+    assert.ok(child?.kind === "model-call" && child.parentChat);
+    assert.deepEqual(child.nativeIdentities, conversationLinked
+      ? [{ namespace: "gen-ai-conversation", value: nativeSession }] : []);
+    assert.equal(child.sessionId, view.sessions[0]!.id);
+    assert.equal(child.parentChat.status, "resolved");
+    assert.equal(child.parentChat.sessionId, child.sessionId);
+    assert.ok(!view.issues.some((issue) => /own session/.test(issue.message)));
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+    const report = recordedReport(view, { readId: view.id, sessionId: child.sessionId });
+    assert.deepEqual(report.contributions, { directEvents: 2, associatedEvents: 0 });
+    assert.equal(report.measurements.find((entry) => entry.id === "input")?.metric.value, 27);
+  }
 });
 
 test("parent-chat contracts reject wrong-source/record anchors, wrong namespaces, invented and ambiguous targets", async () => {

@@ -925,7 +925,7 @@ function App(): ReactElement {
                       ? `${selectedEvidence.length} captured records will be sent: ${contributions.directEvents} direct members and ${contributions.associatedEvents} explicit associates.`
                       : "No session evidence selected."}
                   </p>
-                  {contributions && <p>
+                  {contributions && contributions.associatedEvents > 0 && <p>
                     Associated records can have no direct session membership or belong directly to another session.
                     Their captured content is included in this remote analysis, but their usage is not added to direct-session totals.
                   </p>}

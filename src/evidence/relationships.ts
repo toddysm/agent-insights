@@ -84,7 +84,7 @@ export function resolveParentChats(
     const target = matches?.size === 1 ? [...matches][0] ?? null : null;
     const self = event.nativeIdentities?.some(
       (identity) => identity.namespace === parent.namespace && identity.value === parent.value,
-    ) || (target !== null && event.sessionId === target && (event.nativeIdentities?.length ?? 0) > 0);
+    );
     const status = self ? "self" : !matches?.size ? "unresolved" : matches.size > 1 ? "ambiguous" : "resolved";
     result.set(event.id, { status, sessionId: status === "resolved" ? target : null });
     if (status !== "resolved" || target === null || event.sessionId === null || event.sessionId === target) continue;

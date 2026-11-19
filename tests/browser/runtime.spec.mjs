@@ -195,6 +195,8 @@ test("analysis consent counts direct and associated evidence once, including agr
     expect(observed.events[3].sessionId).toBe(observed.sessionId);
     for (const event of observed.events.slice(1)) expect(event.parentChat.sessionId).toBe(observed.sessionId);
     await page.getByLabel("Session to analyze").selectOption({ index: 2 });
+    await expect(page.getByText("1 captured records will be sent: 1 direct members and 0 explicit associates.")).toBeVisible();
+    await expect(page.getByText(/Associated records can have no direct session membership or belong directly to another session/)).toHaveCount(0);
     await expect(page.getByRole("checkbox")).not.toBeChecked();
     await expect(page.getByRole("button", { name: "Analyze", exact: true })).toBeDisabled();
   } finally {
