@@ -465,6 +465,9 @@ seven unlinked embeddings stay ten unassigned calls, with missing-linkage
 diagnostics, not fabricated session IDs or conflicting-identity diagnoses.
 Existing qualified span-parent inheritance remains independent. No matching by
 time, path or trace ID alone occurs.
+An agreeing parent-chat link on an execution with only inherited membership
+remains resolved, not a self-link. Direct members are excluded from associated
+counts even when they also retain such a resolved relationship.
 Missing direct membership remains coverage-limiting even when a parent-chat link
 resolves; a scan with such unassigned calls is partial, not complete.
 

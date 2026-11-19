@@ -17,7 +17,7 @@ function identityAnchor(reference: Execution["references"][number]): string | nu
 
 /** True only for a separately resolved association, not direct or inherited session membership. */
 export function associatedWithSession(event: ReadView["events"][number], sessionId: string): boolean {
-  return event.kind !== "message" &&
+  return event.kind !== "message" && event.sessionId !== sessionId &&
     event.parentChat?.status === "resolved" && event.parentChat.sessionId === sessionId;
 }
 
@@ -84,10 +84,10 @@ export function resolveParentChats(
     const target = matches?.size === 1 ? [...matches][0] ?? null : null;
     const self = event.nativeIdentities?.some(
       (identity) => identity.namespace === parent.namespace && identity.value === parent.value,
-    ) || (target !== null && event.sessionId === target);
+    ) || (target !== null && event.sessionId === target && (event.nativeIdentities?.length ?? 0) > 0);
     const status = self ? "self" : !matches?.size ? "unresolved" : matches.size > 1 ? "ambiguous" : "resolved";
     result.set(event.id, { status, sessionId: status === "resolved" ? target : null });
-    if (status !== "resolved" || target === null || event.sessionId === null) continue;
+    if (status !== "resolved" || target === null || event.sessionId === null || event.sessionId === target) continue;
     const edges = graph.get(event.sessionId) ?? new Set<string>();
     edges.add(target);
     graph.set(event.sessionId, edges);
@@ -132,7 +132,7 @@ export function resolveParentChats(
   }
   for (const event of events) {
     const resolution = result.get(event.id);
-    if (!resolution?.sessionId || !event.sessionId) continue;
+    if (!resolution?.sessionId || !event.sessionId || event.sessionId === resolution.sessionId) continue;
     const component = components.get(event.sessionId);
     if (component !== undefined && sizes[component]! > 1 &&
       component === components.get(resolution.sessionId))

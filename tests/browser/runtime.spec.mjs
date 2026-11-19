@@ -139,19 +139,20 @@ test("an empty configuration stays explicit instead of rendering example session
   }
 });
 
-test("analysis consent counts exactly the direct, unassigned-associated and foreign-owned evidence sent", async ({ page }) => {
+test("analysis consent counts direct and associated evidence once, including agreeing inherited membership", async ({ page }) => {
   const directory = await mkdtemp(path.join(tmpdir(), "agent-insights-associated-consent-"));
   const file = path.join(directory, "synthetic.jsonl");
-  const records = Array.from({ length: 4 }, (_, index) => ({
+  const records = Array.from({ length: 5 }, (_, index) => ({
     traceId: "1".repeat(32), spanId: (index + 1).toString(16).padStart(16, "0"),
     name: "fictional", kind: 2, startTime: [1760000000 + index, 0],
     endTime: [1760000001 + index, 0], ended: true, status: { code: 1 },
     resource: { attributes: { "service.name": "fictional" } }, instrumentationScope: { name: "fictional" },
+    ...(index === 4 ? { parentSpanContext: { traceId: "1".repeat(32), spanId: "0000000000000001" } } : {}),
     attributes: {
       "gen_ai.operation.name": "chat", "gen_ai.request.model": "fictional",
       "gen_ai.usage.input_tokens": 7, "gen_ai.usage.output_tokens": 2,
-      ...(index !== 2 ? { "copilot_chat.chat_session_id": ["parent", "child", "", "unrelated"][index] } : {}),
-      ...(index === 1 || index === 2 ? { "copilot_chat.parent_chat_session_id": "parent" } : {}),
+      ...(index !== 2 && index !== 4 ? { "copilot_chat.chat_session_id": ["parent", "child", "", "unrelated"][index] } : {}),
+      ...(index === 1 || index === 2 || index === 4 ? { "copilot_chat.parent_chat_session_id": "parent" } : {}),
     },
   }));
   await writeFile(file, records.map((record) => JSON.stringify(record)).join("\n") + "\n");
@@ -178,19 +179,20 @@ test("analysis consent counts exactly the direct, unassigned-associated and fore
     await page.getByRole("button", { name: "Read source", exact: true }).click();
     await page.getByLabel("Session to analyze").selectOption({ index: 1 });
     await page.getByRole("combobox", { name: "Analysis", exact: true }).selectOption("synthetic");
-    await expect(page.getByText("3 captured records will be sent: 1 direct members and 2 explicit associates.")).toBeVisible();
+    await expect(page.getByText("4 captured records will be sent: 2 direct members and 2 explicit associates.")).toBeVisible();
     await expect(page.getByText(/Associated records can have no direct session membership or belong directly to another session/)).toBeVisible();
     await expect(page.getByRole("button", { name: "Analyze", exact: true })).toBeDisabled();
     expect(observed).toBeUndefined();
     await page.getByRole("checkbox").check();
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
     await expect(page.getByText("Analysis succeeded: finished.")).toBeVisible();
-    expect(observed.events.map((event) => event.references[0].location.line)).toEqual([1, 2, 3]);
-    expect(observed.contributions).toEqual({ directEvents: 1, associatedEvents: 2 });
+    expect(observed.events.map((event) => event.references[0].location.line)).toEqual([1, 2, 3, 5]);
+    expect(observed.contributions).toEqual({ directEvents: 2, associatedEvents: 2 });
     expect(observed.events[0].sessionId).toBe(observed.sessionId);
     expect(observed.events[1].sessionId).not.toBe(observed.sessionId);
     expect(observed.events[1].sessionId).not.toBeNull();
     expect(observed.events[2].sessionId).toBeNull();
+    expect(observed.events[3].sessionId).toBe(observed.sessionId);
     for (const event of observed.events.slice(1)) expect(event.parentChat.sessionId).toBe(observed.sessionId);
     await page.getByLabel("Session to analyze").selectOption({ index: 2 });
     await expect(page.getByRole("checkbox")).not.toBeChecked();
