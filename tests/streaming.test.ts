@@ -173,6 +173,37 @@ test("empty tool IDs survive compact scans, report counting and original contrib
   assert.match(malformed.reason ?? "", /Coverage is partial/);
 });
 
+test("compact scans resolve out-of-order parent-only calls and preserve full-read relationships on every physical replay", async (t) => {
+  const child = span(2, { "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent" });
+  const rows = [child, child, span(1, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 7 })];
+  const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const before = await fs.readFile(file);
+  const { id } = await scan(service);
+  const catalog = service.scanCatalog.catalog(id, null);
+  assert.equal(catalog.unassigned, 1);
+  const session = catalog.sessions[0]!;
+  assert.equal(session.executions, 1);
+  assert.equal(session.associatedExecutions, 1);
+  const result = await report(service, id, session.id);
+  assert.deepEqual(result.contributions, { directEvents: 1, associatedEvents: 1 });
+  assert.equal(result.measurements.find((entry) => entry.id === "input")?.value, 7);
+  const originals = (await details(service, id, session.id)).contributors;
+  assert.deepEqual(originals.map((entry) => entry.line), [1, 2, 3]);
+  for (const entry of originals.slice(0, 2)) {
+    const event = entry.event;
+    assert.ok(event.kind === "model-call" && event.parentChat);
+    assert.equal(event.sessionId, null);
+    assert.equal(event.parentChat.status, "resolved");
+    assert.equal(event.parentChat.sessionId, session.id);
+    assert.equal(event.parentChat.reference.recordId, `sha256:${entry.fingerprint}`);
+    assert.equal(event.parentChat.reference.location.kind, "jsonl");
+    assert.ok(event.parentChat.reference.location.kind === "jsonl" && event.parentChat.reference.location.line === entry.line);
+  }
+  assert.deepEqual((await metricPage(service, id, session.id, "input")).contributors.map((entry) => entry.line), [3]);
+  assert.deepEqual((await details(service, id, null)).contributors.map((entry) => entry.line), [1, 2]);
+  assert.deepEqual(await fs.readFile(file), before);
+});
+
 test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {
   const { service } = await fixture(t, [span(1, {
     "gen_ai.usage.input_tokens": undefined, "gen_ai.usage.output_tokens": undefined,

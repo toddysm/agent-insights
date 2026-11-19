@@ -9,6 +9,60 @@ import { once } from "node:events";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { startRuntime } from "../../.build/src/runtime/server.js";
+import { productionReaders } from "../../.build/src/evidence/readers/index.js";
+
+test("direct and scanned reports distinguish four associated calls without adding their usage", async ({ page }) => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-insights-parent-browser-"));
+  const file = path.join(root, "fictional.jsonl");
+  const records = Array.from({ length: 6 }, (_, index) => ({
+    traceId: "1".repeat(32), spanId: (index + 1).toString(16).padStart(16, "0"),
+    name: "fictional", kind: 2, startTime: [1760000000 + index, 0],
+    endTime: [1760000001 + index, 0], ended: true, status: { code: 1 },
+    resource: { attributes: { "service.name": "fictional" } }, instrumentationScope: { name: "fictional" },
+    attributes: {
+      "gen_ai.operation.name": index === 1 ? "invoke_agent" : "chat",
+      "gen_ai.request.model": "fictional",
+      "gen_ai.usage.input_tokens": index === 0 ? 7 : 900,
+      "gen_ai.usage.output_tokens": 2,
+      ...(index < 2 ? { "copilot_chat.chat_session_id": "parent" }
+        : { "copilot_chat.parent_chat_session_id": "parent" }),
+    },
+  }));
+  const bytes = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  await writeFile(file, bytes);
+  const runtime = await startRuntime({ sources: [file], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") }, { readers: productionReaders });
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    const report = page.getByRole("region", { name: "Session report", exact: true });
+    await expect(report.getByText("2 direct records; 4 associated records.")).toBeVisible();
+    await expect(report.getByRole("button", { name: /^Recorded input tokens: 7;/ })).toBeVisible();
+    await report.getByRole("button", { name: /^Associated / }).first().click();
+    const drawer = page.getByRole("dialog");
+    await expect(drawer.getByText("Direct session membership: unavailable; explicit parent chat: resolved")).toBeVisible();
+    await expect(drawer.getByText(/\/attributes\/copilot_chat.parent_chat_session_id/).first()).toBeVisible();
+    await page.keyboard.press("Escape");
+    const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await scan.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(scan.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    await scan.getByLabel("Scanned session").selectOption({ index: 1 });
+    await scan.getByRole("button", { name: "Open session report" }).click();
+    await expect(report.getByText("2 direct records; 4 associated records.")).toBeVisible();
+    await expect(report.getByRole("button", { name: /^Recorded input tokens: 7;/ })).toBeVisible();
+    await scan.getByRole("button", { name: "Load original evidence" }).click();
+    const evidence = scan.getByLabel("Original evidence page");
+    await expect(evidence.getByRole("article")).toHaveCount(6);
+    await expect(evidence.getByRole("article").nth(2)).toContainText('"sessionId": null');
+    await expect(evidence.getByRole("article").nth(2)).toContainText('"status": "resolved"');
+    expect(await readFile(file)).toEqual(bytes);
+    expect(await readdir(root)).toEqual(["fictional.jsonl"]);
+    expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
 
 test("the normal application reads execution evidence, shows coverage and clears stale evidence", async ({
   page,

@@ -10,9 +10,10 @@ import type {
   SessionReport,
 } from "../metrics/report.js";
 import { RuntimeError } from "./errors.js";
+import { sessionContributions } from "../evidence/relationships.js";
 
 /**
- * Compute one current session report without inference, source I/O or retained history.
+ * Compute direct-member metrics with separate association counts, without source I/O or inference.
  * Reject missing/replaced reads and unknown sessions with controlled navigation errors.
  */
 export function recordedReport(
@@ -132,6 +133,7 @@ export function recordedReport(
   return {
     readId: view.id,
     sessionId: selection.sessionId,
+    contributions: sessionContributions(view, selection.sessionId),
     measurements,
     exclusions: result.exclusions,
   };

@@ -257,7 +257,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         onChange={(event) => { setSession(event.target.value); setDetails(null); onReport(null); }}>
         <option value="">Select a session</option>
         {catalog.sessions.map((entry) => <option key={entry.id} value={entry.id}>
-          Session {entry.id.split(":").at(-1)} · {entry.executions} executions
+          Session {entry.id.split(":").at(-1)} · {entry.executions} executions · {entry.associatedExecutions} associated
         </option>)}
         {catalog.unassigned > 0 && <option value="unassigned">Unassigned executions</option>}
       </select>
@@ -271,6 +271,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       <p id="scan-report-guidance">Select a Scanned session, then choose Open session report to calculate its recorded metrics locally.
         Selecting a session alone does not open a report.
         Reports cover the entire admitted session, not this evidence page or the optional time filter.
+        Metrics use direct membership only; associated records are inspectable through Load original evidence, not added to totals.
         Unassigned executions cannot form a session report.</p>
       <label htmlFor="scan-from">Recorded start from (epoch ms, optional)</label>
       <input id="scan-from" value={from} disabled={locked} onChange={(event) => { setFrom(event.target.value); setDetails(null); }} />

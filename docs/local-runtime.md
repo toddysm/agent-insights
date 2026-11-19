@@ -80,6 +80,17 @@ gate is not bypassed by report availability. An extension-export report does
 not qualify Agent Host support. Empty, unqualified and wrong-runtime reads
 show diagnostics rather than sample sessions.
 
+For extension exports, **Direct versus associated evidence** separates direct
+membership from explicit `copilot_chat.parent_chat_session_id` relationships.
+Metrics use direct members only. Associated calls remain inspectable separately,
+with their own reported identities and original relationship field; their usage
+is not added to direct totals or to cumulative agent usage. A parent-only call
+can say **Direct session membership: unavailable; explicit parent chat: resolved**.
+A missing parent says **Parent chat identifier reported, but its session is not
+present in this read**; no missing session is created. In a scan, select the
+parent session and **Load original evidence** to inspect associated calls;
+unassigned evidence also retains calls without direct membership.
+
 Tasks/outcomes, steering, artifacts and prompt coaching show **Not analyzed**.
 The source-backed conversation and **Tools & commands** expose retained
 messages, full captured multiline arguments/results and original source

@@ -445,6 +445,36 @@ fixtures. Required final guides remain #1/#21.
 
 ### Execution reader behavior
 
+Extension `copilot_chat.parent_chat_session_id` becomes `event.parentChat`, with
+the verbatim value, `vscode-chat` namespace, original JSONL field reference,
+resolution status and nullable target `sessionId`. It never replaces
+`nativeIdentities`, `sessionId`, `gen_ai.conversation.id` or native span ancestry.
+Exactly one same-source observed session carrying that editor-chat identity is
+required; equal GenAI/native IDs or cross-source anchors cannot match it.
+Out-of-order parents resolve after assembly. Absent/out-of-read targets stay
+`unresolved`; multiple candidates are `ambiguous`; self-links and edges within
+cyclic session components are `self`/`cycle`. Unresolved targets have null IDs
+and never create sessions. Shared validation recomputes these outcomes and
+rejects unrelated original field evidence, invented targets and stale resolutions.
+
+Parent-only calls retain null direct membership. Three unlinked chat calls and
+seven unlinked embeddings stay ten unassigned calls, with missing-linkage
+diagnostics, not fabricated session IDs or conflicting-identity diagnoses.
+Existing qualified span-parent inheritance remains independent. No matching by
+time, path or trace ID alone occurs.
+
+Reports expose `contributions.directEvents` and `associatedEvents` separately;
+measurements and their original contributors use direct membership only.
+Associated records are inspectable separately in the small-read report and scan
+detail pages, retaining their own identities and full-read resolution even when
+their parent is outside the physical page. Catalogs expose direct `executions`
+and separate `associatedExecutions`; `unassigned` still means no direct membership.
+Model analysis inputs include resolved associates with the same explicit
+relationship, contribution counts and instructions not to add associated usage
+to direct totals. Model-call consumption and non-additive cumulative agent usage
+remain separate. Exact replays never increase these normalized counts; differing
+parent values on the same native span are conflicting evidence and excluded.
+
 The [bounded scan contracts](../src/evidence/streaming.ts) and
 [scan coordinator](../src/runtime/jsonl-scan.ts) reuse this adapter's operation,
 deduplication and correlation rules. A compact scan compares full normalized
@@ -657,6 +687,7 @@ synthetic fixtures as proof of the wire format:
 | `gen_ai.operation.name`                                                                                          | Explicit mappings for `chat`, `embeddings`, `execute_tool`, `invoke_agent` and `execute_hook`; other operations are not guessed. |
 | `copilot_chat.hook_type`, `copilot_chat.hook_result_kind`, `copilot_chat.hook_input`, `copilot_chat.hook_output` | Reported hook metadata and quoted strings with original anchors; not tool calls or commands to execute.                          |
 | `gen_ai.conversation.id` / `copilot_chat.chat_session_id`                                                        | Separately named identity hints; the latter is the editor chat identifier, not an alias inferred from equal text.                |
+| `copilot_chat.parent_chat_session_id` | Explicit same-source editor-chat association with original field evidence, separate from own-session identity and native ancestry. |
 | `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`                                                       | Reported counts on the represented operation; no estimates or missing-to-zero conversion.                                        |
 | Cache attributes and both reasoning-token attribute names                                                        | Components retained without assuming overlap; the vocabulary explicitly identifies the reasoning fields as dual-emitted aliases. |
 | `gen_ai.input.messages`, `gen_ai.output.messages`, `gen_ai.tool.call.arguments`, `gen_ai.tool.call.result`       | Optional content-gated attributes retained only as captured strings and source references.                                       |

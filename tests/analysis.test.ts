@@ -72,6 +72,7 @@ test("only the selected session reaches the provider and usage stays separate", 
       },
     ],
   });
+
   let calls = 0;
   const provider: AnalysisProvider = {
     ...syntheticProvider,
@@ -95,6 +96,34 @@ test("only the selected session reaches the provider and usage stays separate", 
   assert.ok(JSON.stringify(base).includes('"input":20'));
   if (result) result.usage.input = 999;
   assert.equal(runner.run?.usage.input, 7);
+});
+
+test("analysis includes explicit associated evidence separately without promoting it into direct membership", async () => {
+  const base = exampleReadView();
+  const call = base.events[1];
+  assert.ok(call?.kind === "model-call");
+  const reference = { ...call.references[0]!, recordId: "auxiliary",
+    location: { kind: "jsonl" as const, line: 3, pointer: "/attributes/copilot_chat.parent_chat_session_id" } };
+  const view = parseReadView({
+    ...base,
+    sessions: base.sessions.map((session) => ({ ...session, nativeIdentities: [{ namespace: "vscode-chat", value: "parent" }] })),
+    events: [...base.events, { ...call, id: "auxiliary", nativeId: "auxiliary", sessionId: null,
+      nativeIdentities: [], references: [reference],
+      parentChat: { namespace: "vscode-chat", value: "parent", status: "resolved", sessionId: request.sessionId, reference } }],
+  });
+  let observed: ProviderInput | undefined;
+  const runner = new AnalysisRunner({
+    ...syntheticProvider,
+    analyze(input, callbacks) { observed = input; return syntheticProvider.analyze(input, callbacks); },
+  }, [syntheticOperation]);
+  runner.start(view, request);
+  await tick();
+  assert.equal(runner.run?.state, "succeeded");
+  assert.ok(observed);
+  assert.match(observed.system, /never replacement membership/);
+  assert.match(observed.prompt, /"contributions":\{"directEvents":2,"associatedEvents":1\}/);
+  assert.match(observed.prompt, /"id":"auxiliary","sessionId":null,"nativeId":"auxiliary"/);
+  await runner.close();
 });
 
 test("analysis carries hook events and source-wide classification limitations without coercion", async () => {

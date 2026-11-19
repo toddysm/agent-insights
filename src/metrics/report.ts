@@ -18,6 +18,12 @@ export const reportRequestSchema = z.strictObject({
   sessionId: evidenceIdSchema,
 });
 
+/** Relationship counts describe normalized records; associated usage is not added to direct metrics. */
+const contributionsSchema = z.strictObject({
+  directEvents: z.number().int().nonnegative(),
+  associatedEvents: z.number().int().nonnegative(),
+});
+
 /** Display metadata cannot change a calculator's value, coverage or attribution. */
 const measurementSchema = z
   .strictObject({
@@ -43,6 +49,7 @@ export const sessionReportSchema = z
   .strictObject({
     readId: evidenceIdSchema,
     sessionId: evidenceIdSchema,
+    contributions: contributionsSchema,
     measurements: z.array(measurementSchema).readonly(),
     exclusions: z
       .array(
@@ -89,6 +96,7 @@ const evidenceKindSchema = z.enum(["contributors", "coverage-witnesses"]);
 export const scanReportSchema = z.strictObject({
   id: z.string(),
   sessionId: z.string(),
+  contributions: contributionsSchema,
   source: sourceSchema,
   admittedBytes: z.number().int().nonnegative(),
   prefixSha256: z.string().regex(/^[a-f0-9]{64}$/),

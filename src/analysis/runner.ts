@@ -13,6 +13,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import type { ReadView } from "../evidence/contracts.js";
+import { associatedWithSession, sessionContributions } from "../evidence/relationships.js";
 import { RuntimeError } from "../runtime/errors.js";
 import type { ReadTiming } from "../runtime/protocol.js";
 import {
@@ -222,7 +223,7 @@ export class AnalysisRunner {
         409,
       );
     const events = view.events.filter(
-      (event) => event.sessionId === session.id,
+      (event) => event.sessionId === session.id || associatedWithSession(event, session.id),
     );
     if (!events.length)
       throw new RuntimeError(
@@ -238,6 +239,8 @@ export class AnalysisRunner {
         "Cite one or more supplied event IDs; data must satisfy the analysis task.",
         "Missing evidence is unavailable, not zero. Distinguish facts from model judgments.",
         "Hook executions are separate from tool/model calls. Only per-call model usage is model consumption.",
+        "Direct session membership is event.sessionId. parentChat is a separate explicit association, never replacement membership.",
+        "Associated events may belong directly to another session or have no direct membership. Do not add them to direct-session totals or count a call twice.",
         "Recorded span intervals may overlap; never sum nested spans as elapsed time.",
         "Classification counts and read issues are source-wide, not selected-session metrics or proof of completeness.",
         operation.instructions,
@@ -253,6 +256,7 @@ export class AnalysisRunner {
             }
           : null,
         processingFinishedAtMs: view.finishedAtMs,
+        contributions: sessionContributions(view, session.id),
         sources: view.sources.filter((source) =>
           session.sourceIds.includes(source.id),
         ),
@@ -313,7 +317,7 @@ export class AnalysisRunner {
    * Execute an admitted input, validate its response and publish a terminal snapshot.
    * @param run - Initial run identity retained independently of the visible snapshot.
    * @param input - Prepared strings that already passed selection and combined byte checks.
-   * @param events - Selected session events used to resolve citations back to source references.
+   * @param events - Direct and explicitly associated events admitted to this run's citation scope.
    * @param operation - Trusted validator for the response's data field.
    * @param controller - Owned cancellation/deadline controller for this execution.
    * @returns Resolves after recording handled success/failure and clearing the active-work

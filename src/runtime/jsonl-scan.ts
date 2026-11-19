@@ -7,6 +7,7 @@ import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypt
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import type { ReadView } from "../evidence/contracts.js";
+import { associatedWithSession } from "../evidence/relationships.js";
 import { jsonLines } from "../evidence/readers/jsonl.js";
 import { scanVscodeOtel, vscodeOtelReader, vscodeOtelRecordKey } from "../evidence/readers/vscode-otel.js";
 import {
@@ -270,7 +271,8 @@ export class JsonlScan {
     const entries = view.sessions.slice(offset, offset + this.limits.pageRecords);
     return catalogPageSchema.parse({
       id, sessions: entries.map((session) => ({ id: session.id,
-        executions: view.events.filter((event) => event.sessionId === session.id).length })),
+        executions: view.events.filter((event) => event.sessionId === session.id).length,
+        associatedExecutions: view.events.filter((event) => associatedWithSession(event, session.id)).length })),
       unassigned: status.unassigned,
       next: offset + entries.length < view.sessions.length ? this.encode("catalog", offset + entries.length) : null,
     });
@@ -330,6 +332,7 @@ export class JsonlScan {
     this.check(signal);
     const result = scanReportSchema.parse({
       id: request.id, sessionId: request.sessionId, source: view.sources[0],
+      contributions: report.contributions,
       admittedBytes: status.admittedBytes, prefixSha256: digest, observedAtMs: Date.now(),
       appended: status.appended, issues: view.issues.map((issue) => issue.message),
       measurements: report.measurements.map((entry) => ({
@@ -383,7 +386,8 @@ export class JsonlScan {
     const offset = this.offset(request.id, "detail", request.cursor, binding);
     const selected = new Map<string, ReadView["events"][number]>();
     for (const event of view.events) {
-      if (event.kind === "message" || event.sessionId !== request.sessionId) continue;
+      if (event.kind === "message" || (event.sessionId !== request.sessionId &&
+        (request.sessionId === null || !associatedWithSession(event, request.sessionId)))) continue;
       if (metric && !metric.ids.has(event.id)) continue;
       const time = event.startedAtMs;
       if ((request.fromMs !== null && (time === null || time < request.fromMs)) ||
@@ -422,7 +426,13 @@ export class JsonlScan {
         location: { ...reference.location, kind: "jsonl" as const, line: record.line,
           byteOffset: record.byteOffset, byteLength: record.byteLength },
       }));
-      contributors.push({ event: { ...event, id: original.id, sessionId: original.sessionId, references },
+      const parentReference = references.find((ref) => ref.location.pointer === "/attributes/copilot_chat.parent_chat_session_id");
+      if (original.kind !== "message" && original.parentChat && !parentReference)
+        throw new RuntimeError("SOURCE_CHANGED", "The original parent-chat field is unavailable; rescan before retrieving evidence.", 409);
+      const parentChat = original.kind !== "message" && original.parentChat && parentReference
+        ? { ...original.parentChat, reference: parentReference } : undefined;
+      contributors.push({ event: { ...event, id: original.id, sessionId: original.sessionId, references,
+        ...(parentChat ? { parentChat } : {}) },
         byteOffset: record.byteOffset, byteLength: record.byteLength, line: record.line,
         fingerprint: record.recordId.slice("sha256:".length) });
       selectedBytes += record.byteLength;

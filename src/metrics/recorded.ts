@@ -40,6 +40,7 @@ export interface MetricExclusion {
   readonly eventIds: readonly string[];
   readonly reason:
     | "ambiguous-attribution"
+    | "associated-only"
     | "conflicting-replay"
     | "bridge-wrapper"
     | "ambiguous-accounting";
@@ -333,7 +334,9 @@ export function calculateRecordedMetrics(
       continue;
     const reason =
       group.event.sessionId === null
-        ? "ambiguous-attribution"
+        ? group.event.kind !== "message" && group.event.parentChat?.status === "resolved"
+          ? "associated-only"
+          : "ambiguous-attribution"
         : group.conflict
           ? "conflicting-replay"
           : group.references.some((reference) => {
