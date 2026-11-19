@@ -150,6 +150,13 @@ test("analysis carries hook events and source-wide classification limitations wi
           },
         ],
       },
+      {
+        sourceId: "source-fixture",
+        code: "missing-field",
+        message: "Tool-call identifier unavailable: empty value",
+        affectsCoverage: false,
+        count: 1,
+      },
     ],
   });
   let calls = 0;
@@ -181,6 +188,13 @@ test("analysis carries hook events and source-wide classification limitations wi
             code: "missing-field",
             message:
               "Execution operation metadata is missing; span unclassified",
+            count: 1,
+          },
+          {
+            sourceId: "source-fixture",
+            code: "missing-field",
+            message: "Tool-call identifier unavailable: empty value",
+            affectsCoverage: false,
             count: 1,
           },
         ]);

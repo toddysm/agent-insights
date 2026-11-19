@@ -919,6 +919,132 @@ test("tools preserve quoted arguments/results and reported failure without invok
   assert.equal(view.sources[0]?.coverage.tokens.status, "unavailable");
 });
 
+test("optional tool-call IDs distinguish absent, empty and invalid types without coercion or payload diagnostics", async () => {
+  const empty = "Tool-call identifier unavailable: empty value";
+  const invalid = "Invalid reported gen_ai.tool.call.id: expected a string";
+  for (const [value, expected, message] of [
+    [undefined, null, null],
+    ["", null, empty],
+    ["  fictional-call  ", "  fictional-call  ", null],
+    [" ", " ", null],
+    [null, null, invalid],
+    [42, null, invalid],
+    [false, null, invalid],
+    [["PRIVATE_ID_MARKER"], null, invalid],
+    [{ captured: "PRIVATE_ID_MARKER" }, null, invalid],
+  ] as const) {
+    const raw = record(
+      { status: { code: 2 } },
+      {
+        "gen_ai.operation.name": "execute_tool",
+        "gen_ai.tool.name": "fictional_tool",
+        "gen_ai.tool.call.id": value,
+      },
+    );
+    const view = await read([raw]);
+    const event = view.events[0];
+    assert.ok(event?.kind === "tool-call");
+    assert.equal(event.tool?.callId, expected);
+    assert.equal(event.nativeId, "1".repeat(16));
+    assert.equal(event.trace?.id, trace);
+    assert.equal(event.name, "fictional_tool");
+    assert.equal(event.status, "error");
+    assert.equal(event.startedAtMs, 1760000000100);
+    assert.equal(event.endedAtMs, 1760000001200);
+    assert.equal(event.usage?.input, 20);
+    assert.equal(event.usage?.output, 5);
+    assert.equal(event.usage.basis, "unknown");
+    const fieldRef = {
+      ...event.references[0],
+      location: { kind: "jsonl", line: 1, pointer: "/attributes/gen_ai.tool.call.id" },
+    };
+    assert.equal(
+      event.references.some((ref) => ref.location.pointer === fieldRef.location.pointer),
+      value !== undefined,
+    );
+    assert.deepEqual(view.issues, message === null ? [] : [{
+      sourceId: "source-fictional",
+      code: "missing-field",
+      message: `${message} (1 occurrence(s); first line 1).`,
+      ...(message === empty ? { affectsCoverage: false } : {}),
+      count: 1,
+      references: [fieldRef],
+    }]);
+    assert.ok(!JSON.stringify(view.issues).includes("PRIVATE_ID_MARKER"));
+    if (value === undefined || typeof value === "string")
+      assert.equal(view.sources[0]?.coverage.timing.status, "complete");
+  }
+});
+
+test("two empty-ID tools retain distinct usable executions, original fields and unrelated model usage", async () => {
+  const tools = ["1".repeat(16), "2".repeat(16)].map((spanId) =>
+    record({ spanId }, {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": "fictional_tool",
+      "gen_ai.tool.call.id": "",
+    }),
+  );
+  const view = await read([...tools, record({ spanId: "3".repeat(16) })]);
+  assert.equal(view.events.length, 3);
+  assert.notEqual(view.events[0]?.id, view.events[1]?.id);
+  for (const [index, raw] of tools.entries()) {
+    const event = view.events[index];
+    assert.ok(event?.kind === "tool-call");
+    assert.equal(event.tool?.callId, null);
+    assert.equal(event.nativeId, raw.spanId);
+    assert.ok(event.references.some((ref) =>
+      ref.recordId === `sha256:${createHash("sha256").update(JSON.stringify(raw)).digest("hex")}` &&
+      ref.location.kind === "jsonl" && ref.location.line === index + 1 &&
+      ref.location.pointer === "/attributes/gen_ai.tool.call.id",
+    ));
+  }
+  assert.equal(view.issues.length, 1);
+  assert.equal(view.issues[0]?.count, 2);
+  const session = view.sessions[0];
+  assert.ok(session);
+  const metrics = calculateRecordedMetrics(view, { sessionId: session.id });
+  assert.equal(metrics.tools.calls.metric.value, 2);
+  assert.deepEqual(metrics.tools.identities[0]?.callIds, []);
+  assert.equal(metrics.tokens.input.metric.value, 20);
+  assert.equal(metrics.tokens.output.metric.value, 5);
+  for (const dimension of ["timing", "tools", "tokens"] as const)
+    assert.equal(view.sources[0]?.coverage[dimension].status, "complete");
+});
+
+test("unavailable tool IDs never replace trace-scoped identity or full-fact duplicate/conflict rules", async () => {
+  const empty = record({}, {
+    "gen_ai.operation.name": "execute_tool",
+    "gen_ai.tool.name": "fictional_tool",
+    "gen_ai.tool.call.id": "",
+  });
+  const deduplicated = await read([empty, { ...empty, traceId: otherTrace }, empty]);
+  assert.equal(deduplicated.events.length, 2);
+  assert.deepEqual(
+    deduplicated.events[0]?.references.filter((ref) => ref.location.pointer === "")
+      .map((ref) => ref.location.kind === "jsonl" && ref.location.line),
+    [1, 3],
+  );
+  for (const changed of [
+    record({}, { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "fictional_tool", "gen_ai.tool.call.id": "different-call" }),
+    record({}, { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "other_tool", "gen_ai.tool.call.id": "" }),
+    { ...empty, endTime: [1760000002, 0] },
+  ]) {
+    for (const records of [[empty, changed], [changed, empty]]) {
+      const view = await read(records);
+      assert.equal(view.events.length, 0);
+      assert.equal(view.sources[0]?.classification?.conflictingSpans, 1);
+      const conflict = view.issues.find((issue) =>
+        issue.message.startsWith("Conflicting records share a native span identity; excluded"),
+      );
+      assert.equal(conflict?.code, "unknown-record");
+      for (const line of [1, 2])
+        assert.ok(conflict?.references?.some((ref) =>
+          ref.location.kind === "jsonl" && ref.location.line === line,
+        ));
+    }
+  }
+});
+
 test("missing or invalid usage is unavailable/partial while explicitly reported zero remains zero", async () => {
   const missing = await read([
     record(
