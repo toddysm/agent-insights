@@ -11,7 +11,7 @@ import test, { type TestContext } from "node:test";
 import { jsonLines } from "../src/evidence/readers/jsonl.js";
 import { scanVscodeOtel, vscodeOtelReader } from "../src/evidence/readers/vscode-otel.js";
 import { productionReaders } from "../src/evidence/readers/index.js";
-import { STREAM_LIMITS, ScanBudgetExceeded, type ScanCounts, type ScanRequest, type DetailRequest } from "../src/evidence/streaming.js";
+import { STREAM_LIMITS, ScanBudgetExceeded, type StreamLimits, type ScanCounts, type ScanRequest, type DetailRequest } from "../src/evidence/streaming.js";
 import { SourceAccess } from "../src/runtime/sources.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { RuntimeError } from "../src/runtime/errors.js";
@@ -19,6 +19,7 @@ import { JsonlScan } from "../src/runtime/jsonl-scan.js";
 import { byteChunks, type StreamedSource } from "../src/runtime/sources.js";
 import { startRuntime } from "../src/runtime/server.js";
 import type { ReaderInput } from "../src/evidence/contracts.js";
+import { scanReportSchema, scanMetricPageSchema } from "../src/metrics/report.js";
 
 /** Create independent exporter-shaped fictional spans; malformed overrides are intentional negative fixtures. */
 function span(index = 1, attributes: Record<string, unknown> = {}, fields: Record<string, unknown> = {}): Record<string, unknown> {
@@ -68,6 +69,270 @@ function scan(service: RuntimeService) {
 function details(service: RuntimeService, id: string, sessionId: string | null, cursor: string | null = null, fromMs: number | null = null) {
   return service.scanDetails({ id, sessionId, cursor, fromMs, toMs: null }, new AbortController().signal);
 }
+
+/** Use the production report operation without manufacturing a whole-file read. */
+function report(service: RuntimeService, id: string, sessionId: string) {
+  return service.scanReport({ id, sessionId }, new AbortController().signal);
+}
+
+/** Fetch exact metric contributors; neither a time filter nor an event page can define the totals. */
+function metricPage(service: RuntimeService, id: string, sessionId: string, metricId: string, cursor: string | null = null) {
+  return service.scanMetricDetails({ id, sessionId, metricId, cursor }, new AbortController().signal);
+}
+
+test("scan reports use whole-session deduplicated timing/tools/tokens and exact paged physical contributors", async (t) => {
+  const model = span(1);
+  const tool = span(2, { "gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "shell",
+    "gen_ai.tool.call.id": "fictional-tool", "gen_ai.tool.call.arguments": "printf fictional" });
+  const last = span(3, { "gen_ai.usage.input_tokens": 7, "gen_ai.usage.output_tokens": 0 });
+  const foreign = span(8, { "gen_ai.conversation.id": "another-session", "gen_ai.usage.input_tokens": 9000 });
+  const conflict = span(4, { "gen_ai.input.messages": "first" });
+  const rows = [model, tool, foreign, conflict, ...Array.from({ length: 25 }, () => model),
+    span(4, { "gen_ai.input.messages": "other" }), last];
+  const text = rows.map((row) => JSON.stringify(row)).join("\n") + "\n";
+  const { service } = await fixture(t, text);
+  const scanResult = await scan(service);
+  const id = scanResult.id;
+  const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+  const result = scanReportSchema.parse(await report(service, id, sessionId));
+  const values = Object.fromEntries(result.measurements.map((entry) => [entry.id, entry.value]));
+  assert.equal(values.input, 27);
+  assert.equal(values.output, 5);
+  assert.equal(values.tools, 1);
+  assert.equal(values.elapsed, 3000);
+  assert.equal(values.activity, 3000);
+  assert.equal(values.cumulative, 3000);
+  assert.equal(values.gaps, 0);
+  assert.equal(result.measurements[0]?.coverage.status, "partial");
+  assert.equal(result.prefixSha256, createHash("sha256").update(text).digest("hex"));
+  assert.equal(result.admittedBytes, Buffer.byteLength(text));
+  assert.ok(!JSON.stringify(result).includes("printf fictional"));
+  assert.equal(service.view, null);
+  let page = scanMetricPageSchema.parse(await metricPage(service, id, sessionId, "input"));
+  assert.equal(page.contributors.length, 20);
+  let total = 0;
+  const lines: number[] = [];
+  while (true) {
+    for (const entry of page.contributors) {
+      total++;
+      lines.push(entry.line);
+      assert.equal(entry.event.sessionId, sessionId);
+      assert.equal(entry.fingerprint, createHash("sha256").update(JSON.stringify(rows[entry.line - 1])).digest("hex"));
+      assert.equal(entry.byteOffset, Buffer.byteLength(rows.slice(0, entry.line - 1).map((row) => JSON.stringify(row) + "\n").join("")));
+      assert.ok([model.spanId, last.spanId].includes(entry.event.nativeId));
+    }
+    if (!page.next) break;
+    await assert.rejects(metricPage(service, id, sessionId, "tools", page.next), (e) => e instanceof RuntimeError && e.code === "SCAN_CURSOR");
+    page = await metricPage(service, id, sessionId, "input", page.next);
+  }
+  assert.equal(total, 27);
+  assert.deepEqual(lines, [1, ...Array.from({ length: 25 }, (_, i) => i + 5), 31]);
+  const tools = await metricPage(service, id, sessionId, "tools");
+  assert.deepEqual(tools.contributors.map((entry) => entry.line), [2]);
+  assert.equal((await report(service, id, sessionId)).measurements.find((entry) => entry.id === "input")?.value, 27);
+});
+
+test("scan reports preserve measured-zero witnesses and explain unavailable usage without successful zeros", async (t) => {
+  const { service } = await fixture(t, [span(1, {
+    "gen_ai.usage.input_tokens": undefined, "gen_ai.usage.output_tokens": undefined,
+  }), span(2, { "gen_ai.usage.input_tokens": undefined, "gen_ai.usage.output_tokens": undefined })].map((row) => JSON.stringify(row)).join("\n"));
+  const { id } = await scan(service);
+  const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+  const result = await report(service, id, sessionId);
+  const tools = result.measurements.find((entry) => entry.id === "tools")!;
+  assert.equal(tools.value, 0);
+  assert.equal(tools.coverage.status, "complete");
+  assert.equal(tools.evidenceKind, "coverage-witnesses");
+  const usage = result.measurements.find((entry) => entry.id === "input")!;
+  assert.equal(usage.value, null);
+  assert.equal(usage.coverage.status, "unavailable");
+  for (const metric of ["tools", "input"])
+    assert.deepEqual((await metricPage(service, id, sessionId, metric)).contributors.map((entry) => entry.line), [1, 2]);
+});
+
+test("one-sided token usage retains exact provenance but labels unavailable totals as coverage witnesses", async (t) => {
+  for (const [missing, present, value] of [["input", "output", 5], ["output", "input", 0]] as const) {
+    const { service } = await fixture(t, JSON.stringify(span(1, {
+      [`gen_ai.usage.${missing}_tokens`]: undefined, [`gen_ai.usage.${present}_tokens`]: value,
+    })));
+    const { id } = await scan(service);
+    const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+    const result = await report(service, id, sessionId);
+    const unavailable = result.measurements.find((entry) => entry.id === missing)!;
+    assert.equal(unavailable.value, null);
+    assert.equal(unavailable.coverage.status, "unavailable");
+    assert.equal(unavailable.evidenceKind, "coverage-witnesses");
+    const measured = result.measurements.find((entry) => entry.id === present)!;
+    assert.equal(measured.value, value);
+    assert.equal(measured.evidenceKind, "contributors");
+    for (const metric of [missing, present]) {
+      const page = await metricPage(service, id, sessionId, metric);
+      assert.equal(page.evidenceKind, metric === missing ? "coverage-witnesses" : "contributors");
+      assert.deepEqual(page.contributors.map((entry) => entry.line), [1]);
+      assert.equal(page.contributors[0]?.event.nativeId, "0000000000000001");
+    }
+  }
+});
+
+test("report selection/metric authority rejects stale or foreign IDs and source changes, admitting appends only on rescan", async (t) => {
+  for (const change of ["append", "prefix", "truncate", "replace"]) {
+    const text = JSON.stringify(span(1)) + "\n";
+    const { service, file } = await fixture(t, text);
+    const { id } = await scan(service);
+    const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+    await assert.rejects(report(service, id, "foreign"), (e) => e instanceof RuntimeError && e.code === "SCAN_SELECTION");
+    await assert.rejects(metricPage(service, id, sessionId, "foreign"), (e) => e instanceof RuntimeError && e.code === "SCAN_SELECTION");
+    assert.equal((await report(service, id, sessionId)).measurements.find((entry) => entry.id === "input")?.value, 20);
+    if (change === "append") {
+      await fs.appendFile(file, JSON.stringify(span(2)) + "\n");
+      const current = await report(service, id, sessionId);
+      assert.equal(current.appended, true);
+      assert.equal(current.measurements.find((entry) => entry.id === "input")?.value, 20);
+      assert.deepEqual((await metricPage(service, id, sessionId, "input")).contributors.map((entry) => entry.line), [1]);
+      const fresh = await scan(service);
+      await assert.rejects(report(service, id, sessionId), (e) => e instanceof RuntimeError && e.code === "SCAN_STALE");
+      const newer = service.scanCatalog.catalog(fresh.id, null).sessions[0]!.id;
+      assert.equal((await report(service, fresh.id, newer)).measurements.find((entry) => entry.id === "input")?.value, 40);
+    } else {
+      if (change === "replace") { await fs.rename(file, file + ".old"); await fs.writeFile(file, text); }
+      if (change === "truncate") await fs.truncate(file, 3);
+      if (change === "prefix") await fs.writeFile(file, text.replace('"input_tokens":20', '"input_tokens":21').replace('"gen_ai.usage.input_tokens":20', '"gen_ai.usage.input_tokens":21'));
+      await assert.rejects(report(service, id, sessionId), (e) => e instanceof RuntimeError && e.code === "SOURCE_CHANGED");
+      assert.equal(service.scanCatalog.status?.phase, "source-changed");
+      await assert.rejects(metricPage(service, id, sessionId, "input"), RuntimeError);
+    }
+  }
+});
+
+test("report calculation and measurement budgets fail explicitly at one-over, without sampled totals", async () => {
+  const text = [span(1), span(2)].map((row) => JSON.stringify(row)).join("\n");
+  const exact = await catalogFor(text, { ...STREAM_LIMITS, reportEvents: 2, reportMeasurements: 9 });
+  const selection = { id: "synthetic-generation", sessionId: exact.scanner.catalog("synthetic-generation", null).sessions[0]!.id };
+  assert.equal((await exact.scanner.report(selection, exact.source, new AbortController().signal)).measurements.length, 9);
+  for (const limits of [{ reportEvents: 1 }, { reportMeasurements: 8 }]) {
+    const over = await catalogFor(text, { ...STREAM_LIMITS, ...limits });
+    await assert.rejects(over.scanner.report(selection, over.source, new AbortController().signal),
+      (error) => error instanceof ScanBudgetExceeded && error.budget === "report");
+    await assert.rejects(over.scanner.metricDetails({ ...selection, metricId: "input", cursor: null }, over.source, new AbortController().signal), ScanBudgetExceeded);
+  }
+});
+
+test("reports and metric pages enforce response, work and monotonic expiry boundaries", async (t) => {
+  const text = JSON.stringify(span());
+  const base = await catalogFor(text);
+  const request = { id: "synthetic-generation", sessionId: base.scanner.catalog("synthetic-generation", null).sessions[0]!.id };
+  const result = await base.scanner.report(request, base.source, new AbortController().signal);
+  const responseBytes = Buffer.byteLength(JSON.stringify(result));
+  const exact = await catalogFor(text, { ...STREAM_LIMITS, responseBytes });
+  await exact.scanner.report(request, exact.source, new AbortController().signal);
+  const over = await catalogFor(text, { ...STREAM_LIMITS, responseBytes: responseBytes - 1 });
+  await assert.rejects(over.scanner.report(request, over.source, new AbortController().signal),
+    (error) => error instanceof ScanBudgetExceeded && error.budget === "response");
+  const work = await catalogFor(text, { ...STREAM_LIMITS, workBytes: 2 * Buffer.byteLength(text) });
+  await work.scanner.report(request, work.source, new AbortController().signal);
+  await assert.rejects(work.scanner.metricDetails({ ...request, metricId: "input", cursor: null }, work.source, new AbortController().signal),
+    (error) => error instanceof ScanBudgetExceeded && error.budget === "work");
+  let now = 0;
+  t.mock.method(performance, "now", () => now);
+  const expiring = await catalogFor(text, { ...STREAM_LIMITS, lifetimeMs: 1000 });
+  now = 999;
+  await expiring.scanner.report(request, expiring.source, new AbortController().signal);
+  now = 1000;
+  for (const operation of [
+    () => expiring.scanner.report(request, expiring.source, new AbortController().signal),
+    () => expiring.scanner.metricDetails({ ...request, metricId: "input", cursor: null }, expiring.source, new AbortController().signal),
+  ]) await assert.rejects(operation(), (error) => error instanceof RuntimeError && error.code === "SCAN_EXPIRED");
+});
+
+test("report-only budget misses preserve the catalog and ordinary evidence for every session after cleanup", async (t) => {
+  const rows = [...Array.from({ length: STREAM_LIMITS.reportEvents + 1 }, (_, index) => span(index + 1)),
+    span(STREAM_LIMITS.reportEvents + 2, { "gen_ai.conversation.id": "another-session" })];
+  const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n"));
+  const { id } = await scan(service);
+  const catalog = service.scanCatalog.catalog(id, null);
+  assert.equal(catalog.sessions.length, 2);
+  for (const session of catalog.sessions) {
+    for (const operation of [
+      () => report(service, id, session.id),
+      () => metricPage(service, id, session.id, "input"),
+    ]) {
+      const before = service.scanCatalog.status;
+      await assert.rejects(operation(), (error) => error instanceof RuntimeError && error.code === "SCAN_BUDGET");
+      assert.deepEqual(service.scanCatalog.status, before);
+      assert.deepEqual(service.scanCatalog.catalog(id, null), catalog);
+    }
+    const page = await details(service, id, session.id);
+    assert.equal(page.contributors.length, Math.min(STREAM_LIMITS.pageRecords, session.executions));
+    assert.ok(page.contributors.every((entry) => entry.event.sessionId === session.id));
+    if (page.next)
+      assert.equal((await details(service, id, session.id, page.next)).contributors.length, STREAM_LIMITS.pageRecords);
+  }
+  assert.equal(service.view, null);
+  await fs.writeFile(file, JSON.stringify(span()));
+  await assert.rejects(details(service, id, catalog.sessions[1]!.id),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CHANGED");
+  assert.equal(service.scanCatalog.status?.phase, "source-changed");
+});
+
+test("descriptor cleanup failure still invalidates an over-budget report's catalog and blocks reuse", async (t) => {
+  t.after(() => { t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const { service } = await fixture(t, Array.from({ length: STREAM_LIMITS.reportEvents + 1 }, (_, index) =>
+    JSON.stringify(span(index + 1))).join("\n"));
+  const { id } = await scan(service);
+  const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+  const originalOpen = fs.open;
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    const handle = await originalOpen(...args);
+    const close = handle.close.bind(handle);
+    let attempts = 0;
+    t.mock.method(handle, "close", async () => {
+      if (++attempts === 1) throw new Error("FICTIONAL_REPORT_CLOSE_FAILURE");
+      await close();
+    });
+    return handle;
+  });
+  syncBuiltinESMExports();
+  await assert.rejects(report(service, id, sessionId),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED");
+  assert.equal(service.scanCatalog.status?.phase, "cleanup-failed");
+  assert.equal(service.scanCatalog.status?.sessions, null);
+  assert.throws(() => service.scanCatalog.catalog(id, null), RuntimeError);
+  await assert.rejects(details(service, id, sessionId),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED");
+  t.mock.restoreAll(); syncBuiltinESMExports();
+  await service.close();
+  assert.equal((await scan(service)).sessions, 1);
+});
+
+test("cancelled report late-open retains the actual five-second cleanup barrier and cannot publish", async (t) => {
+  const { service } = await fixture(t, JSON.stringify(span()));
+  const { id } = await scan(service);
+  const sessionId = service.scanCatalog.catalog(id, null).sessions[0]!.id;
+  const originalOpen = fs.open;
+  let release!: () => void;
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let admitted!: () => void;
+  const opening = new Promise<void>((resolve) => { admitted = resolve; });
+  t.mock.method(fs, "open", async (...args: Parameters<typeof fs.open>) => {
+    admitted(); await blocked; return originalOpen(...args);
+  });
+  syncBuiltinESMExports();
+  t.after(() => { release(); t.mock.restoreAll(); syncBuiltinESMExports(); });
+  const rejected = assert.rejects(report(service, id, sessionId),
+    (error) => error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED");
+  await opening;
+  const before = performance.now();
+  service.invalidate();
+  assert.ok(performance.now() - before < 1000);
+  await rejected;
+  assert.ok(performance.now() - before >= 4900);
+  assert.equal(service.scanCatalog.status?.cleanupPending, true);
+  await assert.rejects(scan(service), (error) => error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED");
+  release();
+  await service.close();
+  assert.equal(service.scanCatalog.status?.cleanupPending, false);
+  assert.equal(service.view, null);
+});
 
 test("scale qualification rejects a dirty Git tree without running large workers or issuing a passed receipt", async (t) => {
   const root = await fs.mkdtemp(path.join(tmpdir(), "agent-insights-stream-provenance-"));
@@ -299,7 +564,7 @@ function memorySource(text: string): StreamedSource {
 }
 
 /** Run the real scanner against a code-owned borrowed test source and explicitly confirm publication. */
-async function catalogFor(text: string, limits = STREAM_LIMITS) {
+async function catalogFor(text: string, limits: StreamLimits = STREAM_LIMITS) {
   const scanner = new JsonlScan(limits);
   const source = memorySource(text);
   scanner.prepare("synthetic-generation", { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" });
@@ -450,6 +715,18 @@ test("scan HTTP controls require launch access/origin and never return payloads 
   const detail = await api("/api/scan/details", { id: result.id, sessionId: page.sessions[0]!.id });
   assert.equal(detail.status, 200);
   assert.ok((await detail.text()).includes("FICTIONAL_PAYLOAD_ONLY_AFTER_SELECTION"));
+  const reportSelection = { id: result.id, sessionId: page.sessions[0]!.id };
+  assert.equal((await api("/api/scan/report", reportSelection, false)).status, 401);
+  assert.equal((await api("/api/scan/report", reportSelection, true, "https://example.invalid")).status, 403);
+  assert.equal((await api("/api/scan/report", { ...reportSelection, fromMs: 1 })).status, 400);
+  const reportResponse = await api("/api/scan/report", reportSelection);
+  assert.equal(reportResponse.status, 200);
+  const reportText = await reportResponse.text();
+  assert.equal(scanReportSchema.parse(JSON.parse(reportText)).measurements.find((entry) => entry.id === "input")?.value, 20);
+  assert.ok(!reportText.includes("FICTIONAL_PAYLOAD_ONLY_AFTER_SELECTION"));
+  const metricResponse = await api("/api/scan/metric", { ...reportSelection, metricId: "input" });
+  assert.equal(metricResponse.status, 200);
+  assert.match(await metricResponse.text(), /FICTIONAL_PAYLOAD_ONLY_AFTER_SELECTION/);
   assert.equal((await api("/api/view")).status, 404);
   assert.equal((await api("/api/scan/cancel", {})).status, 202);
   assert.equal((await api("/api/scan/catalog", { id: result.id, cursor: null })).status, 409);

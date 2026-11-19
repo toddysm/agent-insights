@@ -18,7 +18,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { EvidenceReader } from "../evidence/contracts.js";
-import { reportRequestSchema } from "../metrics/report.js";
+import { reportRequestSchema, scanReportRequestSchema, scanMetricRequestSchema } from "../metrics/report.js";
 import { recordedReport } from "./report.js";
 import type { MultiSourceReader } from "../evidence/source-access.js";
 import type { RuntimeConfig } from "./config.js";
@@ -339,6 +339,8 @@ export async function startRuntime(
         "/api/scan",
         "/api/scan/catalog",
         "/api/scan/details",
+        "/api/scan/report",
+        "/api/scan/metric",
         "/api/scan/cancel",
         "/api/analysis/start",
         "/api/analysis/cancel",
@@ -391,7 +393,9 @@ export async function startRuntime(
         }
         const scan = url.pathname === "/api/scan" ? scanRequestSchema.safeParse(body) : null;
         const detail = url.pathname === "/api/scan/details" ? detailRequestSchema.safeParse(body) : null;
-        if ((scan && !scan.success) || (detail && !detail.success))
+        const scanReport = url.pathname === "/api/scan/report" ? scanReportRequestSchema.safeParse(body) : null;
+        const scanMetric = url.pathname === "/api/scan/metric" ? scanMetricRequestSchema.safeParse(body) : null;
+        if ((scan && !scan.success) || (detail && !detail.success) || (scanReport && !scanReport.success) || (scanMetric && !scanMetric.success))
           throw new RuntimeError("INVALID_SELECTION", "Select an authorized source or the current scan session/page.", 400);
         const controller = new AbortController();
         /** Disconnection invalidates this operation, not a later response's successful publication. */
@@ -401,6 +405,8 @@ export async function startRuntime(
         try {
           if (scan?.success) json(response, 200, await service.scan(scan.data, controller.signal));
           else if (detail?.success) json(response, 200, await service.scanDetails(detail.data, controller.signal));
+          else if (scanReport?.success) json(response, 200, await service.scanReport(scanReport.data, controller.signal));
+          else if (scanMetric?.success) json(response, 200, await service.scanMetricDetails(scanMetric.data, controller.signal));
         } finally {
           response.removeListener("close", disconnect);
         }

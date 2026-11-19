@@ -33,6 +33,7 @@ import { SourceDiscovery } from "./discovery.js";
 import { SourceAccess, byteChunks, type StreamedSource } from "./sources.js";
 import { JsonlScan } from "./jsonl-scan.js";
 import { STREAM_LIMITS, ScanBudgetExceeded, type ScanRequest, type ScanStatus, type DetailRequest } from "../evidence/streaming.js";
+import type { ScanReportRequest, ScanMetricRequest, ScanReport, ScanMetricPage } from "../metrics/report.js";
 import type { AnalysisRunner } from "../analysis/runner.js";
 import { SourceReadSet, optionalSourceUnavailable } from "./source-read.js";
 import {
@@ -408,32 +409,57 @@ export class RuntimeService {
   /** Retrieve one original-evidence page under the same ownership/cleanup gate as scans and small reads. */
   async scanDetails(controls: DetailRequest, externalSignal: AbortSignal): Promise<Awaited<ReturnType<JsonlScan["details"]>>> {
     const request = Object.freeze({ ...controls });
+    return this.scanOperation(request.id, externalSignal, (source, signal) => this.scanCatalog.details(request, source, signal));
+  }
+
+  /** Publish bounded whole-admitted-session metrics only after original-prefix verification and real cleanup. */
+  async scanReport(controls: ScanReportRequest, externalSignal: AbortSignal): Promise<ScanReport> {
+    const request = Object.freeze({ ...controls });
+    return this.scanOperation(request.id, externalSignal, (source, signal) => this.scanCatalog.report(request, source, signal));
+  }
+
+  /** Retrieve one measurement's physical contributors without retaining an event/anchor corpus in the browser. */
+  async scanMetricDetails(controls: ScanMetricRequest, externalSignal: AbortSignal): Promise<ScanMetricPage> {
+    const request = Object.freeze({ ...controls });
+    return this.scanOperation(request.id, externalSignal, (source, signal) => this.scanCatalog.metricDetails(request, source, signal));
+  }
+
+  /**
+   * Serialize scan consumers through the cancellation, generation and descriptor-cleanup publication gate.
+   * Report-calculation ceilings reject only that operation after confirmed cleanup, retaining the catalog;
+   * source/resource/cleanup failures still invalidate it.
+   */
+  private async scanOperation<T>(id: string, externalSignal: AbortSignal,
+    read: (source: StreamedSource, signal: AbortSignal) => Promise<T>): Promise<T> {
     if (this.cleanupFailed)
       throw new RuntimeError("SOURCE_CLEANUP_FAILED", "Retry source cleanup before reading again.", 503);
     if (this.active) throw new RuntimeError("READ_BUSY", "A source operation is still owned; cancel or wait for cleanup.", 409);
-    const selection = this.scanCatalog.selection(request.id);
+    const selection = this.scanCatalog.selection(id);
     const controller = new AbortController();
     const abort = () => controller.abort(cancelledRead());
     externalSignal.addEventListener("abort", abort, { once: true });
     if (externalSignal.aborted) abort();
-    const timer = setTimeout(() => controller.abort(new RuntimeError("READ_TIMEOUT", "The detail read exceeded its lifetime.", 408)), STREAM_LIMITS.lifetimeMs);
+    const timer = setTimeout(() => controller.abort(new RuntimeError("READ_TIMEOUT", "The scan report/evidence operation exceeded its lifetime.", 408)), STREAM_LIMITS.lifetimeMs);
     timer.unref();
-    this.active = { id: request.id, controller };
+    this.active = { id, controller };
     try {
-      this.scanCatalog.pending(request.id);
+      this.scanCatalog.pending(id);
       return await this.enqueue(async () => {
         const page = await this.borrowStream(selection, controller.signal,
-          (source) => this.scanCatalog.details(request, source, controller.signal));
+          (source) => read(source, controller.signal));
         if (controller.signal.aborted) throw cancelledRead(controller.signal);
-        this.scanCatalog.selection(request.id);
-        this.scanCatalog.cleanupConfirmed(request.id);
+        this.scanCatalog.selection(id);
+        this.scanCatalog.cleanupConfirmed(id);
         return page;
       });
     } catch (error) {
       if (error instanceof RuntimeError && error.code === "SOURCE_CLEANUP_FAILED") this.cleanupFailed = true;
-      if (!(error instanceof RuntimeError) || !["SCAN_CURSOR", "SCAN_SELECTION", "SCAN_STALE", "SCAN_EXPIRED"].includes(error.code))
-        this.scanCatalog.fail(error);
-      else this.scanCatalog.cleanupConfirmed(request.id);
+      if (this.scanCatalog.status?.id === id) {
+        const reportBudget = error instanceof ScanBudgetExceeded && error.budget === "report";
+        if (!reportBudget && (!(error instanceof RuntimeError) || !["SCAN_CURSOR", "SCAN_SELECTION", "SCAN_STALE", "SCAN_EXPIRED"].includes(error.code)))
+          this.scanCatalog.fail(error);
+        else this.scanCatalog.cleanupConfirmed(id);
+      }
       if (error instanceof ScanBudgetExceeded)
         throw new RuntimeError("SCAN_BUDGET", error.message, 413);
       throw error;
