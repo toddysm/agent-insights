@@ -1,16 +1,21 @@
-/** Exercise npm startup in fresh, owned checkouts without prebuilt output or real capture data. */
+/** Exercise startup and hosted CLI preparation in owned directories without real captures or model calls. */
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import childProcess from "node:child_process";
+import crypto, { randomUUID } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import {
   access,
   cp,
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   rm,
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -103,3 +108,76 @@ test("a failed startup build stops before executing an existing runtime", async 
     return true;
   });
 });
+
+for (const fails of [false, true]) {
+  test(`Windows qualification extraction ${fails ? "propagates failure and removes its owned directory" : "publishes the executable from paths with spaces and quotes"}`, async (t) => {
+    const directory = await mkdtemp(
+      path.join(tmpdir(), "agent-insights-qualification-'space "),
+    );
+    const environmentFile = path.join(directory, "github-env");
+    await writeFile(environmentFile, "");
+    const platform = Object.getOwnPropertyDescriptor(process, "platform");
+    const arch = Object.getOwnPropertyDescriptor(process, "arch");
+    const environment = { ...process.env };
+    t.after(async () => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+      Object.defineProperty(process, "platform", platform);
+      Object.defineProperty(process, "arch", arch);
+      for (const key of ["CI", "RUNNER_TEMP", "GITHUB_ENV"]) {
+        if (environment[key] === undefined) delete process.env[key];
+        else process.env[key] = environment[key];
+      }
+      await rm(directory, { recursive: true, force: true });
+    });
+    Object.defineProperty(process, "platform", { value: "win32" });
+    Object.defineProperty(process, "arch", { value: "x64" });
+    process.env.CI = "true";
+    process.env.RUNNER_TEMP = directory;
+    process.env.GITHUB_ENV = environmentFile;
+    const bytes = Buffer.from("synthetic archive; never executed");
+    t.mock.method(globalThis, "fetch", async () => new Response(bytes));
+    // Replace only the download trust boundary; extraction filesystem effects remain real.
+    let verified = false;
+    t.mock.method(crypto, "createHash", () => ({
+      update(value) {
+        assert.deepEqual(value, bytes);
+        return this;
+      },
+      digest() {
+        verified = true;
+        return "8b29500d2414d132b37ca2e158d784de479e8c6449bb7cd9b5d14d155092815a";
+      },
+    }));
+    const failure = new Error("synthetic extractor exited with status 2");
+    let extractedRoot;
+    t.mock.method(childProcess, "execFileSync", (command, args, options) => {
+      assert.equal(verified, true);
+      assert.equal(command, "tar");
+      extractedRoot = path.dirname(args[1]);
+      assert.deepEqual(args, [
+        "-xf", path.join(extractedRoot, "copilot-win32-x64.zip"), "-C", extractedRoot,
+      ]);
+      assert.equal(options.shell, undefined);
+      if (fails) throw failure;
+      writeFileSync(path.join(extractedRoot, "copilot.exe"), "synthetic executable");
+      return Buffer.alloc(0);
+    });
+    syncBuiltinESMExports();
+    const pending = import(
+      new URL(`../scripts/prepare-copilot-qualification.mjs?test=${randomUUID()}`, import.meta.url)
+    );
+    if (fails) {
+      await assert.rejects(pending, (error) => error === failure);
+      await assert.rejects(access(extractedRoot), { code: "ENOENT" });
+      assert.equal(await readFile(environmentFile, "utf8"), "");
+    } else {
+      await pending;
+      assert.equal(
+        await readFile(environmentFile, "utf8"),
+        `COPILOT_QUALIFICATION_PATH=${path.join(extractedRoot, "copilot.exe")}\nCOPILOT_QUALIFICATION_ROOT=${extractedRoot}\n`,
+      );
+      assert.deepEqual(await readdir(extractedRoot), ["copilot.exe"]);
+    }
+  });
+}
