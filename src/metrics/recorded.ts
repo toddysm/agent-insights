@@ -4,6 +4,7 @@
  * contributors accompany every number. Nothing here persists evidence or results.
  */
 import { isDeepStrictEqual } from "node:util";
+import { associatedWithSession } from "../evidence/relationships.js";
 import {
   evidenceReferenceKey as referenceKey,
   metricSchema,
@@ -334,7 +335,7 @@ export function calculateRecordedMetrics(
       continue;
     const reason =
       group.event.sessionId === null
-        ? group.event.kind !== "message" && group.event.parentChat?.status === "resolved"
+        ? associatedWithSession(group.event, session.id)
           ? "associated-only"
           : "ambiguous-attribution"
         : group.conflict

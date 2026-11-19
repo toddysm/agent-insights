@@ -104,10 +104,15 @@ test("analysis includes explicit associated evidence separately without promotin
   assert.ok(call?.kind === "model-call");
   const reference = { ...call.references[0]!, recordId: "auxiliary",
     location: { kind: "jsonl" as const, line: 3, pointer: "/attributes/copilot_chat.parent_chat_session_id" } };
+  const identityReference = { ...call.references[0]!,
+    location: { kind: "jsonl" as const, line: 2, pointer: "/attributes/copilot_chat.chat_session_id" } };
+  const nativeIdentities = [{ namespace: "vscode-chat" as const, value: "parent" }];
   const view = parseReadView({
     ...base,
-    sessions: base.sessions.map((session) => ({ ...session, nativeIdentities: [{ namespace: "vscode-chat", value: "parent" }] })),
-    events: [...base.events, { ...call, id: "auxiliary", nativeId: "auxiliary", sessionId: null,
+    sessions: base.sessions.map((session) => ({ ...session, nativeIdentities, references: [...session.references, identityReference] })),
+    events: [...base.events.map((event) => event.id === call.id
+      ? { ...event, nativeIdentities, references: [...event.references, identityReference] } : event),
+    { ...call, id: "auxiliary", nativeId: "auxiliary", sessionId: null,
       nativeIdentities: [], references: [reference],
       parentChat: { namespace: "vscode-chat", value: "parent", status: "resolved", sessionId: request.sessionId, reference } }],
   });

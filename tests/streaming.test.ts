@@ -178,7 +178,10 @@ test("compact scans resolve out-of-order parent-only calls and preserve full-rea
   const rows = [child, child, span(1, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 7 })];
   const { service, file } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
   const before = await fs.readFile(file);
-  const { id } = await scan(service);
+  const status = await scan(service);
+  const { id } = status;
+  assert.equal(status.phase, "partial");
+  assert.equal(status.unassigned, 1);
   const catalog = service.scanCatalog.catalog(id, null);
   assert.equal(catalog.unassigned, 1);
   const session = catalog.sessions[0]!;
@@ -482,6 +485,11 @@ test("metadata, identity and reference ceilings stop explicitly at the boundary,
     { ...policy, counts: counts() }), ScanBudgetExceeded);
   await assert.rejects(scanVscodeOtel(input(JSON.stringify(span())), { ...policy, maxMetadataBytes: 1 }), ScanBudgetExceeded);
   await assert.rejects(scanVscodeOtel(input(JSON.stringify(span())), { ...policy, maxReferences: 1 }), ScanBudgetExceeded);
+  const ownChat = JSON.stringify(span(1, { "copilot_chat.chat_session_id": "parent" }));
+  const view = await scanVscodeOtel(input(ownChat), { ...policy, counts: counts(), maxReferences: 3 });
+  assert.ok(view.events[0]?.references.some((ref) => ref.location.pointer === "/attributes/copilot_chat.chat_session_id"));
+  await assert.rejects(scanVscodeOtel(input(ownChat), { ...policy, counts: counts(), maxReferences: 2 }),
+    (error) => error instanceof ScanBudgetExceeded && error.budget === "references");
 });
 
 test("metrics-only, malformed, incomplete, oversized, blank and unknown records are distinct", async (t) => {
@@ -1015,8 +1023,8 @@ test("a detail-close failure stays latched even when the automatic descriptor re
 });
 
 test("the metadata charge passes its exact boundary and rejects one additional charged byte", async () => {
-  const text = JSON.stringify(span());
-  const policy = { counts: counts(), maxMetadataBytes: 32768, maxIdentities: 1, maxReferences: 2,
+  const text = JSON.stringify(span(1, { "copilot_chat.chat_session_id": "parent" }));
+  const policy = { counts: counts(), maxMetadataBytes: 32768, maxIdentities: 1, maxReferences: 3,
     maxRecordBytes: STREAM_LIMITS.recordBytes, onLine() {} };
   let low = 0;
   let high = policy.maxMetadataBytes;

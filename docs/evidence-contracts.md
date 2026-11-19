@@ -451,6 +451,9 @@ resolution status and nullable target `sessionId`. It never replaces
 `nativeIdentities`, `sessionId`, `gen_ai.conversation.id` or native span ancestry.
 Exactly one same-source observed session carrying that editor-chat identity is
 required; equal GenAI/native IDs or cross-source anchors cannot match it.
+The session's source list alone is not identity evidence: the matching original
+`copilot_chat.chat_session_id` field must report that value in the relationship's
+source. Compact scans retain this field anchor as well as the first root anchor.
 Out-of-order parents resolve after assembly. Absent/out-of-read targets stay
 `unresolved`; multiple candidates are `ambiguous`; self-links and edges within
 cyclic session components are `self`/`cycle`. Unresolved targets have null IDs
@@ -462,6 +465,8 @@ seven unlinked embeddings stay ten unassigned calls, with missing-linkage
 diagnostics, not fabricated session IDs or conflicting-identity diagnoses.
 Existing qualified span-parent inheritance remains independent. No matching by
 time, path or trace ID alone occurs.
+Missing direct membership remains coverage-limiting even when a parent-chat link
+resolves; a scan with such unassigned calls is partial, not complete.
 
 Reports expose `contributions.directEvents` and `associatedEvents` separately;
 measurements and their original contributors use direct membership only.
@@ -471,7 +476,9 @@ their parent is outside the physical page. Catalogs expose direct `executions`
 and separate `associatedExecutions`; `unassigned` still means no direct membership.
 Model analysis inputs include resolved associates with the same explicit
 relationship, contribution counts and instructions not to add associated usage
-to direct totals. Model-call consumption and non-additive cumulative agent usage
+to direct totals. Its acknowledgement discloses the same complete selection count,
+direct/associated counts and possible cross-session captured content before sending.
+Model-call consumption and non-additive cumulative agent usage
 remain separate. Exact replays never increase these normalized counts; differing
 parent values on the same native span are conflicting evidence and excluded.
 

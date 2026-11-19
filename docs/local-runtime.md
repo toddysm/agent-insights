@@ -90,6 +90,9 @@ A missing parent says **Parent chat identifier reported, but its session is not
 present in this read**; no missing session is created. In a scan, select the
 parent session and **Load original evidence** to inspect associated calls;
 unassigned evidence also retains calls without direct membership.
+Such scans remain partial even if every explicit parent resolves. Before a model
+analysis, its acknowledgement counts both direct and associated records and warns
+that associated captured content may be directly owned by another session.
 
 Tasks/outcomes, steering, artifacts and prompt coaching show **Not analyzed**.
 The source-backed conversation and **Tools & commands** expose retained

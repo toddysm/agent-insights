@@ -735,16 +735,18 @@ function associate(
       assignments.set(entry.key, owner);
       if (current && ambiguous.has(current.key)) ambiguous.add(entry.key);
     }
-    if (assignments.get(candidate.key) === null && (ambiguous.has(candidate.key) || !candidate.parentChat))
+    if (assignments.get(candidate.key) === null)
       diagnostics.add(
         ambiguous.has(candidate.key) ? "ambiguous-session" : "missing-field",
         ambiguous.has(candidate.key)
           ? "Execution cannot be assigned to an unambiguous reported session"
-          : candidate.parentKey
-            ? "Span-parent linkage does not resolve direct session membership in this read"
-            : "Execution has no reported session identity, span-parent linkage or parent-chat linkage; direct membership unavailable",
+          : candidate.parentChat
+            ? "Direct session membership unavailable; a parent-chat association does not establish own-session identity"
+            : candidate.parentKey
+              ? "Span-parent linkage does not resolve direct session membership in this read"
+              : "Execution has no reported session identity, span-parent linkage or parent-chat linkage; direct membership unavailable",
         candidate.line,
-        candidate.references.slice(0, 1),
+        candidate.parentChat ? [candidate.parentChat.reference] : candidate.references.slice(0, 1),
       );
   }
   const groups = new Map<
@@ -966,7 +968,8 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
       candidate.signature = createHash("sha256")
         .update(JSON.stringify([candidate.facts, candidate.identities, candidate.parentChat?.value, candidate.producer, candidate.version]))
         .digest("hex");
-      candidate.references.splice(0, candidate.references.length, ref);
+      const identityReferences = candidate.references.filter((reference) => reference.location.pointer === "/attributes/copilot_chat.chat_session_id");
+      candidate.references.splice(0, candidate.references.length, ref, ...identityReferences);
       // Full-fact signatures still detect conflicting content after payloads are discarded.
       candidate = {
         ...candidate,

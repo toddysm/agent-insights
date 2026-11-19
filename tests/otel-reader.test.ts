@@ -982,6 +982,35 @@ test("parent-chat contracts reject wrong-source/record anchors, wrong namespaces
   assert.equal(isolated.events[0]?.sessionId, null);
   assert.throws(() => parseReadView({ ...isolated,
     events: [{ ...child, parentChat: { ...child.parentChat, sessionId: foreign.id } }] }));
+  const secondSourceChild = { ...child,
+    references: child.references.map((ref) => ({ ...ref, sourceId: "foreign" })),
+    parentChat: { ...link, status: "unresolved", sessionId: null,
+      reference: { ...link.reference, sourceId: "foreign" } } };
+  const combined = parseReadView({
+    ...view, sources: [...view.sources, { ...view.sources[0], id: "foreign" }],
+    sessions: [{ ...view.sessions[0], sourceIds: ["source-fictional", "foreign"] }],
+    events: [view.events[0], secondSourceChild],
+  });
+  assert.ok(combined.events[1]?.kind !== "message" && combined.events[1]?.parentChat?.status === "unresolved");
+  assert.throws(() => parseReadView({ ...combined, events: [
+    view.events[0], { ...secondSourceChild, parentChat: { ...secondSourceChild.parentChat, status: "resolved", sessionId: view.sessions[0]!.id } },
+  ] }));
+});
+
+test("associated-only exclusions refer only to the selected parent and keep membership coverage partial", async () => {
+  const view = await read([
+    record({}, { "copilot_chat.chat_session_id": "a" }),
+    record({ spanId: "2".repeat(16) }, { "copilot_chat.chat_session_id": "b" }),
+    record({ spanId: "3".repeat(16) }, {
+      "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "b",
+    }),
+  ]);
+  const a = recordedReport(view, { readId: view.id, sessionId: view.sessions[0]!.id });
+  const b = recordedReport(view, { readId: view.id, sessionId: view.sessions[1]!.id });
+  assert.ok(!a.exclusions.some((entry) => entry.reason === "associated-only"));
+  assert.ok(b.exclusions.some((entry) => entry.reason === "associated-only"));
+  assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+  assert.match(view.issues.map((issue) => issue.message).join(" "), /parent-chat association does not establish own-session identity/);
 });
 
 test("an invalid cross-trace parent is retained as evidence but not used to invent an association", async () => {

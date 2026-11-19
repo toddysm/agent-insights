@@ -13,7 +13,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { z } from "zod";
 import type { ReadView } from "../evidence/contracts.js";
-import { associatedWithSession, sessionContributions } from "../evidence/relationships.js";
+import { sessionEvidence, sessionContributions } from "../evidence/relationships.js";
 import { RuntimeError } from "../runtime/errors.js";
 import type { ReadTiming } from "../runtime/protocol.js";
 import {
@@ -222,9 +222,7 @@ export class AnalysisRunner {
         "Wait for the current analysis or its cancellation to finish.",
         409,
       );
-    const events = view.events.filter(
-      (event) => event.sessionId === session.id || associatedWithSession(event, session.id),
-    );
+    const events = sessionEvidence(view, session.id);
     if (!events.length)
       throw new RuntimeError(
         "ANALYSIS_EVIDENCE_UNAVAILABLE",

@@ -9,10 +9,21 @@ type Execution = Exclude<ReadView["events"][number], { kind: "message" }>;
 /** Resolution is separate from the reported value and its original field evidence. */
 type Resolution = Pick<NonNullable<Execution["parentChat"]>, "status" | "sessionId">;
 
+/** Bind a reported editor identity to its physical field, not every source attached to its session. */
+function identityAnchor(reference: Execution["references"][number]): string | null {
+  return reference.location.kind === "jsonl" && reference.location.pointer === "/attributes/copilot_chat.chat_session_id"
+    ? JSON.stringify([reference.sourceId, reference.recordId, reference.location.line]) : null;
+}
+
 /** True only for a separately resolved association, not direct or inherited session membership. */
 export function associatedWithSession(event: ReadView["events"][number], sessionId: string): boolean {
   return event.kind !== "message" &&
     event.parentChat?.status === "resolved" && event.parentChat.sessionId === sessionId;
+}
+
+/** Shared disclosure/provider selection; include a resolved associate once without changing its direct owner. */
+export function sessionEvidence(view: ReadView, sessionId: string): ReadView["events"] {
+  return view.events.filter((event) => event.sessionId === sessionId || associatedWithSession(event, sessionId));
 }
 
 /** Count distinct normalized records by direct membership versus explicit association; usage is not summed. */
@@ -35,17 +46,34 @@ export function resolveParentChats(
   events: ReadView["events"],
   sessions: ReadView["sessions"],
 ): ReadonlyMap<string, Resolution> {
+  const observed = new Map<string, Set<string>>();
+  for (const event of events) {
+    if (event.kind === "message") continue;
+    const identities = event.nativeIdentities?.filter((identity) => identity.namespace === "vscode-chat") ?? [];
+    if (!identities.length) continue;
+    for (const reference of event.references) {
+      const key = identityAnchor(reference);
+      if (key === null) continue;
+      const values = observed.get(key) ?? new Set<string>();
+      for (const identity of identities) values.add(identity.value);
+      observed.set(key, values);
+    }
+  }
   const index = new Map<string, Set<string>>();
-  for (const session of sessions)
-    for (const identity of session.nativeIdentities ?? []) {
-      if (identity.namespace !== "vscode-chat") continue;
-      for (const sourceId of session.sourceIds) {
-        const key = JSON.stringify([sourceId, identity.value]);
+  for (const session of sessions) {
+    const declared = new Set(session.nativeIdentities?.filter((identity) => identity.namespace === "vscode-chat").map((identity) => identity.value));
+    for (const reference of session.references) {
+      const anchor = identityAnchor(reference);
+      if (anchor === null || !session.sourceIds.includes(reference.sourceId)) continue;
+      for (const value of observed.get(anchor) ?? []) {
+        if (!declared.has(value)) continue;
+        const key = JSON.stringify([reference.sourceId, value]);
         const matches = index.get(key) ?? new Set<string>();
         matches.add(session.id);
         index.set(key, matches);
       }
     }
+  }
   const result = new Map<string, Resolution>();
   const graph = new Map<string, Set<string>>();
   const reverse = new Map<string, Set<string>>();
