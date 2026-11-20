@@ -190,6 +190,10 @@ authenticated session creation with a session-scoped credential is qualified
 separately, without sending a prompt or invoking a model. Hosted validation downloads
 checksum-pinned 1.0.104 binaries solely into owned test directories on the
 Linux, macOS and Windows runners; application startup does not download them.
+Preparation verifies the pinned checksum before using the runner's `tar` to
+extract tarballs or, on [Windows, ZIP archives](https://learn.microsoft.com/en-us/windows/tar/).
+It does not load PowerShell Archive modules; extraction failures stop preparation
+and remove the owned temporary directory before any paths are published.
 
 The [authenticated qualification](../tests/copilot-auth-qualification.test.mjs)
 also exercises prompt-bearing requests on the normal authenticated Copilot path.
