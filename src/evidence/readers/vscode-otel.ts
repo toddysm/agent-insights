@@ -1118,6 +1118,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
    * @param available - At least one relevant value/record was captured.
    * @param complete - Every applicable captured record has the required fields.
    * @param reason - Controlled explanation used for unavailable or partial evidence.
+   * @param dimension - Apply diagnostics for this dimension; omission reports field availability without diagnostic downgrades.
    * @returns Coverage reduced only by diagnostics affecting the requested dimension.
    */
   const coverage = (
@@ -1132,9 +1133,14 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
         ? { status: "complete" }
         : { status: "partial", reason: [reason, ...(dimension ? diagnostics.reasons(dimension) : [])].join("; ") };
   const modelCalls = events.filter((event) => event.kind === "model-call");
-  /** Field availability for this operation only; absent embedding usage never becomes zero. */
+  /** Field availability for this operation only; distinguish no retained calls from retained calls with missing usage. */
   const modelUsage = (operation: "chat" | "embeddings"): Coverage => {
     const calls = modelCalls.filter((event) => event.operation === operation);
+    if (calls.length === 0)
+      return {
+        status: "unavailable",
+        reason: `No retained ${operation === "chat" ? "chat" : "embedding"} calls`,
+      };
     return coverage(
       calls.some((event) => event.usage?.input != null || event.usage?.output != null),
       calls.every((event) => event.usage?.input != null && event.usage?.output != null),

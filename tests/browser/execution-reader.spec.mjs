@@ -63,7 +63,7 @@ test("mixed evidence shows scoped availability, missing linkage, unchanged repor
     }
     await coverage.getByText(/Read limitations \(/).click();
     await expect(coverage.getByText("(severity unreported; records; tools)", { exact: true })).toBeVisible();
-    await expect(coverage.getByText("(warning; attribution; attribution only)", { exact: true })).toBeVisible();
+    await expect(coverage.getByText("(warning; attribution; no numeric dimensions)", { exact: true })).toBeVisible();
     await expect(coverage.getByText("(warning)", { exact: true })).toBeVisible();
     await expect(coverage.getByText(/no reported session identity/)).toBeVisible();
     await expect(coverage.getByText(/cannot be assigned to an unambiguous reported session/)).toHaveCount(0);
@@ -73,6 +73,7 @@ test("mixed evidence shows scoped availability, missing linkage, unchanged repor
     await report.getByRole("button", { name: "Inspect source identity and capture coverage", exact: true }).click();
     await expect(page.getByRole("dialog").getByText("(severity unreported; records; tools)", { exact: true })).toBeVisible();
     await expect(page.getByRole("dialog").getByText("(warning)", { exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog").getByText("(warning; attribution; no numeric dimensions)", { exact: true })).toBeVisible();
     await page.keyboard.press("Escape");
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     await scan.getByRole("button", { name: "Scan JSONL source", exact: true }).click();

@@ -55,7 +55,7 @@ export function DiagnosticMessage({
             <>; {issue.impact.scope};{" "}
               {issue.impact.dimensions.length
                 ? issue.impact.dimensions.join(", ")
-                : `${issue.impact.scope} only`}
+                : "no numeric dimensions"}
             </>
           )})
         </small>

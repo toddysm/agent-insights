@@ -699,6 +699,8 @@ Unassigned executions may have valid timestamps and tokens. They never enter a
 specific session's totals. Explicit parent association stays distinct from direct
 membership and is not additive. Known ambiguous direct identity takes precedence
 over an otherwise resolved parent association. Chat and embedding availability are separate:
+when an operation has no retained calls, its unavailable reason says so rather than
+claiming usage is missing from nonexistent calls. For retained calls,
 an embedding call without usage has unavailable tokens; a combined chat/embedding
 total is partial, not a chat total plus invented embedding zero. Selecting only a
 valid chat call can yield complete retained-field coverage even when another

@@ -162,6 +162,27 @@ test("mixed retained evidence separates timestamps, model operations, attributio
   assert.deepEqual(parseReadView(JSON.parse(JSON.stringify(view))), view);
 });
 
+test("operation usage distinguishes absent calls from retained calls with missing usage", async () => {
+  for (const [operation, present, absent, absentReason] of [
+    ["chat", "chatUsage", "embeddingUsage", "No retained embedding calls"],
+    ["embeddings", "embeddingUsage", "chatUsage", "No retained chat calls"],
+  ] as const) {
+    const view = await read([record({}, { "gen_ai.operation.name": operation })]);
+    const details = view.sources[0]!.coverageDetails!;
+    assert.deepEqual(details[absent], { status: "unavailable", reason: absentReason });
+    assert.equal(details[present].status, "complete");
+    const missing = await read([record({}, {
+      "gen_ai.operation.name": operation,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    })]);
+    const usage = missing.sources[0]!.coverageDetails![present];
+    assert.equal(usage.status, "unavailable");
+    assert.match(usage.reason, /usage is missing/);
+    assert.equal(missing.events.length, 1);
+  }
+});
+
 test("record-scoped malformed usage limits tokens, not timestamps or another selected model call", async () => {
   const view = await read([
     record(),

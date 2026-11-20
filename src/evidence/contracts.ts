@@ -31,7 +31,7 @@ export const coverageSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("unavailable"), reason: id }).readonly(),
 ]);
 
-/** A limitation affects source integrity, specific records, linkage, or captured content, not every metric. */
+/** A limitation affects source integrity, specific records, linkage, captured content or metadata, not every metric. */
 export const diagnosticImpactSchema = z.strictObject({
   scope: z.enum(["source", "records", "attribution", "content", "metadata"]),
   dimensions: z.array(z.enum(["messages", "timing", "tools", "tokens"])).readonly(),
