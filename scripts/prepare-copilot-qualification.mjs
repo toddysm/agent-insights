@@ -4,6 +4,7 @@
  * This top-level program requires CI=true, RUNNER_TEMP and GITHUB_ENV. It selects
  * the runner platform's fixed release archive, validates its checksum before
  * extraction, and publishes executable/root paths for subsequent workflow steps.
+ * The runner's tar handles tarballs and Windows ZIPs without PowerShell modules.
  * Success leaves the owned directory for the workflow's cleanup step; preparation
  * failure removes it before rethrowing.
  *
@@ -65,23 +66,7 @@ try {
     "Copilot archive checksum mismatch.",
   );
   await writeFile(archive, bytes);
-  if (process.platform === "win32") {
-    execFileSync(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        "Expand-Archive -LiteralPath $env:QUAL_ARCHIVE -DestinationPath $env:QUAL_ROOT",
-      ],
-      {
-        env: { ...process.env, QUAL_ARCHIVE: archive, QUAL_ROOT: root },
-        timeout: 60_000,
-      },
-    );
-  } else {
-    execFileSync("tar", ["-xf", archive, "-C", root], { timeout: 60_000 });
-  }
+  execFileSync("tar", ["-xf", archive, "-C", root], { timeout: 60_000 });
   await rm(archive);
   const executable = path.join(
     root,
