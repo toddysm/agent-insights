@@ -39,7 +39,7 @@ export function SourceCoverageDetails({
   );
 }
 
-/** Preserve legacy messages; scoped diagnostics label severity (or its absence), dimensions and scope. */
+/** Preserve legacy messages; independently reported severity/impact stay visible, with missing severity explicit. */
 export function DiagnosticMessage({
   issue,
 }: {
@@ -48,12 +48,16 @@ export function DiagnosticMessage({
   return (
     <>
       <span>{issue.message}</span>
-      {issue.impact && (
+      {(issue.impact || issue.severity) && (
         <small>
-          {" "}({issue.severity ?? "severity unreported"}; {issue.impact.scope};{" "}
-          {issue.impact.dimensions.length
-            ? issue.impact.dimensions.join(", ")
-            : `${issue.impact.scope} only`})
+          {" "}({issue.severity ?? "severity unreported"}
+          {issue.impact && (
+            <>; {issue.impact.scope};{" "}
+              {issue.impact.dimensions.length
+                ? issue.impact.dimensions.join(", ")
+                : `${issue.impact.scope} only`}
+            </>
+          )})
         </small>
       )}
     </>

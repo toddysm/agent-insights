@@ -180,7 +180,7 @@ test("record-scoped malformed usage limits tokens, not timestamps or another sel
   assert.equal(whole.tokens.input.metric.coverage.status, "partial");
 });
 
-test("scoped metric validation rejects numeric usage anchored only to an unmeasured embedding", async () => {
+test("scoped metric validation rejects unmeasured embedding usage even alongside measured chat anchors", async () => {
   const view = await read([
     record(),
     record({ spanId: "2".repeat(16) }, {
@@ -206,6 +206,11 @@ test("scoped metric validation rejects numeric usage anchored only to an unmeasu
   }).tokens.input.metric;
   assert.equal(measured.coverage.status, "complete");
   assert.deepEqual(parseMetric(measured, view), measured);
+  assert.throws(() => parseMetric({
+    ...measured,
+    coverage: { status: "partial", reason: "Mixed measured and missing usage" },
+    contributors: [...measured.contributors, ...missing.contributors],
+  }, view), /unavailable/);
 });
 
 test("scoped tool-zero anchors ignore another session's malformed tool ID", async () => {

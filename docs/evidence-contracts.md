@@ -685,6 +685,7 @@ Diagnostics may carry `severity` (`info`, `warning`, `error`) and `impact`:
 `scope` is `source`, `records`, `attribution`, `content` or `metadata`, with an
 explicit `dimensions` list. These fields are independently optional for reader
 compatibility; the UI labels absent severity as "severity unreported".
+Severity-only labels remain visible; diagnostics with neither field keep their legacy message-only display.
 Malformed/conflicting evidence remains an error.
 Missing direct linkage is a warning, not a conflict. Record-scoped diagnostics
 require original anchors. Unknown impacts are conservatively source-scoped;
@@ -773,8 +774,10 @@ selected dimension. Availability of a different dimension is not enough.
 Numeric event contributions also require that dimension to be available.
 Legacy readers retain source/dimension coverage as an upper bound. Qualified
 scoped extension coverage uses applicable source-integrity, selected-record field
-availability and diagnostics instead. Missing usage cannot back a numeric token
-metric merely because no diagnostic was emitted; an unrelated missing field cannot poison a valid selected
+availability and diagnostics instead. Every numeric contributor requires available
+fields; adding measured anchors cannot admit an unavailable usage anchor. Missing
+usage cannot back a numeric token metric merely because no diagnostic was emitted;
+an unrelated missing field cannot poison a valid selected
 field. Source changes and unknown impacts never produce complete totals.
 Arbitrary undeclared references and another session's events are rejected.
 Even a measured zero needs evidence, such as a declared complete source array's

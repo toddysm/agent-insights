@@ -746,9 +746,6 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     view.sources.map((source) => [source.id, source]),
   );
   const coverageForReferences = createCoverageLookup(view);
-  const availabilityBySource = new Map(view.sources.map((source) => [
-    source.id, coverageForReferences(source, metric.dimension, metric.contributors),
-  ]));
   const eventOwners = new Map<string, Set<string | null>>();
   for (const event of view.events) {
     for (const reference of event.references) {
@@ -766,7 +763,7 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     ) {
       throw new Error("Metric contributor belongs to an unrelated source");
     }
-    const availability = availabilityBySource.get(source.id)!;
+    const availability = coverageForReferences(source, metric.dimension, [reference]);
     if (metric.value !== null && availability.status === "unavailable") {
       throw new Error(`Metric evidence is unavailable for ${metric.dimension}`);
     }
