@@ -312,6 +312,21 @@ test("scoped diagnostic indexing bounds anchor reads linearly across differently
   assert.ok(anchorReads <= count * 2, `Expected linear diagnostic anchor reads, got ${anchorReads}`);
 });
 
+test("repeated source-wide unsupported records retain counts without per-record diagnostic amplification", async () => {
+  const count = 16384;
+  const text = "0\n".repeat(count);
+  const view = await vscodeOtelReader.read(input(text));
+  const issue = view.issues.find((entry) => entry.code === "unknown-record");
+  assert.equal(issue?.count, count);
+  assert.equal(issue.severity, "error");
+  assert.match(issue.message, /first line 1/);
+  assert.deepEqual(issue.impact, { scope: "source", dimensions: ["messages", "timing", "tools", "tokens"] });
+  assert.equal(issue.references, undefined);
+  assert.equal(view.events.length, 0);
+  assert.equal(view.sources[0]?.coverage.timing.status, "unavailable");
+  assert.ok(Buffer.byteLength(JSON.stringify(view)) < Buffer.byteLength(text));
+});
+
 test("unassigned hook exclusions are indexed once rather than scanned for every tool name", async () => {
   const count = 64;
   const view = await read(Array.from({ length: count * 2 }, (_, index) => record(

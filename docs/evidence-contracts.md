@@ -718,6 +718,9 @@ counts without original anchor arrays, under the existing response-byte ceiling.
 Legacy `issues` messages remain available; older responses without structured
 diagnostics still display their messages. Exclusion applicability is indexed once
 per calculation by dimension and observation event, not rescanned per tool name.
+Repeated source-wide notices retain exact occurrence counts and first-line locations
+without automatically retaining a redundant anchor for every unsupported record.
+Explicit conflict references and record-scoped field anchors remain preserved.
 Messages remain unavailable without a qualified conversation reader. Operation
 classification never certifies runtime identity or Agent Host compatibility.
 

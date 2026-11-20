@@ -69,7 +69,8 @@ interface Candidate {
 
 /**
  * Aggregate one payload-free issue per category. Small reads preserve supplied
- * references; compact scans retain the first affected anchor and exact count.
+ * references; source-wide notices do not acquire a redundant anchor per record.
+ * Compact scans retain the first affected anchor and exact count.
  */
 class Diagnostics {
   /** Compact scans preserve the first affected anchor and exact occurrence count, not an unbounded reference list. */
@@ -102,7 +103,7 @@ class Diagnostics {
    * @param line - First affected one-based source line.
    * @param references - Optional original anchors; never captured payloads.
    * @param affectsCoverage - False for informational absence of an optional tool-call ID.
-   * @param impact - Affected fields/scope; unknown impacts conservatively limit the source.
+   * @param impact - Affected fields/scope; source-wide issues keep counts/first lines without automatic per-record anchors.
    * @param severity - Malformed/conflicting evidence stays an error; missing linkage may be a warning.
    */
   add(
@@ -114,7 +115,8 @@ class Diagnostics {
     impact: Impact = sourceImpact,
     severity: NonNullable<ReadView["issues"][number]["severity"]> = affectsCoverage ? "error" : "info",
   ): void {
-    if (references.length === 0 && this.currentReference) references = [this.currentReference];
+    if (references.length === 0 && this.currentReference && impact.scope !== "source")
+      references = [this.currentReference];
     const key = JSON.stringify([code, message, impact]);
     const previous = this.entries.get(key);
     if (previous) {
