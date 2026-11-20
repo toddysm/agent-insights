@@ -130,6 +130,18 @@ Refresh or a new selection discards the old report and evidence; reread the
 selected sources explicitly to compute fresh metrics. No report history,
 source replica, browser storage or correction controls are created.
 
+For extension exports, **Field availability and capture scope** separates
+**Retained execution timestamps**, **Chat usage**, **Embedding usage**,
+**Session attribution** and **Source/session history**. Complete timestamps
+describe retained supported executions only; unknown spans or truncation can still
+limit aggregate timing. Chat usage can be complete while embedding usage is
+unavailable and the combined token subtotal is partial. Missing tokens are never
+zero. Direct membership, explicit parent association and unassigned evidence
+remain separate; unassigned usage is not added to a selected session.
+Diagnostics identify severity, affected dimensions and source/record/linkage scope.
+Missing linkage is not a conflicting identity. These same field-availability
+details are available in **Source identity and admitted coverage** for scan reports.
+
 For a directory grant, a reader request must name a relative file inside it.
 A regular-file read cannot select neighboring files through a file grant.
 For a database, the grant also covers its exact existing `-wal`, `-shm` and
@@ -306,11 +318,14 @@ fresh-capture smoke test found two session groups and 32 records with limitation
 a separately authorized bounded structural inspection identified empty optional
 tool IDs, hook/unknown operations and missing or parent-only session linkage.
 This is partial compatibility evidence, not a fully qualified producer/runtime.
-Hook/operation classification is implemented by this refinement; optional tool
-IDs, parent-chat relationships and scoped coverage remain tracked in
-[#47](https://github.com/toddysm/agent-insights/issues/47),
-[#48](https://github.com/toddysm/agent-insights/issues/48) and
-[#49](https://github.com/toddysm/agent-insights/issues/49).
+Hook classification, optional tool-ID semantics, parent-chat associations and
+evidence-scoped coverage are implemented. Their synthetic validation does not
+complete live-producer/runtime qualification. Empty optional tool IDs do not
+downgrade valid timing or token fields. Malformed values remain visible errors
+for their affected evidence; unknown operations and integrity failures remain
+conservative. A valid log/metric/content-event-only file explicitly reports
+**Non-execution telemetry was found**, with execution metrics unavailable.
+Messages remain unavailable until a qualified conversation reader exists.
 
 Malformed independent records can yield a partial read with valid records
 retained. A trailing unfinished record is reported, not silently discarded.

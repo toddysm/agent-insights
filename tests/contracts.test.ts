@@ -38,6 +38,27 @@ test("unknown versions and unexpected normalized fields fail instead of being st
   );
 });
 
+test("legacy readers round-trip without invented coverage details or diagnostic impacts", () => {
+  const original = exampleReadView();
+  const view = parseReadView(JSON.parse(JSON.stringify(original)));
+  assert.deepEqual(view, original);
+  assert.equal(view.sources[0]?.coverageDetails, undefined);
+  assert.equal(view.issues[0]?.impact, undefined);
+  assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+});
+
+test("diagnostic impacts require real record anchors and cannot weaken source-integrity failures", () => {
+  const view = exampleReadView();
+  const issue = view.issues[0]!;
+  for (const change of [
+    { impact: { scope: "records", dimensions: ["tokens"] } },
+    { impact: { scope: "source", dimensions: ["invented"] } },
+    { code: "unreadable-source", impact: { scope: "records", dimensions: ["tokens"] }, references: view.events[0]!.references },
+    { code: "unreadable-source", affectsCoverage: false },
+  ])
+    assert.throws(() => parseReadView({ ...view, issues: [{ ...issue, ...change }] }), z.ZodError);
+});
+
 test("complete controlled evidence retains measured zero separately from missing usage", () => {
   const view = exampleReadView();
   const source = view.sources[0];

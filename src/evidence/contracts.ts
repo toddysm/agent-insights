@@ -31,6 +31,12 @@ export const coverageSchema = z.discriminatedUnion("status", [
   z.strictObject({ status: z.literal("unavailable"), reason: id }).readonly(),
 ]);
 
+/** A limitation affects source integrity, specific records, linkage, captured content or metadata, not every metric. */
+export const diagnosticImpactSchema = z.strictObject({
+  scope: z.enum(["source", "records", "attribution", "content", "metadata"]),
+  dimensions: z.array(z.enum(["messages", "timing", "tools", "tokens"])).readonly(),
+}).readonly();
+
 /** Original record locator, independent of inferred tasks or transient event identifiers. */
 export const referenceSchema = z
   .strictObject({
@@ -66,6 +72,26 @@ export const referenceSchema = z
     ]),
   })
   .readonly();
+
+/** Payload-free diagnostic metadata; original anchors remain optional in the full read contract. */
+export const diagnosticSummarySchema = z.strictObject({
+  sourceId: id,
+  code: z.enum([
+    "source-changed",
+    "truncated-record",
+    "unsupported-schema",
+    "missing-field",
+    "ambiguous-session",
+    "unreadable-source",
+    "unknown-record",
+  ]),
+  message: id,
+  /** False marks an informational notice; omitted/true retains legacy limiting semantics. */
+  affectsCoverage: z.boolean().optional(),
+  impact: diagnosticImpactSchema.optional(),
+  severity: z.enum(["info", "warning", "error"]).optional(),
+  count: tokens.positive().optional(),
+}).readonly();
 
 /**
  * Source-wide operation observations, not session metrics or capture completeness.
@@ -114,6 +140,15 @@ export const sourceSchema = z
       .readonly(),
     changedDuringRead: z.boolean().nullable(),
     classification: classificationSchema.optional(),
+    /** Optional scoped-reader contract; older readers retain their source-wide coverage semantics. */
+    coverageDetails: z.strictObject({
+      basis: z.literal("retained-executions"),
+      retainedTiming: coverageSchema,
+      chatUsage: coverageSchema,
+      embeddingUsage: coverageSchema,
+      sessionAttribution: coverageSchema,
+      history: coverageSchema,
+    }).readonly().optional(),
     coverage: z
       .strictObject({
         messages: coverageSchema,
@@ -369,23 +404,8 @@ export const readViewSchema = z
     events: z.array(eventSchema).readonly(),
     issues: z
       .array(
-        z
-          .strictObject({
-            sourceId: id,
-            code: z.enum([
-              "source-changed",
-              "truncated-record",
-              "unsupported-schema",
-              "missing-field",
-              "ambiguous-session",
-              "unreadable-source",
-              "unknown-record",
-            ]),
-            message: id,
-            /** False marks an informational notice; omitted/true retains legacy limiting semantics. */
-            affectsCoverage: z.boolean().optional(),
-            /** Optional structured diagnostics; earlier readers may supply only a message. */
-            count: tokens.positive().optional(),
+        diagnosticSummarySchema.unwrap()
+          .extend({
             references: z.array(referenceSchema).min(1).readonly().optional(),
           })
           .readonly(),
@@ -493,8 +513,22 @@ export const readViewSchema = z
           message: "Issue references an absent or unrelated source",
         });
       }
+      if (issue.impact?.scope === "records" && !issue.references?.length)
+        context.addIssue({ code: "custom", message: "Record-scoped diagnostics require original references" });
+      if (
+        (issue.code === "source-changed" || issue.code === "unreadable-source") &&
+        (issue.affectsCoverage === false || (issue.impact !== undefined &&
+          (issue.impact.scope !== "source" || ["messages", "timing", "tools", "tokens"].some(
+            (dimension) => !issue.impact?.dimensions.some((value) => value === dimension),
+          ))))
+      )
+        context.addIssue({ code: "custom", message: "Source integrity failures must limit every dimension" });
     }
     for (const source of view.sources) {
+      if (source.coverageDetails && (
+        source.format !== "vscode-otel-jsonl" || source.coverageDetails.history.status === "complete"
+      ))
+        context.addIssue({ code: "custom", message: "Scoped extension coverage cannot certify complete source/session history" });
       if (
         source.format === null &&
         Object.values(source.coverage).some(
@@ -597,6 +631,108 @@ export function evidenceReferenceKey(reference: EvidenceReference): string {
   ]);
 }
 
+/** Group field pointers within the same physical record without merging replayed lines or source revisions. */
+export function evidenceRecordKey(reference: EvidenceReference): string {
+  return evidenceReferenceKey({ ...reference, location: { ...reference.location, pointer: "" } });
+}
+
+/** Per-dimension lookup state owned by one calculation, never persisted or shared across reads. */
+interface CoverageImpacts {
+  readonly source: Set<string>;
+  readonly records: Map<string, Set<string>>;
+  readonly unavailable: Set<string>;
+}
+
+/**
+ * Index qualified-reader diagnostics and retained field availability once per calculation.
+ * The returned lookup costs only the selected references, not all diagnostic anchors.
+ * Legacy source-wide semantics, incomplete diagnostic anchors and integrity failures remain
+ * conservative. Availability describes retained fields, not capture or session membership.
+ */
+export function createCoverageLookup(view: ReadView): (
+  source: ReadView["sources"][number],
+  dimension: Metric["dimension"],
+  references: readonly EvidenceReference[],
+) => Metric["coverage"] {
+  const dimensions = ["messages", "timing", "tools", "tokens"] as const;
+  const index = new Map<string, Map<Metric["dimension"], CoverageImpacts>>();
+  for (const source of view.sources) {
+    if (!source.coverageDetails) continue;
+    index.set(source.id, new Map(dimensions.map((dimension) => [
+      dimension, {
+        source: new Set<string>(source.changedDuringRead ? ["Source changed during read"] : []),
+        records: new Map<string, Set<string>>(),
+        unavailable: new Set<string>(),
+      },
+    ])));
+  }
+  /** Deduplicate controlled reasons for one physical record, independent of its field pointers. */
+  const limitRecord = (impact: CoverageImpacts, key: string, reason: string): void => {
+    const reasons = impact.records.get(key) ?? new Set<string>();
+    reasons.add(reason);
+    impact.records.set(key, reasons);
+  };
+  for (const issue of view.issues) {
+    const source = index.get(issue.sourceId);
+    if (!source || issue.affectsCoverage === false) continue;
+    if (issue.impact && !["source", "records"].includes(issue.impact.scope)) continue;
+    const references = issue.references ?? [];
+    for (const dimension of issue.impact?.dimensions ?? dimensions) {
+      const impact = source.get(dimension)!;
+      if (issue.impact?.scope !== "records" ||
+          (issue.count !== undefined && issue.count > references.length)) {
+        impact.source.add(issue.message);
+      } else {
+        for (const reference of references)
+          limitRecord(impact, evidenceRecordKey(reference), issue.message);
+      }
+    }
+  }
+  for (const event of view.events) {
+    for (const reference of event.references) {
+      const source = index.get(reference.sourceId);
+      if (!source) continue;
+      const key = evidenceRecordKey(reference);
+      const timing = source.get("timing")!;
+      const start = event.kind === "message" ? event.timestampMs : event.startedAtMs;
+      const end = event.kind === "message" ? event.timestampMs : event.endedAtMs;
+      if (start === null || end === null) {
+        limitRecord(timing, key, "Some selected records have missing timing boundaries.");
+        if (start === null && end === null) timing.unavailable.add(key);
+      }
+      const tokens = source.get("tokens")!;
+      const usage = event.kind === "message" ? null : event.usage;
+      if (usage?.input == null || usage.output === null) {
+        limitRecord(tokens, key, "Some selected records have missing reported token fields.");
+        if (usage?.input == null && usage?.output == null && !usage?.components.length)
+          tokens.unavailable.add(key);
+      }
+    }
+  }
+  return (source, dimension, references) => {
+    const coverage = source.coverage[dimension];
+    if (!source.coverageDetails || coverage.status === "unavailable") return coverage;
+    const impact = index.get(source.id)?.get(dimension);
+    if (!impact) throw new Error("Scoped coverage requires a source in the current read");
+    const reasons = new Set(impact.source);
+    let selected = 0;
+    let unavailable = 0;
+    for (const reference of references) {
+      if (reference.sourceId !== source.id) continue;
+      const key = evidenceRecordKey(reference);
+      selected++;
+      if (impact.unavailable.has(key)) unavailable++;
+      for (const reason of impact.records.get(key) ?? []) reasons.add(reason);
+    }
+    return reasons.size
+      ? {
+          status: selected > 0 && unavailable === selected ? "unavailable" : "partial",
+          reason: [...reasons].join(" "),
+        }
+      : { status: "complete" };
+  };
+}
+
 /** Reject stale, unavailable or misattributed evidence; zero anchors require complete relevant capture. */
 export function parseMetric(input: unknown, view: ReadView): Metric {
   const metric = metricSchema.parse(input);
@@ -612,6 +748,7 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
   const sourcesById = new Map(
     view.sources.map((source) => [source.id, source]),
   );
+  const coverageForReferences = createCoverageLookup(view);
   const eventOwners = new Map<string, Set<string | null>>();
   for (const event of view.events) {
     for (const reference of event.references) {
@@ -629,7 +766,7 @@ export function parseMetric(input: unknown, view: ReadView): Metric {
     ) {
       throw new Error("Metric contributor belongs to an unrelated source");
     }
-    const availability = source.coverage[metric.dimension];
+    const availability = coverageForReferences(source, metric.dimension, [reference]);
     if (metric.value !== null && availability.status === "unavailable") {
       throw new Error(`Metric evidence is unavailable for ${metric.dimension}`);
     }

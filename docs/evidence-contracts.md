@@ -605,8 +605,8 @@ also yields null, with the controlled `missing-field` notice
 `Tool-call identifier unavailable: empty value`. This notice alone does not
 reduce timing, tool-execution or model-token coverage. Its issue carries
 `affectsCoverage: false`, so it remains visible without labeling a source read
-or bounded scan partial. Omitted or true `affectsCoverage` retains the limiting
-behavior of earlier diagnostics; analysis summaries preserve the flag.
+or bounded scan partial. Omitted or true `affectsCoverage` retains limiting
+semantics within the diagnostic's affected scope; analysis summaries preserve the flag.
 Nonempty strings,
 including whitespace, are preserved verbatim. Reported null, numeric, boolean,
 array and object values yield null and the limiting `missing-field` diagnostic
@@ -620,8 +620,8 @@ Unavailable call IDs never become generated business IDs or deduplication keys.
 Two otherwise usable tool spans with distinct native identities remain two
 executions. Repeated native identities still require matching normalized facts,
 session identities and producer metadata; conflicting facts are excluded rather
-than overwritten. Broader evidence-specific coverage refinement remains
-[#49](https://github.com/toddysm/agent-insights/issues/49).
+than overwritten. Malformed tool-call identifiers affect tool evidence, not
+otherwise valid timestamps or model-call usage.
 
 Execution-event `nativeIdentities` preserve only identifiers actually reported
 on that event, even when it cannot be assigned to a session. An inherited
@@ -662,11 +662,67 @@ calls.
 These observations are not trusted per-session metrics, a complete-capture claim
 or runtime identification. Unclassified/conflicting records still limit coverage.
 Analysis receives relevant source-wide classification and payload-free diagnostic
-summaries (source, code, message and optional occurrence count) alongside
-selected-session events. Full diagnostic anchor arrays remain in the read view,
-not the model input: unrelated source records must not consume a small selected
-session's analysis budget. Source counts must not be mistaken for that session's
-totals. Earlier version-1 views without these optional fields remain valid.
+summaries alongside selected-session events. Scoped diagnostics preserve severity,
+impact and count. Record-scoped summaries include the first representative anchor,
+not the full source-wide anchor array; an occurrence count larger than the anchor
+array is not proof that other selected records are unaffected. Legacy summaries
+remain unchanged. Source counts must not be mistaken for session totals.
+Earlier version-1 views without these optional fields remain valid.
+
+### Evidence-scoped coverage
+
+The extension reader's optional source `coverageDetails` has the explicit
+`basis: retained-executions`. It separates `retainedTiming`, `chatUsage`,
+`embeddingUsage`, `sessionAttribution` and `history` from the existing aggregate
+`coverage` dimensions. Complete retained timestamps mean all retained supported
+executions have valid start/end fields, not that every source span or the entire
+session was captured. `history` cannot be complete. Unknown/unclassified spans,
+damaged input and conflicting native identities still limit aggregate totals.
+Detected source changes limit every dimension even when retained timestamps
+remain individually valid.
+
+Diagnostics may carry `severity` (`info`, `warning`, `error`) and `impact`:
+`scope` is `source`, `records`, `attribution`, `content` or `metadata`, with an
+explicit `dimensions` list. These fields are independently optional for reader
+compatibility; the UI labels absent severity as "severity unreported".
+Severity-only labels remain visible; diagnostics with neither field keep their legacy message-only display.
+Malformed/conflicting evidence remains an error.
+Missing direct linkage is a warning, not a conflict. Record-scoped diagnostics
+require original anchors. Unknown impacts are conservatively source-scoped;
+empty optional tool IDs remain informational. Missing timestamps affect timing;
+invalid usage affects tokens; captured-content limitations affect messages.
+Malformed labels/status metadata stay errors without invalidating known numeric
+fields. Missing native execution identity, invalid exporter structure, dropped
+fields, unknown operations and integrity failures remain conservative.
+
+Unassigned executions may have valid timestamps and tokens. They never enter a
+specific session's totals. Explicit parent association stays distinct from direct
+membership and is not additive. Known ambiguous direct identity takes precedence
+over an otherwise resolved parent association. Chat and embedding availability are separate:
+when an operation has no retained calls, its unavailable reason says so rather than
+claiming usage is missing from nonexistent calls. For retained calls,
+an embedding call without usage has unavailable tokens; a combined chat/embedding
+total is partial, not a chat total plus invented embedding zero. Selecting only a
+valid chat call can yield complete retained-field coverage even when another
+operation's usage is missing. Unavailable per-call results retain their original
+event IDs, scope and references; positive subtotals retain measured contributors
+and the full selected scope, not fabricated numeric contributions.
+
+Compact scans retain a diagnostic's first anchor and exact occurrence count.
+When the count exceeds retained anchors, its affected dimension remains
+conservatively limited across the source rather than clearing later sessions.
+Original contributor rescans preserve field pointers. Valid log/metric/content-event
+only input reports non-execution telemetry, not an empty source or zero calls.
+Admitted-scan report `diagnostics` preserve severity, scope, dimensions and occurrence
+counts without original anchor arrays, under the existing response-byte ceiling.
+Legacy `issues` messages remain available; older responses without structured
+diagnostics still display their messages. Exclusion applicability is indexed once
+per calculation by dimension and observation event, not rescanned per tool name.
+Repeated source-wide notices retain exact occurrence counts and first-line locations
+without automatically retaining a redundant anchor for every unsupported record.
+Explicit conflict references and record-scoped field anchors remain preserved.
+Messages remain unavailable without a qualified conversation reader. Operation
+classification never certifies runtime identity or Agent Host compatibility.
 
 Model-call token counts are per-call. Non-model usage accounting remains unknown,
 not additional model consumption, including aggregate usage on hooks or agent spans.
@@ -723,12 +779,16 @@ source contributors. Available zero is different from unavailable `null`.
 Known event references must belong unambiguously to the requested session,
 even when multiple sessions share a source. Each session also declares original
 source anchors in `references`. Non-event anchors are accepted only for zero or
-unavailable results; a numeric zero requires complete source coverage for the
+unavailable results; a numeric zero requires complete applicable coverage for the
 selected dimension. Availability of a different dimension is not enough.
 Numeric event contributions also require that dimension to be available.
-Metric coverage cannot be stronger than contributing source coverage: a partial
-capture cannot produce a complete metric. This is intentionally conservative
-while coverage is tracked at the source/dimension level.
+Legacy readers retain source/dimension coverage as an upper bound. Qualified
+scoped extension coverage uses applicable source-integrity, selected-record field
+availability and diagnostics instead. Every numeric contributor requires available
+fields; adding measured anchors cannot admit an unavailable usage anchor. Missing
+usage cannot back a numeric token metric merely because no diagnostic was emitted;
+an unrelated missing field cannot poison a valid selected
+field. Source changes and unknown impacts never produce complete totals.
 Arbitrary undeclared references and another session's events are rejected.
 Even a measured zero needs evidence, such as a declared complete source array's
 root reference. Missing/partial root evidence must not become an observed zero.
@@ -755,8 +815,14 @@ Each `RecordedMetric` wraps the existing `Metric` in `metric`, with its
 `scope` and a functional `definition`. The result also retains the read's
 observation bounds; these are not session start/end times. Every numeric
 contributor is attributable to the selected session and available for the
-metric's dimension. Source/dimension coverage remains an upper bound;
-missing fields, conflicts and unresolved attribution reduce availability.
+metric's dimension. Legacy source/dimension coverage remains an upper bound;
+scoped extension diagnostics apply only to affected dimensions and records.
+Missing selected fields and relevant conflicts/unassigned evidence reduce
+availability; associated-only records are not missing direct contributions.
+Unassigned hook/agent usage does not limit per-call model totals, and an unrelated
+excluded record does not limit a separately scoped usage observation. Diagnostic
+impacts and retained-field availability are indexed once per calculation rather
+than rescanning every diagnostic anchor for each reported tool name.
 All session sources conservatively constrain dimensional coverage, including
 unavailable sources with no normalized events. An available source cannot hide
 another source's missing contributions or establish a source-anchored zero alone.

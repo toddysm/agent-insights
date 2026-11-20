@@ -106,6 +106,303 @@ function read(records: readonly unknown[]): Promise<ReadView> {
   );
 }
 
+test("mixed retained evidence separates timestamps, model operations, attribution and capture history", async () => {
+  const operations = ["chat", "embeddings", "execute_tool", "execute_tool", "execute_hook", "chat", "chat"];
+  const view = await read(operations.map((operation, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": operation,
+      "gen_ai.conversation.id": index < 4 ? nativeSession : undefined,
+      "copilot_chat.chat_session_id": index === 0 ? "parent" : undefined,
+      "copilot_chat.parent_chat_session_id": index === 6 ? "parent" : undefined,
+      "gen_ai.tool.name": operation === "execute_tool" ? "fictional_tool" : undefined,
+      "gen_ai.tool.call.id": operation === "execute_tool" ? "" : undefined,
+      "gen_ai.usage.input_tokens": operation === "chat" ? 20 : undefined,
+      "gen_ai.usage.output_tokens": operation === "chat" ? 5 : undefined,
+    },
+  )));
+  const source = view.sources[0]!;
+  assert.equal(source.coverage.timing.status, "complete");
+  assert.equal(source.coverage.tools.status, "complete");
+  assert.equal(source.coverage.tokens.status, "partial");
+  assert.equal(source.coverage.messages.status, "unavailable");
+  assert.equal(source.coverageDetails?.retainedTiming.status, "complete");
+  assert.equal(source.coverageDetails?.chatUsage.status, "complete");
+  assert.equal(source.coverageDetails?.embeddingUsage.status, "unavailable");
+  assert.equal(source.coverageDetails?.sessionAttribution.status, "partial");
+  assert.equal(source.coverageDetails?.history.status, "partial");
+  assert.equal(source.identity.executionHost, "unknown");
+  assert.equal(source.classification?.executions.hookExecutions, 1);
+  const emptyIds = view.issues.find((issue) => /identifier unavailable/.test(issue.message));
+  assert.equal(emptyIds?.count, 2);
+  assert.equal(emptyIds.affectsCoverage, false);
+  assert.deepEqual(emptyIds.impact, { scope: "records", dimensions: ["tools"] });
+  const sessionId = view.sessions[0]!.id;
+  const whole = calculateRecordedMetrics(view, { sessionId });
+  assert.equal(whole.tools.calls.metric.value, 2);
+  assert.equal(whole.tools.calls.metric.coverage.status, "complete");
+  assert.equal(whole.tokens.input.metric.value, 20);
+  assert.equal(whole.tokens.input.metric.coverage.status, "partial");
+  assert.deepEqual(whole.tokens.input.contributorEventIds, [view.events[0]!.id]);
+  assert.deepEqual(whole.tokens.input.metric.contributors, view.events[0]!.references);
+  assert.ok(whole.tokens.input.scope.eventIds.includes(view.events[1]!.id));
+  assert.equal(whole.exclusions.filter((entry) => entry.reason === "unassigned").length, 2);
+  assert.equal(whole.exclusions.filter((entry) => entry.reason === "associated-only").length, 1);
+  for (const [index, value, status] of [[0, 20, "complete"], [1, null, "unavailable"]] as const) {
+    const event = view.events[index]!;
+    const selected = calculateRecordedMetrics(view, { sessionId, eventIds: [event.id] });
+    assert.equal(selected.tokens.input.metric.value, value);
+    assert.equal(selected.tokens.input.metric.coverage.status, status);
+    assert.deepEqual(selected.tokens.input.contributorEventIds, [event.id]);
+    assert.deepEqual(selected.tokens.input.scope.eventIds, [event.id]);
+    assert.deepEqual(selected.tokens.input.metric.contributors, event.references);
+    assert.deepEqual(parseMetric(selected.tokens.input.metric, view), selected.tokens.input.metric);
+    assert.equal(selected.timing.elapsed.metric.coverage.status, "complete");
+  }
+  assert.deepEqual(parseReadView(JSON.parse(JSON.stringify(view))), view);
+});
+
+test("operation usage distinguishes absent calls from retained calls with missing usage", async () => {
+  for (const [operation, present, absent, absentReason] of [
+    ["chat", "chatUsage", "embeddingUsage", "No retained embedding calls"],
+    ["embeddings", "embeddingUsage", "chatUsage", "No retained chat calls"],
+  ] as const) {
+    const view = await read([record({}, { "gen_ai.operation.name": operation })]);
+    const details = view.sources[0]!.coverageDetails!;
+    assert.deepEqual(details[absent], { status: "unavailable", reason: absentReason });
+    assert.equal(details[present].status, "complete");
+    const missing = await read([record({}, {
+      "gen_ai.operation.name": operation,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    })]);
+    const usage = missing.sources[0]!.coverageDetails![present];
+    assert.equal(usage.status, "unavailable");
+    assert.match(usage.reason, /usage is missing/);
+    assert.equal(missing.events.length, 1);
+  }
+});
+
+test("record-scoped malformed usage limits tokens, not timestamps or another selected model call", async () => {
+  const view = await read([
+    record(),
+    record({ spanId: "2".repeat(16) }, { "gen_ai.usage.input_tokens": -1 }),
+  ]);
+  const issue = view.issues.find((issue) => /Invalid reported token/.test(issue.message));
+  assert.deepEqual(issue?.impact, { scope: "records", dimensions: ["tokens"] });
+  assert.equal(issue.severity, "error");
+  assert.equal(view.sources[0]?.coverage.timing.status, "complete");
+  const sessionId = view.sessions[0]!.id;
+  const selected = calculateRecordedMetrics(view, { sessionId, eventIds: [view.events[0]!.id] });
+  assert.equal(selected.tokens.input.metric.coverage.status, "complete");
+  assert.deepEqual(parseMetric(selected.tokens.input.metric, view), selected.tokens.input.metric);
+  const whole = calculateRecordedMetrics(view, { sessionId });
+  assert.equal(whole.tokens.input.metric.value, 20);
+  assert.equal(whole.tokens.input.metric.coverage.status, "partial");
+});
+
+test("scoped metric validation rejects unmeasured embedding usage even alongside measured chat anchors", async () => {
+  const view = await read([
+    record(),
+    record({ spanId: "2".repeat(16) }, {
+      "gen_ai.operation.name": "embeddings",
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    }),
+  ]);
+  const sessionId = view.sessions[0]!.id;
+  const missing = calculateRecordedMetrics(view, {
+    sessionId, eventIds: [view.events[1]!.id],
+  }).tokens.input.metric;
+  assert.equal(missing.value, null);
+  assert.deepEqual(parseMetric(missing, view), missing);
+  for (const coverage of [
+    { status: "complete" },
+    { status: "partial", reason: "Only an unmeasured call was selected" },
+  ]) {
+    assert.throws(() => parseMetric({ ...missing, value: 1, coverage }, view), /unavailable/);
+  }
+  const measured = calculateRecordedMetrics(view, {
+    sessionId, eventIds: [view.events[0]!.id],
+  }).tokens.input.metric;
+  assert.equal(measured.coverage.status, "complete");
+  assert.deepEqual(parseMetric(measured, view), measured);
+  assert.throws(() => parseMetric({
+    ...measured,
+    coverage: { status: "partial", reason: "Mixed measured and missing usage" },
+    contributors: [...measured.contributors, ...missing.contributors],
+  }, view), /unavailable/);
+});
+
+test("scoped tool-zero anchors ignore another session's malformed tool ID", async () => {
+  const view = await read([
+    record(),
+    record({ spanId: "2".repeat(16) }, {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.conversation.id": "other-session",
+      "gen_ai.tool.name": "fictional_tool",
+      "gen_ai.tool.call.id": 17,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    }),
+  ]);
+  assert.equal(view.sources[0]?.coverage.tools.status, "partial");
+  const metric = calculateRecordedMetrics(view, { sessionId: view.events[0]!.sessionId! }).tools.calls.metric;
+  assert.equal(metric.value, 0);
+  assert.equal(metric.coverage.status, "complete");
+  assert.ok(metric.contributors.length > 0);
+  assert.deepEqual(parseMetric(metric, view), metric);
+  assert.equal(calculateRecordedMetrics(view, {
+    sessionId: view.events[1]!.sessionId!,
+  }).tools.calls.metric.coverage.status, "partial");
+});
+
+test("non-model usage exclusions do not limit per-call totals or unrelated usage observations", async () => {
+  const operations = ["chat", "execute_hook", "invoke_agent", "execute_hook", "invoke_agent"];
+  const view = await read(operations.map((operation, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": operation,
+      "gen_ai.conversation.id": index < 3 ? nativeSession : undefined,
+    },
+  )));
+  const metrics = calculateRecordedMetrics(view, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.exclusions.filter((entry) => entry.reason === "unassigned").length, 2);
+  assert.equal(metrics.timing.elapsed.metric.coverage.status, "partial");
+  for (const [metric, value] of [[metrics.tokens.input.metric, 20], [metrics.tokens.output.metric, 5]] as const) {
+    assert.equal(metric.value, value);
+    assert.equal(metric.coverage.status, "complete");
+    assert.deepEqual(parseMetric(metric, view), metric);
+  }
+  assert.equal(metrics.tokens.observations.length, 2);
+  for (const observation of metrics.tokens.observations)
+    assert.equal(observation.input.metric.coverage.status, "complete");
+});
+
+test("scoped diagnostic indexing bounds anchor reads linearly across differently named tools", async () => {
+  const count = 64;
+  const view = await read(Array.from({ length: count }, (_, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": `fictional_tool_${index}`,
+      "gen_ai.tool.call.id": 17,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    },
+  )));
+  let anchorReads = 0;
+  const counted = {
+    ...view,
+    issues: view.issues.map((issue) => ({
+      ...issue,
+      references: (issue.references ?? []).map((reference) => ({
+        ...reference,
+        /** Count diagnostic indexing work without timing noise or changing evidence. */
+        get location() {
+          anchorReads++;
+          return reference.location;
+        },
+      })),
+    })),
+  };
+  const metrics = calculateRecordedMetrics(counted, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.tools.identities.length, count);
+  assert.ok(metrics.tools.identities.every((entry) => entry.calls.metric.coverage.status === "partial"));
+  assert.ok(anchorReads <= count * 2, `Expected linear diagnostic anchor reads, got ${anchorReads}`);
+});
+
+test("repeated source-wide unsupported records retain counts without per-record diagnostic amplification", async () => {
+  const count = 16384;
+  const text = "0\n".repeat(count);
+  const view = await vscodeOtelReader.read(input(text));
+  const issue = view.issues.find((entry) => entry.code === "unknown-record");
+  assert.equal(issue?.count, count);
+  assert.equal(issue.severity, "error");
+  assert.match(issue.message, /first line 1/);
+  assert.deepEqual(issue.impact, { scope: "source", dimensions: ["messages", "timing", "tools", "tokens"] });
+  assert.equal(issue.references, undefined);
+  assert.equal(view.events.length, 0);
+  assert.equal(view.sources[0]?.coverage.timing.status, "unavailable");
+  assert.ok(Buffer.byteLength(JSON.stringify(view)) < Buffer.byteLength(text));
+});
+
+test("unassigned hook exclusions are indexed once rather than scanned for every tool name", async () => {
+  const count = 64;
+  const view = await read(Array.from({ length: count * 2 }, (_, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": index < count ? "execute_tool" : "execute_hook",
+      "gen_ai.conversation.id": index < count ? nativeSession : undefined,
+      "gen_ai.tool.name": index < count ? `tool_${index}` : undefined,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    },
+  )));
+  let hookKindReads = 0;
+  const counted = {
+    ...view,
+    events: view.events.map((event) => event.kind !== "hook-execution" ? event : ({
+      ...event,
+      /** Observe exclusion work independently of machine timing, without changing event semantics. */
+      get kind() {
+        hookKindReads++;
+        return event.kind;
+      },
+    })),
+  };
+  const metrics = calculateRecordedMetrics(counted, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.tools.identities.length, count);
+  assert.equal(metrics.exclusions.length, count);
+  assert.ok(metrics.tools.identities.every((entry) => entry.calls.metric.coverage.status === "complete"));
+  assert.equal(metrics.timing.elapsed.metric.coverage.status, "partial");
+  assert.ok(hookKindReads <= count * 20, `Expected linear exclusion processing, got ${hookKindReads}`);
+});
+
+test("unknown operations, malformed/truncated input, changed sources and identity conflicts limit totals, not retained timestamp validity", async () => {
+  const valid = record();
+  for (const tail of [
+    JSON.stringify(record({ spanId: "2".repeat(16) }, { "gen_ai.operation.name": "unqualified" })),
+    "{malformed}\n",
+    '{"incomplete":',
+    JSON.stringify(record({}, { "gen_ai.usage.input_tokens": 99 })),
+  ]) {
+    const view = await vscodeOtelReader.read(input(`${JSON.stringify(valid)}\n${JSON.stringify(record({ spanId: "3".repeat(16) }))}\n${tail}`));
+    const sessionId = view.sessions[0]!.id;
+    assert.equal(view.sources[0]?.coverageDetails?.retainedTiming.status, "complete");
+    const metrics = calculateRecordedMetrics(view, { sessionId });
+    for (const entry of [metrics.tokens.input, metrics.timing.elapsed, metrics.tools.calls])
+      assert.notEqual(entry.metric.coverage.status, "complete");
+    assert.ok(view.issues.some((issue) => issue.severity === "error" && issue.impact?.scope === "source"));
+  }
+  const original = await read([valid]);
+  const partial = { status: "partial", reason: "Source changed during read" };
+  const changed = parseReadView({
+    ...original,
+    sources: original.sources.map((source) => ({
+      ...source, changedDuringRead: true,
+      coverage: { messages: source.coverage.messages, timing: partial, tokens: partial, tools: partial },
+    })),
+    issues: [{ sourceId: original.sources[0]!.id, code: "source-changed", message: partial.reason }],
+  });
+  assert.equal(changed.sources[0]?.coverageDetails?.retainedTiming.status, "complete");
+  assert.equal(calculateRecordedMetrics(changed, { sessionId: changed.sessions[0]!.id }).tokens.input.metric.coverage.status, "partial");
+});
+
+test("log, metric and content-event-only inputs describe non-execution telemetry without invented calls", async () => {
+  for (const raw of [
+    { scopeMetrics: [] },
+    { hrTime: [1760000000, 0], resource: {}, instrumentationScope: {} },
+    record({}, { "gen_ai.operation.name": "content_event" }),
+  ]) {
+    const view = await read([raw]);
+    assert.equal(view.events.length, 0);
+    assert.equal(view.sessions.length, 0);
+    assert.match(view.issues[0]!.message, /Non-execution telemetry was found/);
+    assert.ok(Object.values(view.sources[0]!.coverage).every((coverage) => coverage.status === "unavailable"));
+  }
+});
+
 test("normalizes exact identity, time units, content, status and usage with original anchors", async () => {
   const original = record(
     {},
@@ -391,7 +688,8 @@ test("hook metadata omission does not manufacture a hook type and malformed cont
     malformed.sources[0]?.classification?.executions.hookExecutions,
     1,
   );
-  assert.equal(malformed.sources[0]?.coverage.timing.status, "partial");
+  assert.equal(malformed.sources[0]?.coverage.timing.status, "complete");
+  assert.ok(malformed.issues.every((issue) => issue.severity === "error"));
   assert.ok(
     malformed.issues.some((issue) => issue.message.includes("hook_type")),
   );
@@ -899,6 +1197,12 @@ test("resolved associations do not conceal ambiguous own identity and malformed 
   assert.equal(child.sessionId, null);
   assert.equal(child.parentChat?.status, "resolved");
   assert.equal(view.issues.find((issue) => issue.code === "ambiguous-session")?.count, 2);
+  const metrics = calculateRecordedMetrics(view, { sessionId: child.parentChat.sessionId! });
+  assert.ok(metrics.exclusions.some((entry) =>
+    entry.eventIds.includes(child.id) && entry.reason === "ambiguous-attribution"));
+  assert.equal(metrics.tokens.input.metric.value, 20);
+  assert.equal(metrics.tokens.input.metric.coverage.status, "partial");
+  assert.equal(metrics.timing.elapsed.metric.coverage.status, "partial");
   for (const value of ["", null, 17]) {
     const invalid = await read([record({}, { "copilot_chat.parent_chat_session_id": value })]);
     const event = invalid.events[0];
@@ -1051,7 +1355,8 @@ test("associated-only exclusions refer only to the selected parent and keep memb
   const b = recordedReport(view, { readId: view.id, sessionId: view.sessions[1]!.id });
   assert.ok(!a.exclusions.some((entry) => entry.reason === "associated-only"));
   assert.ok(b.exclusions.some((entry) => entry.reason === "associated-only"));
-  assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+  assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
+  assert.equal(view.sources[0]?.coverageDetails?.sessionAttribution.status, "partial");
   assert.match(view.issues.map((issue) => issue.message).join(" "), /parent-chat association does not establish own-session identity/);
 });
 
@@ -1209,12 +1514,13 @@ test("optional tool-call IDs distinguish absent, empty and invalid types without
       code: "missing-field",
       message: `${message} (1 occurrence(s); first line 1).`,
       ...(message === empty ? { affectsCoverage: false } : {}),
+      impact: { scope: "records", dimensions: ["tools"] },
+      severity: message === empty ? "info" : "error",
       count: 1,
       references: [fieldRef],
     }]);
     assert.ok(!JSON.stringify(view.issues).includes("PRIVATE_ID_MARKER"));
-    if (value === undefined || typeof value === "string")
-      assert.equal(view.sources[0]?.coverage.timing.status, "complete");
+    assert.equal(view.sources[0]?.coverage.timing.status, "complete");
   }
 });
 
@@ -1452,7 +1758,7 @@ test("malformed status containers and absent status codes are not silently disca
         issue.message.includes("Unsupported recorded span status"),
       ),
     );
-    assert.equal(view.sources[0]?.coverage.tokens.status, "partial");
+    assert.equal(view.sources[0]?.coverage.tokens.status, "complete");
   }
   for (const status of [undefined, { code: 0 }]) {
     const view = await read([record({ status })]);

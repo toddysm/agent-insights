@@ -73,6 +73,55 @@ test("only the selected session reaches the provider and usage stays separate", 
     ],
   });
 
+  test("analysis preserves scoped coverage, diagnostic dimensions and bounded representative anchors", async () => {
+    const base = exampleReadView();
+    const reference = base.events[1]!.references[0]!;
+    const view = parseReadView({
+      ...base,
+      sources: base.sources.map((source) => ({
+        ...source,
+        coverageDetails: {
+          basis: "retained-executions",
+          retainedTiming: { status: "complete" },
+          chatUsage: { status: "partial", reason: "Output usage was not reported" },
+          embeddingUsage: { status: "unavailable", reason: "No retained embedding calls" },
+          sessionAttribution: { status: "complete" },
+          history: { status: "partial", reason: "Retained history only" },
+        },
+      })),
+      issues: [{
+        ...base.issues[0], count: 1000, severity: "error",
+        impact: { scope: "records", dimensions: ["tokens"] },
+        references: Array.from({ length: 1000 }, (_, index) => ({
+          ...reference, location: { kind: "jsonl", line: index + 2, pointer: "" },
+        })),
+      }],
+    });
+    let observed: ProviderInput | undefined;
+    const runner = new AnalysisRunner({
+      ...syntheticProvider,
+      analyze(input, callbacks) { observed = input; return syntheticProvider.analyze(input, callbacks); },
+    }, [syntheticOperation]);
+    try {
+      runner.start(view, request);
+      await tick();
+      assert.equal(runner.run?.state, "succeeded");
+      assert.ok(observed);
+      const raw: unknown = JSON.parse(observed.prompt);
+      assert.ok(raw !== null && typeof raw === "object" && "sources" in raw && "issues" in raw);
+      const payload = parseReadView({ ...base, sources: raw.sources, issues: raw.issues });
+      assert.deepEqual(payload.sources, view.sources);
+      assert.deepEqual(payload.issues[0]?.impact, view.issues[0]?.impact);
+      assert.equal(payload.issues[0]?.severity, "error");
+      assert.equal(payload.issues[0]?.count, 1000);
+      assert.deepEqual(payload.issues[0]?.references, view.issues[0]?.references?.slice(0, 1));
+      assert.match(observed.system, /representative/);
+      assert.ok(Buffer.byteLength(observed.prompt) < ANALYSIS_INPUT_LIMIT);
+    } finally {
+      await runner.close();
+    }
+  });
+
   let calls = 0;
   const provider: AnalysisProvider = {
     ...syntheticProvider,

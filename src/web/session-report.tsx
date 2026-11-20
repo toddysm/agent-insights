@@ -6,6 +6,7 @@ import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { z } from "zod";
 import type { EvidenceReference, ReadView } from "../evidence/contracts.js";
 import { associatedWithSession } from "../evidence/relationships.js";
+import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
 import {
   sessionReportSchema,
   type ReportMeasurement,
@@ -159,13 +160,16 @@ function Coverage({
                 </div>
               ))}
             </dl>
+            {source.coverageDetails && (
+              <SourceCoverageDetails details={source.coverageDetails} />
+            )}
           </section>
         ))}
       {view.issues
         .filter((issue) => session?.sourceIds.includes(issue.sourceId))
         .map((issue, index) => (
           <p key={index} className="notice">
-            {issue.message}
+            <DiagnosticMessage issue={issue} />
           </p>
         ))}
       <p>

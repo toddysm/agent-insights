@@ -316,6 +316,7 @@ export class JsonlScan {
    * Revalidate the entire admitted prefix before publishing whole-session numbers.
    * Calculation uses the scan's bounded full-source correlation, never an evidence page;
    * append-only growth stays outside this generation until an explicit new scan.
+   * Diagnostic summaries retain severity/impact/count but omit original anchor arrays.
    */
   async report(request: ScanReportRequest, source: StreamedSource, signal: AbortSignal): Promise<ScanReport> {
     const report = this.calculate(request);
@@ -335,6 +336,13 @@ export class JsonlScan {
       contributions: report.contributions,
       admittedBytes: status.admittedBytes, prefixSha256: digest, observedAtMs: Date.now(),
       appended: status.appended, issues: view.issues.map((issue) => issue.message),
+      diagnostics: view.issues.map((issue) => ({
+        sourceId: issue.sourceId, code: issue.code, message: issue.message,
+        ...(issue.affectsCoverage === undefined ? {} : { affectsCoverage: issue.affectsCoverage }),
+        ...(issue.severity === undefined ? {} : { severity: issue.severity }),
+        ...(issue.impact === undefined ? {} : { impact: issue.impact }),
+        ...(issue.count === undefined ? {} : { count: issue.count }),
+      })),
       measurements: report.measurements.map((entry) => ({
         id: entry.id, label: entry.label, group: entry.group, display: entry.display,
         definition: entry.definition, scope: entry.scope.kind,

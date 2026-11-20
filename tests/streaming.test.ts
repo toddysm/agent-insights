@@ -173,6 +173,38 @@ test("empty tool IDs survive compact scans, report counting and original contrib
   assert.match(malformed.reason ?? "", /Coverage is partial/);
 });
 
+test("compact record diagnostics stay dimension-specific but cannot clear later affected sessions", async (t) => {
+  const rows = ["first", "second"].map((session, index) => span(index + 1, {
+    "gen_ai.conversation.id": session,
+    "gen_ai.operation.name": "execute_tool",
+    "gen_ai.tool.name": "fictional",
+    "gen_ai.tool.call.id": null,
+  }));
+  const { service } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  const status = await scan(service);
+  const sessions = service.scanCatalog.catalog(status.id, null).sessions;
+  assert.equal(sessions.length, 2);
+  for (const session of sessions) {
+    const result = await report(service, status.id, session.id);
+    assert.equal(result.source.coverageDetails?.retainedTiming.status, "complete");
+    const diagnostic = result.diagnostics?.find((issue) => /gen_ai.tool.call.id/.test(issue.message));
+    assert.equal(diagnostic?.severity, "error");
+    assert.deepEqual(diagnostic.impact, { scope: "records", dimensions: ["tools"] });
+    assert.equal(diagnostic.count, 2);
+    assert.ok(!Object.hasOwn(diagnostic, "references"));
+    assert.deepEqual(scanReportSchema.parse(JSON.parse(JSON.stringify(result))), result);
+    const legacy = { ...result };
+    delete legacy.diagnostics;
+    assert.deepEqual(scanReportSchema.parse(legacy), legacy);
+    assert.equal(result.measurements.find((entry) => entry.id === "tools")?.value, 1);
+    assert.equal(result.measurements.find((entry) => entry.id === "tools")?.coverage.status, "partial");
+    assert.equal(result.measurements.find((entry) => entry.id === "elapsed")?.coverage.status, "complete");
+    const page = await metricPage(service, status.id, session.id, "tools");
+    assert.equal(page.contributors.length, 1);
+    assert.ok(page.contributors[0]?.event.references.some((ref) => ref.location.pointer === "/attributes/gen_ai.tool.call.id"));
+  }
+});
+
 test("compact scans resolve out-of-order parent-only calls and preserve full-read relationships on every physical replay", async (t) => {
   const child = span(2, { "gen_ai.conversation.id": undefined, "copilot_chat.parent_chat_session_id": "parent" });
   const rows = [child, child, span(1, { "copilot_chat.chat_session_id": "parent", "gen_ai.usage.input_tokens": 7 })];

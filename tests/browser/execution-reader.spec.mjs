@@ -12,6 +12,95 @@ import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { productionReaders } from "../../.build/src/evidence/readers/index.js";
 
+test("mixed evidence shows scoped availability, missing linkage, unchanged reports and non-execution-only reads on narrow screens", async ({ page }) => {
+  const root = await mkdtemp(path.join(tmpdir(), "agent-insights-coverage-browser-"));
+  const file = path.join(root, "fictional.jsonl");
+  const operations = ["chat", "embeddings", "execute_tool", "execute_tool", "execute_hook", "chat"];
+  const records = operations.map((operation, index) => ({
+    traceId: "1".repeat(32), spanId: (index + 1).toString(16).padStart(16, "0"),
+    name: operation, kind: 2, startTime: [1760000000 + index, 0],
+    endTime: [1760000001 + index, 0], ended: true, status: { code: 1 },
+    resource: { attributes: { "service.name": "fictional" } }, instrumentationScope: { name: "fictional" },
+    attributes: {
+      "gen_ai.operation.name": operation,
+      ...(index < 4 ? { "gen_ai.conversation.id": "fictional" } : {}),
+      ...(operation === "chat" ? { "gen_ai.usage.input_tokens": 20, "gen_ai.usage.output_tokens": 5 } : {}),
+      ...(operation === "execute_tool" ? { "gen_ai.tool.name": "fictional_tool", "gen_ai.tool.call.id": "" } : {}),
+    },
+  }));
+  const bytes = Buffer.from(records.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  await writeFile(file, bytes);
+  const runtime = await startRuntime({ sources: [file], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") }, { readers: productionReaders });
+  try {
+    await page.route("**/api/read", async (route) => {
+      const response = await route.fetch();
+      const view = await response.json();
+      // Exercise independently optional metadata without changing coverage effects.
+      for (const issue of view.issues) {
+        if (issue.severity === "info") delete issue.severity;
+      }
+      const optional = view.issues.find((issue) => issue.affectsCoverage === false);
+      if (optional) {
+        const severityOnly = { ...optional, severity: "warning", message: "Fictional severity-only warning" };
+        delete severityOnly.impact;
+        view.issues.push(severityOnly);
+      }
+      await route.fulfill({ json: view });
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(runtime.launchUrl);
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    const coverage = page.getByRole("region", { name: "Read coverage" });
+    const scoped = coverage.getByRole("group", { name: "Scoped evidence coverage" });
+    for (const [label, expected] of [
+      ["Retained execution timestamps", /^complete$/],
+      ["Chat usage", /^complete$/],
+      ["Embedding usage", /^unavailable:/],
+      ["Session attribution", /^partial:/],
+      ["Source/session history", /^partial:/],
+    ]) {
+      await expect(scoped.locator("dl > div").filter({ has: page.locator("dt", { hasText: label }) }).locator("dd")).toHaveText(expected);
+    }
+    await coverage.getByText(/Read limitations \(/).click();
+    await expect(coverage.getByText("(severity unreported; records; tools)", { exact: true })).toBeVisible();
+    await expect(coverage.getByText("(warning; attribution; no numeric dimensions)", { exact: true })).toBeVisible();
+    await expect(coverage.getByText("(warning)", { exact: true })).toBeVisible();
+    await expect(coverage.getByText(/no reported session identity/)).toBeVisible();
+    await expect(coverage.getByText(/cannot be assigned to an unambiguous reported session/)).toHaveCount(0);
+    const report = page.getByRole("region", { name: "Session report", exact: true });
+    await expect(report.getByRole("button", { name: /^Recorded input tokens: 20; partial/ })).toBeVisible();
+    await expect(report.getByRole("button", { name: /^Tool calls: 2; complete/ })).toBeVisible();
+    await report.getByRole("button", { name: "Inspect source identity and capture coverage", exact: true }).click();
+    await expect(page.getByRole("dialog").getByText("(severity unreported; records; tools)", { exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog").getByText("(warning)", { exact: true })).toBeVisible();
+    await expect(page.getByRole("dialog").getByText("(warning; attribution; no numeric dimensions)", { exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await scan.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(scan.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+    await scan.getByLabel("Scanned session").selectOption({ index: 1 });
+    await scan.getByRole("button", { name: "Open session report" }).click();
+    await expect(report.getByRole("button", { name: /^Recorded input tokens: 20; partial/ })).toBeVisible();
+    await report.getByText("Source identity and admitted coverage", { exact: true }).click();
+    await expect(report.getByRole("group", { name: "Scoped evidence coverage" })).toBeVisible();
+    await expect(report.getByText("(info; records; tools)", { exact: true })).toBeVisible();
+    await expect(report.getByText("(warning; attribution; no numeric dimensions)", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+    expect(await readFile(file)).toEqual(bytes);
+
+    await writeFile(file, '{"scopeMetrics":[]}\n');
+    await page.getByRole("button", { name: "Read source", exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: /^Non-execution telemetry was found/ })).toBeVisible();
+    await expect(page.getByText(/No session evidence is available from this read/)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Recorded input tokens:/ })).toHaveCount(0);
+    expect(await readdir(root)).toEqual(["fictional.jsonl"]);
+    expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
 test("direct and scanned reports distinguish four associated calls without adding their usage", async ({ page }) => {
   const root = await mkdtemp(path.join(tmpdir(), "agent-insights-parent-browser-"));
   const file = path.join(root, "fictional.jsonl");
