@@ -73,6 +73,26 @@ export const referenceSchema = z
   })
   .readonly();
 
+/** Payload-free diagnostic metadata; original anchors remain optional in the full read contract. */
+export const diagnosticSummarySchema = z.strictObject({
+  sourceId: id,
+  code: z.enum([
+    "source-changed",
+    "truncated-record",
+    "unsupported-schema",
+    "missing-field",
+    "ambiguous-session",
+    "unreadable-source",
+    "unknown-record",
+  ]),
+  message: id,
+  /** False marks an informational notice; omitted/true retains legacy limiting semantics. */
+  affectsCoverage: z.boolean().optional(),
+  impact: diagnosticImpactSchema.optional(),
+  severity: z.enum(["info", "warning", "error"]).optional(),
+  count: tokens.positive().optional(),
+}).readonly();
+
 /**
  * Source-wide operation observations, not session metrics or capture completeness.
  * Execution and unclassified span counts deduplicate valid native identities; conflicting
@@ -384,25 +404,8 @@ export const readViewSchema = z
     events: z.array(eventSchema).readonly(),
     issues: z
       .array(
-        z
-          .strictObject({
-            sourceId: id,
-            code: z.enum([
-              "source-changed",
-              "truncated-record",
-              "unsupported-schema",
-              "missing-field",
-              "ambiguous-session",
-              "unreadable-source",
-              "unknown-record",
-            ]),
-            message: id,
-            /** False marks an informational notice; omitted/true retains legacy limiting semantics. */
-            affectsCoverage: z.boolean().optional(),
-            impact: diagnosticImpactSchema.optional(),
-            severity: z.enum(["info", "warning", "error"]).optional(),
-            /** Optional structured diagnostics; earlier readers may supply only a message. */
-            count: tokens.positive().optional(),
+        diagnosticSummarySchema.unwrap()
+          .extend({
             references: z.array(referenceSchema).min(1).readonly().optional(),
           })
           .readonly(),

@@ -20,7 +20,7 @@ import {
 import { scanEnvelopeSchema } from "../evidence/streaming.js";
 import { statusSchema } from "../runtime/protocol.js";
 import { EvidenceDrawer, metricValue } from "./session-report.js";
-import { SourceCoverageDetails } from "./coverage-details.js";
+import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
 import {
   parseReportHash,
   reportHash,
@@ -513,7 +513,11 @@ export function ScannedSessionReportPanel({
             {report.source.coverageDetails && (
               <SourceCoverageDetails details={report.source.coverageDetails} />
             )}
-            {report.issues.map((issue, index) => (
+            {report.diagnostics ? report.diagnostics.map((issue, index) => (
+              <p className="notice" key={index}>
+                <DiagnosticMessage issue={issue} />
+              </p>
+            )) : report.issues.map((issue, index) => (
               <p className="notice" key={index}>
                 {issue}
               </p>

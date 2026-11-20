@@ -187,6 +187,15 @@ test("compact record diagnostics stay dimension-specific but cannot clear later 
   for (const session of sessions) {
     const result = await report(service, status.id, session.id);
     assert.equal(result.source.coverageDetails?.retainedTiming.status, "complete");
+    const diagnostic = result.diagnostics?.find((issue) => /gen_ai.tool.call.id/.test(issue.message));
+    assert.equal(diagnostic?.severity, "error");
+    assert.deepEqual(diagnostic.impact, { scope: "records", dimensions: ["tools"] });
+    assert.equal(diagnostic.count, 2);
+    assert.ok(!Object.hasOwn(diagnostic, "references"));
+    assert.deepEqual(scanReportSchema.parse(JSON.parse(JSON.stringify(result))), result);
+    const legacy = { ...result };
+    delete legacy.diagnostics;
+    assert.deepEqual(scanReportSchema.parse(legacy), legacy);
     assert.equal(result.measurements.find((entry) => entry.id === "tools")?.value, 1);
     assert.equal(result.measurements.find((entry) => entry.id === "tools")?.coverage.status, "partial");
     assert.equal(result.measurements.find((entry) => entry.id === "elapsed")?.coverage.status, "complete");

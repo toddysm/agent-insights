@@ -312,6 +312,38 @@ test("scoped diagnostic indexing bounds anchor reads linearly across differently
   assert.ok(anchorReads <= count * 2, `Expected linear diagnostic anchor reads, got ${anchorReads}`);
 });
 
+test("unassigned hook exclusions are indexed once rather than scanned for every tool name", async () => {
+  const count = 64;
+  const view = await read(Array.from({ length: count * 2 }, (_, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": index < count ? "execute_tool" : "execute_hook",
+      "gen_ai.conversation.id": index < count ? nativeSession : undefined,
+      "gen_ai.tool.name": index < count ? `tool_${index}` : undefined,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    },
+  )));
+  let hookKindReads = 0;
+  const counted = {
+    ...view,
+    events: view.events.map((event) => event.kind !== "hook-execution" ? event : ({
+      ...event,
+      /** Observe exclusion work independently of machine timing, without changing event semantics. */
+      get kind() {
+        hookKindReads++;
+        return event.kind;
+      },
+    })),
+  };
+  const metrics = calculateRecordedMetrics(counted, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.tools.identities.length, count);
+  assert.equal(metrics.exclusions.length, count);
+  assert.ok(metrics.tools.identities.every((entry) => entry.calls.metric.coverage.status === "complete"));
+  assert.equal(metrics.timing.elapsed.metric.coverage.status, "partial");
+  assert.ok(hookKindReads <= count * 20, `Expected linear exclusion processing, got ${hookKindReads}`);
+});
+
 test("unknown operations, malformed/truncated input, changed sources and identity conflicts limit totals, not retained timestamp validity", async () => {
   const valid = record();
   for (const tail of [

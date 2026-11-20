@@ -378,6 +378,19 @@ export function calculateRecordedMetrics(
     else groups.push(group);
   }
   const sources = new Map(view.sources.map((source) => [source.id, source]));
+  const excludedDimensions = new Set<Metric["dimension"]>();
+  const excludedUsageEvents = new Set<string>();
+  for (const entry of exclusions) {
+    if (entry.reason === "bridge-wrapper" || entry.reason === "associated-only") continue;
+    for (const id of entry.eventIds) {
+      const event = byId.get(id)!;
+      if (event.kind !== "usage-observation") excludedDimensions.add("timing");
+      if (event.kind === "tool-call") excludedDimensions.add("tools");
+      if (event.kind === "message") excludedDimensions.add("messages");
+      else if (event.usage !== null) excludedUsageEvents.add(id);
+      if (event.kind === "model-call") excludedDimensions.add("tokens");
+    }
+  }
 
   /** Emit dimension-available, uniquely owned references and exact contributing group IDs; missing numbers never acquire zeros. */
   const measurement = (
@@ -410,19 +423,9 @@ export function calculateRecordedMetrics(
       const coverage = coverageForReferences(source, dimension, original);
       if (coverage.status !== "complete") coverageReasons.add(coverage.reason);
     }
-    if (exclusions.some((entry) =>
-      entry.reason !== "bridge-wrapper" && entry.reason !== "associated-only" &&
-      entry.eventIds.some((id) => {
-        const event = byId.get(id);
-        if (!event) return false;
-        if (dimension === "timing") return event.kind !== "usage-observation";
-        if (dimension === "tools") return event.kind === "tool-call";
-        if (dimension === "tokens")
-          return metricScope === scope
-            ? event.kind === "model-call"
-            : metricScope.eventIds.includes(event.id) && event.kind !== "message" && event.usage !== null;
-        return event.kind === "message";
-      })))
+    if (dimension === "tokens" && metricScope !== scope
+      ? metricScope.eventIds.some((id) => excludedUsageEvents.has(id))
+      : excludedDimensions.has(dimension))
       coverageReasons.add(
         "Unassigned, shared or conflicting evidence affecting this dimension was excluded from direct-session totals.",
       );

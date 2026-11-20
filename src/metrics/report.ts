@@ -9,6 +9,7 @@ import {
   referenceSchema,
   coverageSchema,
   sourceSchema,
+  diagnosticSummarySchema,
 } from "../evidence/contracts.js";
 import { STREAM_LIMITS, detailPageSchema } from "../evidence/streaming.js";
 
@@ -90,8 +91,8 @@ export type ScanMetricRequest = z.infer<typeof scanMetricRequestSchema>;
 const evidenceKindSchema = z.enum(["contributors", "coverage-witnesses"]);
 
 /**
- * Bounded numeric projection of the existing calculator. Original anchors and event
- * lists stay runtime-local; every measurement resolves through verified physical pages.
+ * Bounded calculator projection with payload-free diagnostic summaries. Original anchors
+ * and event lists stay runtime-local; measurements resolve through verified physical pages.
  */
 export const scanReportSchema = z.strictObject({
   id: z.string(),
@@ -103,6 +104,8 @@ export const scanReportSchema = z.strictObject({
   observedAtMs: z.number().int().nonnegative(),
   appended: z.boolean(),
   issues: z.array(z.string()),
+  /** Optional for older responses; structured metadata omits anchors and shares the response-byte ceiling. */
+  diagnostics: z.array(diagnosticSummarySchema).max(STREAM_LIMITS.references).readonly().optional(),
   measurements: z
     .array(
       measurementSchema

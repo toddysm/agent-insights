@@ -83,6 +83,8 @@ test("mixed evidence shows scoped availability, missing linkage, unchanged repor
     await expect(report.getByRole("button", { name: /^Recorded input tokens: 20; partial/ })).toBeVisible();
     await report.getByText("Source identity and admitted coverage", { exact: true }).click();
     await expect(report.getByRole("group", { name: "Scoped evidence coverage" })).toBeVisible();
+    await expect(report.getByText("(info; records; tools)", { exact: true })).toBeVisible();
+    await expect(report.getByText("(warning; attribution; no numeric dimensions)", { exact: true })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     expect(await readFile(file)).toEqual(bytes);
 
