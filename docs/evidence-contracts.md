@@ -681,9 +681,11 @@ damaged input and conflicting native identities still limit aggregate totals.
 Detected source changes limit every dimension even when retained timestamps
 remain individually valid.
 
-Diagnostics carry `severity` (`info`, `warning`, `error`) and `impact`:
+Diagnostics may carry `severity` (`info`, `warning`, `error`) and `impact`:
 `scope` is `source`, `records`, `attribution`, `content` or `metadata`, with an
-explicit `dimensions` list. Malformed/conflicting evidence remains an error.
+explicit `dimensions` list. These fields are independently optional for reader
+compatibility; the UI labels absent severity as "severity unreported".
+Malformed/conflicting evidence remains an error.
 Missing direct linkage is a warning, not a conflict. Record-scoped diagnostics
 require original anchors. Unknown impacts are conservatively source-scoped;
 empty optional tool IDs remain informational. Missing timestamps affect timing;
@@ -694,7 +696,8 @@ fields, unknown operations and integrity failures remain conservative.
 
 Unassigned executions may have valid timestamps and tokens. They never enter a
 specific session's totals. Explicit parent association stays distinct from direct
-membership and is not additive. Chat and embedding availability are separate:
+membership and is not additive. Known ambiguous direct identity takes precedence
+over an otherwise resolved parent association. Chat and embedding availability are separate:
 an embedding call without usage has unavailable tokens; a combined chat/embedding
 total is partial, not a chat total plus invented embedding zero. Selecting only a
 valid chat call can yield complete retained-field coverage even when another
@@ -765,12 +768,13 @@ source contributors. Available zero is different from unavailable `null`.
 Known event references must belong unambiguously to the requested session,
 even when multiple sessions share a source. Each session also declares original
 source anchors in `references`. Non-event anchors are accepted only for zero or
-unavailable results; a numeric zero requires complete source coverage for the
+unavailable results; a numeric zero requires complete applicable coverage for the
 selected dimension. Availability of a different dimension is not enough.
 Numeric event contributions also require that dimension to be available.
 Legacy readers retain source/dimension coverage as an upper bound. Qualified
-scoped extension coverage uses applicable source-integrity and selected-record
-diagnostics instead; an unrelated missing field cannot poison a valid selected
+scoped extension coverage uses applicable source-integrity, selected-record field
+availability and diagnostics instead. Missing usage cannot back a numeric token
+metric merely because no diagnostic was emitted; an unrelated missing field cannot poison a valid selected
 field. Source changes and unknown impacts never produce complete totals.
 Arbitrary undeclared references and another session's events are rejected.
 Even a measured zero needs evidence, such as a declared complete source array's
@@ -802,6 +806,10 @@ metric's dimension. Legacy source/dimension coverage remains an upper bound;
 scoped extension diagnostics apply only to affected dimensions and records.
 Missing selected fields and relevant conflicts/unassigned evidence reduce
 availability; associated-only records are not missing direct contributions.
+Unassigned hook/agent usage does not limit per-call model totals, and an unrelated
+excluded record does not limit a separately scoped usage observation. Diagnostic
+impacts and retained-field availability are indexed once per calculation rather
+than rescanning every diagnostic anchor for each reported tool name.
 All session sources conservatively constrain dimensional coverage, including
 unavailable sources with no normalized events. An available source cannot hide
 another source's missing contributions or establish a source-anchored zero alone.

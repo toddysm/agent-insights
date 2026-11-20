@@ -8,7 +8,7 @@ import { associatedWithSession } from "../evidence/relationships.js";
 import {
   evidenceReferenceKey as referenceKey,
   evidenceRecordKey,
-  coverageForReferences,
+  createCoverageLookup,
   metricSchema,
   type EvidenceReference,
   type Metric,
@@ -249,6 +249,7 @@ export function calculateRecordedMetrics(
   );
   if (!session)
     throw new Error("Metrics require a session in the current read");
+  const coverageForReferences = createCoverageLookup(view);
   const byId = new Map(view.events.map((event) => [event.id, event]));
   const requested =
     selection.eventIds === undefined ? null : new Set(selection.eventIds);
@@ -346,13 +347,14 @@ export function calculateRecordedMetrics(
       continue;
     const reason =
       group.event.sessionId === null
-        ? associatedWithSession(group.event, session.id)
-          ? "associated-only"
-          : group.references.some((ref) => sourcesWithScopedCoverage.has(ref.sourceId)) &&
-              !group.references.some((ref) =>
-                ambiguousSources.has(ref.sourceId) || ambiguousRecords.has(evidenceRecordKey(ref)))
-            ? "unassigned"
-            : "ambiguous-attribution"
+        ? group.references.some((ref) =>
+            ambiguousSources.has(ref.sourceId) || ambiguousRecords.has(evidenceRecordKey(ref)))
+          ? "ambiguous-attribution"
+          : associatedWithSession(group.event, session.id)
+            ? "associated-only"
+            : group.references.some((ref) => sourcesWithScopedCoverage.has(ref.sourceId))
+              ? "unassigned"
+              : "ambiguous-attribution"
         : group.conflict
           ? "conflicting-replay"
           : group.references.some((reference) => {
@@ -405,7 +407,7 @@ export function calculateRecordedMetrics(
       session.sourceIds.includes(source.id),
     );
     for (const source of sessionSources) {
-      const coverage = coverageForReferences(view, source, dimension, original);
+      const coverage = coverageForReferences(source, dimension, original);
       if (coverage.status !== "complete") coverageReasons.add(coverage.reason);
     }
     if (exclusions.some((entry) =>
@@ -416,7 +418,9 @@ export function calculateRecordedMetrics(
         if (dimension === "timing") return event.kind !== "usage-observation";
         if (dimension === "tools") return event.kind === "tool-call";
         if (dimension === "tokens")
-          return event.kind === "model-call" || (event.kind !== "message" && event.usage !== null);
+          return metricScope === scope
+            ? event.kind === "model-call"
+            : metricScope.eventIds.includes(event.id) && event.kind !== "message" && event.usage !== null;
         return event.kind === "message";
       })))
       coverageReasons.add(
@@ -435,8 +439,7 @@ export function calculateRecordedMetrics(
         uniqueReferences(
           session.references.filter(
             (ref) =>
-              sources.get(ref.sourceId)?.coverage[dimension].status ===
-                "complete" &&
+              coverageForReferences(sources.get(ref.sourceId)!, dimension, [ref]).status === "complete" &&
               (!owners.has(referenceKey(ref)) ||
                 (owners.get(referenceKey(ref))?.size === 1 &&
                   owners.get(referenceKey(ref))?.has(session.id))) &&

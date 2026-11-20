@@ -180,6 +180,112 @@ test("record-scoped malformed usage limits tokens, not timestamps or another sel
   assert.equal(whole.tokens.input.metric.coverage.status, "partial");
 });
 
+test("scoped metric validation rejects numeric usage anchored only to an unmeasured embedding", async () => {
+  const view = await read([
+    record(),
+    record({ spanId: "2".repeat(16) }, {
+      "gen_ai.operation.name": "embeddings",
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    }),
+  ]);
+  const sessionId = view.sessions[0]!.id;
+  const missing = calculateRecordedMetrics(view, {
+    sessionId, eventIds: [view.events[1]!.id],
+  }).tokens.input.metric;
+  assert.equal(missing.value, null);
+  assert.deepEqual(parseMetric(missing, view), missing);
+  for (const coverage of [
+    { status: "complete" },
+    { status: "partial", reason: "Only an unmeasured call was selected" },
+  ]) {
+    assert.throws(() => parseMetric({ ...missing, value: 1, coverage }, view), /unavailable/);
+  }
+  const measured = calculateRecordedMetrics(view, {
+    sessionId, eventIds: [view.events[0]!.id],
+  }).tokens.input.metric;
+  assert.equal(measured.coverage.status, "complete");
+  assert.deepEqual(parseMetric(measured, view), measured);
+});
+
+test("scoped tool-zero anchors ignore another session's malformed tool ID", async () => {
+  const view = await read([
+    record(),
+    record({ spanId: "2".repeat(16) }, {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.conversation.id": "other-session",
+      "gen_ai.tool.name": "fictional_tool",
+      "gen_ai.tool.call.id": 17,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    }),
+  ]);
+  assert.equal(view.sources[0]?.coverage.tools.status, "partial");
+  const metric = calculateRecordedMetrics(view, { sessionId: view.events[0]!.sessionId! }).tools.calls.metric;
+  assert.equal(metric.value, 0);
+  assert.equal(metric.coverage.status, "complete");
+  assert.ok(metric.contributors.length > 0);
+  assert.deepEqual(parseMetric(metric, view), metric);
+  assert.equal(calculateRecordedMetrics(view, {
+    sessionId: view.events[1]!.sessionId!,
+  }).tools.calls.metric.coverage.status, "partial");
+});
+
+test("non-model usage exclusions do not limit per-call totals or unrelated usage observations", async () => {
+  const operations = ["chat", "execute_hook", "invoke_agent", "execute_hook", "invoke_agent"];
+  const view = await read(operations.map((operation, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": operation,
+      "gen_ai.conversation.id": index < 3 ? nativeSession : undefined,
+    },
+  )));
+  const metrics = calculateRecordedMetrics(view, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.exclusions.filter((entry) => entry.reason === "unassigned").length, 2);
+  assert.equal(metrics.timing.elapsed.metric.coverage.status, "partial");
+  for (const [metric, value] of [[metrics.tokens.input.metric, 20], [metrics.tokens.output.metric, 5]] as const) {
+    assert.equal(metric.value, value);
+    assert.equal(metric.coverage.status, "complete");
+    assert.deepEqual(parseMetric(metric, view), metric);
+  }
+  assert.equal(metrics.tokens.observations.length, 2);
+  for (const observation of metrics.tokens.observations)
+    assert.equal(observation.input.metric.coverage.status, "complete");
+});
+
+test("scoped diagnostic indexing bounds anchor reads linearly across differently named tools", async () => {
+  const count = 64;
+  const view = await read(Array.from({ length: count }, (_, index) => record(
+    { spanId: (index + 1).toString(16).padStart(16, "0") },
+    {
+      "gen_ai.operation.name": "execute_tool",
+      "gen_ai.tool.name": `fictional_tool_${index}`,
+      "gen_ai.tool.call.id": 17,
+      "gen_ai.usage.input_tokens": undefined,
+      "gen_ai.usage.output_tokens": undefined,
+    },
+  )));
+  let anchorReads = 0;
+  const counted = {
+    ...view,
+    issues: view.issues.map((issue) => ({
+      ...issue,
+      references: (issue.references ?? []).map((reference) => ({
+        ...reference,
+        /** Count diagnostic indexing work without timing noise or changing evidence. */
+        get location() {
+          anchorReads++;
+          return reference.location;
+        },
+      })),
+    })),
+  };
+  const metrics = calculateRecordedMetrics(counted, { sessionId: view.sessions[0]!.id });
+  assert.equal(metrics.tools.identities.length, count);
+  assert.ok(metrics.tools.identities.every((entry) => entry.calls.metric.coverage.status === "partial"));
+  assert.ok(anchorReads <= count * 2, `Expected linear diagnostic anchor reads, got ${anchorReads}`);
+});
+
 test("unknown operations, malformed/truncated input, changed sources and identity conflicts limit totals, not retained timestamp validity", async () => {
   const valid = record();
   for (const tail of [
@@ -1018,6 +1124,12 @@ test("resolved associations do not conceal ambiguous own identity and malformed 
   assert.equal(child.sessionId, null);
   assert.equal(child.parentChat?.status, "resolved");
   assert.equal(view.issues.find((issue) => issue.code === "ambiguous-session")?.count, 2);
+  const metrics = calculateRecordedMetrics(view, { sessionId: child.parentChat.sessionId! });
+  assert.ok(metrics.exclusions.some((entry) =>
+    entry.eventIds.includes(child.id) && entry.reason === "ambiguous-attribution"));
+  assert.equal(metrics.tokens.input.metric.value, 20);
+  assert.equal(metrics.tokens.input.metric.coverage.status, "partial");
+  assert.equal(metrics.timing.elapsed.metric.coverage.status, "partial");
   for (const value of ["", null, 17]) {
     const invalid = await read([record({}, { "copilot_chat.parent_chat_session_id": value })]);
     const event = invalid.events[0];
