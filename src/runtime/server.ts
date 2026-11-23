@@ -23,7 +23,7 @@ import { recordedReport } from "./report.js";
 import type { MultiSourceReader } from "../evidence/source-access.js";
 import type { RuntimeConfig } from "./config.js";
 import { RuntimeError } from "./errors.js";
-import { readRequestSchema, readSetRequestSchema, discoveryRequestSchema, MAX_CONTROL_BODY_BYTES } from "./protocol.js";
+import { readRequestSchema, readSetRequestSchema, discoveryRequestSchema, addLocationRequestSchema, MAX_CONTROL_BODY_BYTES } from "./protocol.js";
 import { RuntimeService } from "./service.js";
 import { SourceAccess } from "./sources.js";
 import type { NativeHelperResolver } from "./sqlite.js";
@@ -331,6 +331,7 @@ export async function startRuntime(
       request.method === "POST" &&
       [
         "/api/refresh",
+        "/api/locations/add",
         "/api/cancel",
         "/api/read",
         "/api/read-set",
@@ -353,6 +354,27 @@ export async function startRuntime(
           403,
         );
       const body = await controlBody(request);
+      if (url.pathname === "/api/locations/add") {
+        const selection = addLocationRequestSchema.safeParse(body);
+        if (!selection.success)
+          throw new RuntimeError("INVALID_LOCATION", "Provide a full file or folder path and select its type.", 400);
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(
+          new RuntimeError("LOCATION_TIMEOUT", "Checking the location timed out. Check its availability and try again.", 408),
+        ), options.readTimeoutMs ?? 30_000);
+        timer.unref();
+        /** A disconnected admission cannot publish a new grant after cancellation is observed. */
+        const disconnect = () => { if (!response.writableEnded) controller.abort(); };
+        response.once("close", disconnect);
+        if (response.destroyed) controller.abort();
+        try {
+          json(response, 200, await service.addLocation(selection.data, controller.signal));
+        } finally {
+          clearTimeout(timer);
+          response.removeListener("close", disconnect);
+        }
+        return;
+      }
       if (url.pathname === "/api/report") {
         const selection = reportRequestSchema.safeParse(body);
         if (!selection.success)

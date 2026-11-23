@@ -22,7 +22,7 @@ Use Node.js 24 and npm. From the repository root:
 
 ```bash
 npm ci --include=dev --ignore-scripts
-npm start -- --source /path/to/private/captures
+npm start
 ```
 
 Install dependencies once per checkout, and again when the lockfile changes.
@@ -37,11 +37,20 @@ If you deliberately disable npm lifecycle scripts for startup, build explicitly
 first. The `--ignore-scripts` flag in the installation command above applies
 only to installation; it does not disable later startup hooks.
 
-`--source` can name a file or directory; repeat it for additional locations, up
-to 32. Relative paths resolve against the startup directory. Shell-expanded home
+You can add locations from the UI without a terminal restart. Optionally,
+provide initial locations when launching:
+
+```bash
+npm start -- --source "/path/to/private/captures"
+```
+
+`--source` can name a file or directory; repeat it for additional locations.
+The shared ceiling is 32 locations, including those added from the UI.
+Relative CLI paths resolve against the startup directory. Shell-expanded home
 paths work; the application does not expand a quoted literal `~`.
 No locations are discovered or scanned automatically. Starting without sources
-is valid; session Setup and configured-access review show "No files or folders configured."
+is valid; use **Add a file or folder** on the page when
+**No files or folders configured** is shown.
 
 The server binds only to `127.0.0.1`. Its default port is chosen by the operating
 system, avoiding collisions with other local services. Use `--port NUMBER` to
@@ -63,8 +72,27 @@ the credential. Stop the runtime with Ctrl+C.
 ## Source selection and limits
 
 Configured locations are checked for availability and shown only after
-authentication. A missing or unreadable startup location remains unavailable;
-correct it and restart to grant access. Existing authorized locations can be
+authentication. **Add a file or folder** is always available in the session wizard,
+with or without initial sources. In **Advanced file tools**, choose
+**Review configured access** to use the same UI entry.
+Enter a full path on the computer running Agent Insights, select **File** or
+**Folder**, then choose **Add location**. The runtime checks existence, type,
+readability and canonical identity before registering access. Failed input remains
+available for correction. This is path entry, not a browser upload or native picker.
+Operating-system permissions are not changed.
+
+UI-added locations last for the current app run only; restarting loses them.
+No paths or source contents are saved in browser storage. Adding a location
+clears previous read/discovery/scan/report/analysis state and selects the location,
+but does not search, read source content, open a report or run a model. Canonical
+duplicates use the existing grant and do not consume another slot. Exact-file
+locations allow only that file; directory selections remain confined to that
+directory under the existing read and discovery budgets.
+
+A location missing at startup remains unavailable in its original grant. Restore
+it, then explicitly use **Add a file or folder** to admit it without restarting.
+A changed target/type similarly requires explicit admission; Check locations
+does not silently rebind the old grant. Existing authorized locations can be
 rechecked with **Check locations** in the wizard. **Advanced file tools** uses
 the same access and offers **Review configured access** to return to that
 workspace; it has no separate path inventory or refresh control.
@@ -292,8 +320,9 @@ smoke test. Synthetic success is not live-producer or Agent Host certification.
 
 ### Read an existing execution capture
 
-1. Start with `--source` pointing to an existing VS Code OpenTelemetry file export
-   or its authorized parent directory. Do not copy the capture into this project.
+1. Start the app, then use **Add a file or folder** to provide an existing VS Code
+   OpenTelemetry file export or its parent directory. `--source` remains an
+   optional way to supply it at launch. Do not copy the capture into this project.
 2. Open the private launch URL. In **Find your sessions**, choose **Copilot**,
    then **Local**, then **I have a recorded file**. Confirm each choice with
    **Next**. For a directory, enter the relative recording filename; surrounding
@@ -542,7 +571,8 @@ separately qualified compatible helper release is shipped. Preparing a developer
 candidate does not remove that gate. The supplemental extension exporter remains
 a separate format, not a substitute for Agent Host evidence.
 
-Start with `--source` for every approved file or folder. Choose **Copilot**,
+Provide locations using **Add a file or folder** in the wizard, or optionally
+`--source` at launch. Choose **Copilot**,
 then **Agent Host**, confirming each choice with **Next**. **Review your search
 locations** combines **VS Code session information**, accessibility, selection
 and read-only review. **Add saved session folder**
@@ -553,9 +583,13 @@ configured path. One configured file or folder is shown as
 information, not a redundant dropdown; multiple choices use distinguishing path
 names, with unavailable choices and recovery guidance kept visible.
 
-The browser does not detect VS Code installations, grant permissions, scan the
-home directory or guess an operating-system default. These choices use only
-startup-configured access. Each selection confines its relative path:
+The browser does not detect VS Code installations, change operating-system
+permissions, scan the home directory or guess an operating-system default.
+These choices use explicitly configured access, including UI-added locations.
+**File or subfolder (optional)** stays under custom options: leave it blank to
+use the selected folder itself, or enter a path inside that folder. The example
+depends on the source role; an exact-file location has no subfolder control.
+Each selection confines its relative path:
 
 | Role | Inspected locations |
 | --- | --- |
@@ -580,7 +614,7 @@ After reviewing access, **Continue** reaches the explicit search step.
 `{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
 `catalog`, `history` or `overlay`. **Find sessions again** repeats that
 explicit request, replacing the list and invalidating prior read/analysis.
-**Check locations** only checks the accessibility of startup-configured locations.
+**Check locations** only checks the accessibility of explicitly configured locations.
 It preserves selected locations, layouts and confined paths, but drops prior
 discovery results, source reads, bounded scans, reports and access/analysis
 acknowledgements before the request. A failed check displays its error, explicitly
@@ -906,7 +940,12 @@ individual interpretation definitions remain separate work.
 - **Access required:** reopen the full launch URL; do not put the credential in
   a query parameter or browser storage.
 - **Unavailable location:** check the configured path and permissions, then
-  restart if it was unavailable at startup or its target/type changed.
+  choose **Check locations**. If it was unavailable at startup or its target/type
+  changed, use **Add a file or folder** to provide it explicitly without restarting.
+- **New location rejected:** correct a missing path or wrong File/Folder type,
+  or restore operating-system access, then retry **Add location**. Use a full
+  local path rather than a relative path or literal `~`. A location outside the
+  selected folder must be added separately, not entered as a confined subfolder.
 - **No reader installed:** the capture format is not implemented in this build;
   no example data or zero-valued report replaces it.
 - **Read cancelled / timed out:** retry through the interface. A stale result is

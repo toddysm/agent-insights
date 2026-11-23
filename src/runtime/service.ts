@@ -28,6 +28,7 @@ import type {
   RuntimeStatus,
   DiscoveryRequest,
   DiscoveryResult,
+  AddLocationRequest,
 } from "./protocol.js";
 import { SourceDiscovery } from "./discovery.js";
 import { SourceAccess, byteChunks, type StreamedSource } from "./sources.js";
@@ -172,7 +173,7 @@ export class RuntimeService {
 
   /**
    * Register trusted readers against pre-approved source grants without reading content.
-   * @param sources - SourceAccess instance owning startup-approved file/directory locations.
+   * @param sources - SourceAccess instance owning explicitly configured file/directory locations.
    * @param config - Stable launch/model preferences returned in status, not captured session evidence.
    * @param readers - Application-owned format adapters; defaults to none and rejects ambiguous registrations.
    * @param timeoutMs - Positive safe-integer read budget in milliseconds; defaults to 30,000.
@@ -305,6 +306,13 @@ export class RuntimeService {
     this.currentSelection = null;
     this.currentTiming = null;
     this.scanCatalog.invalidate();
+  }
+
+  /** Admit explicit current-run access, then cancel/clean prior evidence as for Check locations; no read/search/model run starts. */
+  async addLocation(selection: AddLocationRequest, signal: AbortSignal): Promise<{ sourceId: string; status: RuntimeStatus }> {
+    const sourceId = await this.sources.add(selection, signal);
+    await this.close();
+    return { sourceId, status: await this.status() };
   }
 
   /**

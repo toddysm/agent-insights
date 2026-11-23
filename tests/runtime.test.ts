@@ -34,7 +34,7 @@ import {
 } from "../src/evidence/contracts.js";
 import { parseConfig, type RuntimeConfig } from "../src/runtime/config.js";
 import { RuntimeError } from "../src/runtime/errors.js";
-import { errorSchema, statusSchema } from "../src/runtime/protocol.js";
+import { addLocationResponseSchema, errorSchema, statusSchema } from "../src/runtime/protocol.js";
 import {
   allowedHost,
   loopbackOrigin,
@@ -209,6 +209,153 @@ test("HTTP default-port normalization accepts valid loopback forms without broad
   ]) {
     assert.equal(allowedHost(host, loopbackOrigin(80)), false);
   }
+});
+
+test("UI admission from an empty runtime is authenticated, explicit and read-only", async (t) => {
+  const data = await fixture(t);
+  const runtime = await startRuntime(config(), { readers: [syntheticReader] });
+  t.after(() => runtime.close());
+  assert.equal(statusSchema.parse(await (await api(runtime, "/api/status")).json()).sources.length, 0);
+  for (const headers of [
+    { Origin: runtime.origin },
+    { "X-Agent-Insights-Token": runtime.token },
+    { Origin: "https://untrusted.invalid", "X-Agent-Insights-Token": runtime.token },
+  ]) {
+    const response = await fetch(runtime.origin + "/api/locations/add", {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ path: data.allowed, kind: "directory" }),
+    });
+    assert.ok([401, 403].includes(response.status));
+  }
+  assert.equal(statusSchema.parse(await (await api(runtime, "/api/status")).json()).sources.length, 0);
+  for (const body of [
+    { path: data.allowed, kind: "unknown" },
+    { path: data.allowed, kind: "directory", scan: true },
+    { path: "relative-folder", kind: "directory" },
+  ]) {
+    const rejected = await api(runtime, "/api/locations/add", body);
+    assert.equal(rejected.status, 400);
+    assert.ok(["INVALID_LOCATION"].includes(errorSchema.parse(await rejected.json()).error.code));
+  }
+  const response = await api(runtime, "/api/locations/add", { path: data.allowed, kind: "directory" });
+  assert.equal(response.status, 200);
+  const added = addLocationResponseSchema.parse(await response.json());
+  const status = statusSchema.parse(added.status);
+  assert.equal(added.sourceId, "source-1");
+  assert.equal(status.sources[0]?.available, true);
+  assert.equal(status.hasReadView, false);
+  assert.equal(status.analysis.run, null);
+  const read = await api(runtime, "/api/read", { sourceId: added.sourceId, relativePath: "capture.jsonl", format: "vscode-otel-jsonl" });
+  assert.equal(read.status, 200);
+  assert.equal(await readFile(data.file, "utf8"), "SYNTHETIC_SOURCE_CONTENT");
+  const second = await api(runtime, "/api/locations/add", { path: data.outside, kind: "directory" });
+  assert.equal(second.status, 200);
+  assert.equal(addLocationResponseSchema.parse(await second.json()).status.hasReadView, false);
+  const traversal = await api(runtime, "/api/read", { sourceId: added.sourceId, relativePath: "../allowed-sibling/private.txt", format: "vscode-otel-jsonl" });
+  assert.equal(errorSchema.parse(await traversal.json()).error.code, "SOURCE_SCOPE");
+  const restarted = await SourceAccess.create([]);
+  assert.deepEqual(await restarted.list(), []);
+});
+
+test("invalid UI locations never register grants and unavailable startup paths can be explicitly re-added", async (t) => {
+  const data = await fixture(t);
+  const absent = path.join(data.root, "later");
+  const access = await SourceAccess.create([absent]);
+  const signal = new AbortController().signal;
+  for (const [selection, code] of [
+    [{ path: "", kind: "directory" }, "INVALID_LOCATION"],
+    [{ path: "relative", kind: "directory" }, "INVALID_LOCATION"],
+    [{ path: absent, kind: "directory" }, "SOURCE_MISSING"],
+    [{ path: data.file, kind: "directory" }, "LOCATION_TYPE"],
+    [{ path: data.allowed, kind: "file" }, "LOCATION_TYPE"],
+  ] as const) {
+    await assert.rejects(access.add(selection, signal), { code });
+    assert.equal((await access.list()).length, 1);
+  }
+  await mkdir(absent);
+  const sourceId = await access.add({ path: absent, kind: "directory" }, signal);
+  assert.equal(sourceId, "source-2");
+  const locations = await access.list();
+  assert.equal(locations[0]?.available, false);
+  assert.equal(locations[1]?.available, true);
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await assert.rejects(access.add({ path: data.allowed, kind: "directory" }, cancelled.signal), { code: "READ_CANCELLED" });
+  assert.equal((await access.list()).length, 2);
+});
+
+test("concurrent admissions deduplicate canonical roots, retain exact-file scope and enforce the shared ceiling", async (t) => {
+  const data = await fixture(t);
+  const access = await SourceAccess.create([data.allowed]);
+  const signal = new AbortController().signal;
+  const alias = path.join(data.root, "alias");
+  await symlink(data.allowed, alias, "junction");
+  const ids = await Promise.all([data.allowed, alias, data.allowed].map((location) =>
+    access.add({ path: location, kind: "directory" }, signal)));
+  assert.deepEqual(ids, ["source-1", "source-1", "source-1"]);
+  const fileId = await access.add({ path: data.file, kind: "file" }, signal);
+  await assert.rejects(access.read(fileId, "capture.jsonl", signal), { code: "SOURCE_SCOPE" });
+  await assert.rejects(access.read("source-1", "../allowed-sibling/private.txt", signal), { code: "SOURCE_SCOPE" });
+  const limited = await SourceAccess.create(Array.from({ length: 31 }, (_, index) => path.join(data.root, `missing-${index}`)));
+  const results = await Promise.allSettled([
+    limited.add({ path: data.allowed, kind: "directory" }, signal),
+    limited.add({ path: data.outside, kind: "directory" }, signal),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  const failure = results.find((result) => result.status === "rejected");
+  assert.ok(failure?.status === "rejected" && failure.reason instanceof RuntimeError);
+  assert.equal(failure.reason.code, "LOCATION_LIMIT");
+  assert.equal((await limited.list()).length, 32);
+  assert.equal(await limited.add({ path: data.allowed, kind: "directory" }, signal), "source-32");
+});
+
+test("UI admission preserves permission and changed-target failures without leaking raw exceptions", async (t) => {
+  const data = await fixture(t);
+  const access = await SourceAccess.create([]);
+  const originalAccess = fsPromises.access;
+  t.after(() => { fsPromises.access = originalAccess; syncBuiltinESMExports(); });
+  fsPromises.access = async () => { throw Object.assign(new Error("PRIVATE_ERROR"), { code: "EACCES" }); };
+  syncBuiltinESMExports();
+  await assert.rejects(access.add({ path: data.allowed, kind: "directory" }, new AbortController().signal), { code: "SOURCE_DENIED" });
+  assert.equal((await access.list()).length, 0);
+  fsPromises.access = originalAccess;
+  syncBuiltinESMExports();
+  const alias = path.join(data.root, "alias");
+  await symlink(data.allowed, alias, "junction");
+  const id = await access.add({ path: alias, kind: "directory" }, new AbortController().signal);
+  await unlink(alias);
+  await symlink(data.outside, alias, "junction");
+  await assert.rejects(access.read(id, "private.txt", new AbortController().signal), { code: "ROOT_CHANGED" });
+  const restored = await access.add({ path: data.allowed, kind: "directory" }, new AbortController().signal);
+  assert.notEqual(restored, id);
+  assert.equal((await access.list()).find((location) => location.id === restored)?.available, true);
+});
+
+test("cancelled or timed-out location checks cannot admit a late grant or use mutated input", async (t) => {
+  const data = await fixture(t);
+  const originalAccess = fsPromises.access;
+  let release: (() => void) | undefined;
+  let started: (() => void) | undefined;
+  let inspected = "";
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => { release?.(); fsPromises.access = originalAccess; syncBuiltinESMExports(); });
+  fsPromises.access = async (location) => { inspected = location.toString(); started?.(); await blocked; };
+  syncBuiltinESMExports();
+  const access = await SourceAccess.create([]);
+  const controller = new AbortController();
+  const selection = { path: data.allowed, kind: "directory" as const };
+  const pending = access.add(selection, controller.signal);
+  selection.path = data.outside;
+  await entered;
+  assert.equal(inspected, await realpath(data.allowed));
+  controller.abort(new RuntimeError("LOCATION_TIMEOUT", "Location check timed out.", 408));
+  await assert.rejects(pending, { code: "LOCATION_TIMEOUT" });
+  release?.();
+  fsPromises.access = originalAccess;
+  syncBuiltinESMExports();
+  assert.equal(await access.add({ path: data.file, kind: "file" }, new AbortController().signal), "source-1");
+  assert.deepEqual((await access.list()).map((location) => location.path), [data.file]);
 });
 
 test("source grants reject traversal, prefix siblings, absolute paths and unknown grants", async (t) => {

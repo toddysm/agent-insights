@@ -2,7 +2,7 @@
 import { parseArgs } from "node:util";
 import { RuntimeError } from "./errors.js";
 
-/** Immutable operator-approved locations and requested analysis preferences. */
+/** Immutable initial locations and analysis preferences; explicit UI additions are owned separately by SourceAccess. */
 export interface RuntimeConfig {
   readonly sources: readonly string[];
   readonly port: number;

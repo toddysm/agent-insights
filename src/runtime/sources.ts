@@ -1,4 +1,4 @@
-/** Read-only access to startup-authorized locations; bounded captures/borrowed streams, no writes or byte cache. */
+/** Read-only access to explicitly configured locations; bounded captures/borrowed streams, no writes or byte cache. */
 import { constants } from "node:fs";
 import {
   access,
@@ -11,8 +11,8 @@ import {
 } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import path from "node:path";
-import { RuntimeError, cancelledRead, filesystemError } from "./errors.js";
-import type { SourceLocation } from "./protocol.js";
+import { RuntimeError, abortable, cancelledRead, filesystemError } from "./errors.js";
+import type { AddLocationRequest, SourceLocation } from "./protocol.js";
 
 export const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
 const CHUNK_BYTES = 64 * 1024;
@@ -185,7 +185,9 @@ export async function pointsToOpenedFile(
 /** Owns source grants only. No raw bytes or normalized evidence are persisted by this class. */
 export class SourceAccess {
   private readonly failedClosures = new Set<() => Promise<void>>();
-  private constructor(private readonly grants: readonly SourceGrant[]) {}
+  private admission: Promise<void> = Promise.resolve();
+  /** Own the initial grant array; subsequent append-only admissions retain every existing grant ID and binding. */
+  private constructor(private readonly grants: SourceGrant[]) {}
 
   /** Own rejected descriptor closes even when admission never returns a lease; never expose raw close errors. */
   private ownClose(handle: FileHandle): () => Promise<void> {
@@ -288,7 +290,71 @@ export class SourceAccess {
         }
       }),
     );
-    return new SourceAccess(Object.freeze(grants));
+    return new SourceAccess(grants);
+  }
+
+  /**
+   * Admit an explicit absolute file/folder path for this runtime only, without reading bytes.
+   * Serialize validation/commit so duplicate canonical roots and the 32-location ceiling
+   * remain correct under concurrent requests. Existing grants are never rebound.
+   * Cancellation or validation failure rejects without registering a grant.
+   */
+  async add(selection: AddLocationRequest, signal: AbortSignal): Promise<string> {
+    const request = Object.freeze({ ...selection });
+    const admit = this.admission.then(async () => {
+      if (signal.aborted) throw cancelledRead(signal);
+      if (
+        !path.isAbsolute(request.path) ||
+        request.path.length > 4096 ||
+        request.path.includes("\0")
+      )
+        throw new RuntimeError(
+          "INVALID_LOCATION",
+          "Enter the full path to an existing file or folder on this computer.",
+          400,
+        );
+      const requested = path.resolve(request.path);
+      let canonical: string;
+      try {
+        canonical = await realpath(requested);
+        const before = await stat(canonical, { bigint: true });
+        if (
+          (request.kind === "file" && !before.isFile()) ||
+          (request.kind === "directory" && !before.isDirectory())
+        )
+          throw new RuntimeError(
+            "LOCATION_TYPE",
+            "The path does not match the selected file or folder type. Correct the path or type.",
+            400,
+          );
+        await access(canonical, constants.R_OK | (request.kind === "directory" ? constants.X_OK : 0));
+        const after = await stat(canonical, { bigint: true });
+        if ((await realpath(requested)) !== canonical || before.dev !== after.dev || before.ino !== after.ino)
+          throw new RuntimeError("ROOT_CHANGED", "The location changed while checking access. Check the path and add it again.", 409);
+      } catch (error) {
+        filesystemError(error);
+      }
+      if (signal.aborted) throw cancelledRead(signal);
+      for (const existing of this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind)) {
+        try {
+          await this.inspect(existing);
+          if (signal.aborted) throw cancelledRead(signal);
+          return existing.id;
+        } catch (error) {
+          // A stale alias is not reusable; explicit admission of a valid path must not rebind it.
+          if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING"].includes(error.code)) throw error;
+        }
+      }
+      if (signal.aborted) throw cancelledRead(signal);
+      if (this.grants.length >= 32)
+        throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
+      const id = `source-${this.grants.length + 1}`;
+      this.grants.push({ id, requested, canonical, kind: request.kind });
+      return id;
+    });
+    // Keep the queue usable after rejection; the admitting caller still receives that failure.
+    this.admission = admit.then(() => undefined, () => undefined);
+    return abortable(admit, signal);
   }
 
   /** Recheck a grant without silently authorizing a replacement symlink or a changed root kind. */
@@ -296,7 +362,7 @@ export class SourceAccess {
     if (grant.kind === "unknown") {
       throw new RuntimeError(
         "SOURCE_UNAVAILABLE",
-        "Unavailable at startup. Correct the location and restart to authorize it.",
+        "Unavailable at startup. Correct the path or restore access, then use Add a file or folder to add it explicitly.",
         404,
       );
     }
@@ -304,7 +370,7 @@ export class SourceAccess {
       if ((await realpath(grant.requested)) !== grant.canonical) {
         throw new RuntimeError(
           "ROOT_CHANGED",
-          "The configured root changed its target. Restart to authorize the new location.",
+          "The configured location changed its target. Use Add a file or folder to select the new location explicitly.",
           409,
         );
       }
@@ -315,7 +381,7 @@ export class SourceAccess {
       ) {
         throw new RuntimeError(
           "ROOT_CHANGED",
-          "The configured root changed its type. Restart to authorize it.",
+          "The configured location changed its type. Use Add a file or folder to select it explicitly.",
           409,
         );
       }

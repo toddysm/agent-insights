@@ -188,7 +188,17 @@ producer-generated verification; optional telemetry is not a native prerequisite
 
 Manual [source discovery](local-runtime.md#discover-agent-host-sessions) produces
 a transient list, not a `ReadView`, persisted session catalog or analysis result.
-Only explicitly selected startup grants/layouts are inspected. The bounded
+Only explicitly selected configured grants/layouts are inspected. Initial
+`--source` locations and explicitly UI-added current-run locations share the same
+read-only containment, identity, resource and qualified-reader boundaries.
+Authenticated `POST /api/locations/add` accepts `{ path, kind }`, with `kind`
+`file` or `directory`, and requires the same literal-loopback Origin and launch
+credential as existing controls. It validates an existing absolute local path
+and returns `{ sourceId, status }`; no file bytes, uploads, SQL, home-directory
+inference or persisted location catalog are involved. Canonical admissions are
+serialized and deduplicated under the shared 32-location ceiling. Admission
+refreshes transient authority; search and reading still require separate actions.
+The bounded
 `discovery_chats` projection uses the same schema-22 definition and ownership
 resolver as native reading; paths and shared SDK branding do not establish
 runtime identity.

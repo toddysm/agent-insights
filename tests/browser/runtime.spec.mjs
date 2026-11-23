@@ -134,7 +134,7 @@ test("an empty configuration stays explicit instead of rendering example session
     await page.goto(runtime.launchUrl);
     await page.getByText("Advanced file tools", { exact: true }).click();
     await expect(
-      page.getByText("No files or folders configured. Review configured access for restart instructions."),
+      page.getByText("No files or folders configured. Use Review configured access to add a file or folder from the UI."),
     ).toBeVisible();
     await expect(
       page.getByText(/Source readers are not installed yet/),

@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const config = parseConfig(process.argv.slice(2));
   if (config === null) {
     process.stdout.write(
-      "Agent Insights\n\nnpm start -- [--source PATH] [--port 0] [--harness copilot] [--model ID] [--copilot-path PATH]\n\nRepeat --source for approved files/directories. No sources are selected automatically.\n",
+      "Agent Insights\n\nnpm start -- [--source PATH] [--port 0] [--harness copilot] [--model ID] [--copilot-path PATH]\n\nRepeat --source for initial files/directories, or use Add a file or folder in the UI without restarting. No sources are selected automatically.\n",
     );
     return;
   }
