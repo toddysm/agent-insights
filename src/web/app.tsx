@@ -35,7 +35,7 @@ import {
 } from "../runtime/protocol.js";
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
-import { SourceDiscoveryPanel } from "./source-discovery.js";
+import { SourceDiscoveryPanel, type SourceDiscoveryHandle } from "./source-discovery.js";
 import { SourceChoice } from "./source-choice.js";
 import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
@@ -195,6 +195,7 @@ function App(): ReactElement {
   const [acknowledged, setAcknowledged] = useState(false);
   const [reportSession, setReportSession] = useState("");
   const fileTools = useRef<HTMLDetailsElement>(null);
+  const wizard = useRef<SourceDiscoveryHandle>(null);
   const pendingWizardFocus = useRef(false);
   useEffect(() => {
     if (view) document.getElementById("report-heading")?.focus();
@@ -204,7 +205,7 @@ function App(): ReactElement {
       document.getElementById("wizard-question")?.focus();
       pendingWizardFocus.current = false;
     }
-  }, [discoveryReset]);
+  }, [discoveryReset, view, scannedReport]);
   const generation = useRef(0);
   const [startAttempt, setStartAttempt] = useState<{
     previousRunId: string | null;
@@ -266,35 +267,24 @@ function App(): ReactElement {
   }
 
   /**
-   * Load source/provider status, optionally invalidating the backend's current read.
-   * @param refresh - True posts the refresh control; false only reads current status.
-   * @returns Resolves after current-generation state/error updates. Handled request
-   * failures are displayed rather than thrown to UI event callers; stale replies are ignored.
+   * Explicitly recheck configured access and invalidate backend/browser evidence without remounting wizard selections.
+   * Reject failures or superseded replies so the wizard never presents old availability as a successful check.
    */
-  async function load(refresh: boolean): Promise<void> {
+  async function checkLocations(): Promise<void> {
     const current = ++generation.current;
     setBusy(true);
     setError("");
     setReadNotice("");
-    if (refresh) {
-      clearView();
-      setDiscoveryReset((previous) => previous + 1);
-    }
+    clearView();
     try {
       const result = await request(
-        refresh ? "/api/refresh" : "/api/status",
+        "/api/refresh",
         statusSchema,
-        refresh ? {} : undefined,
+        {},
       );
-      if (current !== generation.current) return;
+      if (current !== generation.current)
+        throw new Error("The location check was superseded. Check locations again.");
       adoptStatus(result);
-    } catch (failure) {
-      if (current === generation.current)
-        setError(
-          failure instanceof Error
-            ? failure.message
-            : "Source status could not be refreshed.",
-        );
     } finally {
       if (current === generation.current) setBusy(false);
     }
@@ -633,11 +623,13 @@ function App(): ReactElement {
         ) : (
           <>
             {!showWizard && readFeedback}
-            {status && showWizard && <SourceDiscoveryPanel
+            {status && <SourceDiscoveryPanel
               key={discoveryReset}
+              ref={wizard}
               status={status}
+              hidden={!showWizard}
               disabled={busy || analysisLocked}
-              feedback={readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null)}
+              feedback={showWizard ? readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null) : null}
               send={request}
               onStart={(resetScan) => {
                 generation.current++;
@@ -649,65 +641,41 @@ function App(): ReactElement {
               onReadFile={(selection) => readWithStatus(selection, generation.current)}
               onOpenFile={openWizardFile}
               onFileTools={showFileTools}
+              onCheckLocations={checkLocations}
             />}
-            {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { pendingWizardFocus.current = true; generation.current++; clearView(); setDiscoveryReset((previous) => previous + 1); }}>Find another session</button>}
+            {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { pendingWizardFocus.current = true; generation.current++; clearView(); wizard.current?.findAnotherSession(); }}>Find another session</button>}
             <section
               id="sources"
               className="panel"
               aria-labelledby="sources-heading"
             >
               <details ref={fileTools} className="file-tools">
-              <summary>Advanced file tools and configured access</summary>
+              <summary>Advanced file tools</summary>
               <div className="section-heading">
                 <div>
-                  <h2 id="sources-heading">Configured locations</h2>
-                  <p>Only locations you authorize at startup can be read.</p>
+                  <h2 id="sources-heading">Open a file directly</h2>
+                  <p>Use the same startup-configured access. Supplemental formats are not Agent Host substitutes.</p>
                 </div>
                 <button
                   type="button"
-                  onClick={() => void load(true)}
+                  onClick={() => {
+                    pendingWizardFocus.current = Boolean(view || scannedReport);
+                    if (fileTools.current) fileTools.current.open = false;
+                    wizard.current?.reviewLocations();
+                    document.getElementById("session-wizard")?.scrollIntoView({ block: "start" });
+                  }}
                   disabled={busy || analysisLocked}
                 >
-                  {busy ? "Checking..." : "Refresh sources"}
+                  Review configured access
                 </button>
               </div>
               {status ? (
                 <>
-                  <p className="checked">
-                    Checked at{" "}
-                    {new Date(status.checkedAtMs).toLocaleTimeString()}. Refresh
-                    rereads availability; nothing is synchronized to a database.
-                  </p>
                   {status.sources.length === 0 ? (
                     <div className="empty">
-                      <h3>No sources configured</h3>
-                      <p>Restart with an explicit capture file or directory:</p>
-                      <code>npm start -- --source /path/to/capture</code>
+                      <p>No files or folders configured. Review configured access for restart instructions.</p>
                     </div>
-                  ) : (
-                    <ul className="source-list">
-                      {status.sources.map((source) => (
-                        <li key={source.id}>
-                          <div>
-                            <strong>
-                              {source.kind === "unknown"
-                                ? "Unavailable location"
-                                : source.kind === "file"
-                                  ? "Capture file"
-                                  : "Capture directory"}
-                            </strong>
-                            <code>{source.path}</code>
-                            {source.reason && <p>{source.reason}</p>}
-                          </div>
-                          <span
-                            className={`status-tag ${source.available ? "" : "warning"}`}
-                          >
-                            {source.available ? "Accessible" : "Unavailable"}
-                          </span>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                  ) : null}
                   {status.sources.length > 0 && (
                     <form
                       onSubmit={(event) => {

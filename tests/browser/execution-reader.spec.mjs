@@ -49,7 +49,7 @@ test("mixed evidence shows scoped availability, missing linkage, unchanged repor
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByRole("button", { name: "Read source", exact: true }).click();
     const coverage = page.getByRole("region", { name: "Read coverage" });
     const scoped = coverage.getByRole("group", { name: "Scoped evidence coverage" });
@@ -124,7 +124,7 @@ test("direct and scanned reports distinguish four associated calls without addin
   const runtime = await startRuntime({ sources: [file], port: 0, harness: "copilot", model: null, copilotPath: path.join(root, "no-model") }, { readers: productionReaders });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByRole("button", { name: "Read source", exact: true }).click();
     const report = page.getByRole("region", { name: "Session report", exact: true });
     await expect(report.getByText("2 direct records; 4 associated records.")).toBeVisible();
@@ -195,7 +195,7 @@ test("the normal application reads execution evidence, shows coverage and clears
     const requests = [];
     page.on("request", (request) => requests.push(request.url()));
     await page.goto(launch);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await expect(page.getByLabel("Reader format")).toHaveValue(
       "vscode-otel-jsonl",
     );

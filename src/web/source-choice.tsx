@@ -57,7 +57,7 @@ export function SourceChoice({
       {selected && !selected.available && (
         <p role="alert">
           {selected.reason ?? "This file or folder cannot be accessed."} Restore
-          access and refresh the configured files and folders. If unavailable at
+          access and choose Check locations in the shared access workspace. If unavailable at
           startup, correct the path and restart.
         </p>
       )}
