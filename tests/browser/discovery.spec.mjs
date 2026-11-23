@@ -645,6 +645,13 @@ test("normal steps fit desktop and mobile; expanded details scroll inside a stat
         content: element.scrollHeight,
         body: element.clientHeight,
       }));
+      const headerBounds = await wizard.locator(".wizard-header").boundingBox();
+      const footerBounds = await wizard.locator(".wizard-footer").boundingBox();
+      expect(headerBounds.y).toBeGreaterThanOrEqual(0);
+      expect(footerBounds.y + footerBounds.height).toBeLessThanOrEqual(
+        viewport.height,
+      );
+      expect(await page.evaluate(() => scrollY)).toBe(0);
       expect(
         dimensions.content,
         `${viewport.width}px step height`,

@@ -85,7 +85,7 @@ test("source selection, cloud disclosure and memory-only access work on desktop 
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
-      page.getByRole("heading", { name: "Sources", exact: true }),
+      page.getByRole("heading", { name: "Find your sessions", exact: true }),
     ).toBeVisible();
     expect(
       await page.evaluate(

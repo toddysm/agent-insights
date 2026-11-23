@@ -563,6 +563,9 @@ summary { cursor: pointer; }
 .file-tools .section-heading { margin-top: 20px; }
 .analysis-details .analysis { margin-top: 16px; }
 @media (max-width: 760px) {
+  body:has(.source-wizard) .sidebar,
+  main:has(.source-wizard) > header { display: none; }
+  main:has(.source-wizard) { padding: 0; }
   .sidebar {
     position: static;
     width: auto;
