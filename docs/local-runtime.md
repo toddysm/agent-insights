@@ -622,6 +622,10 @@ holds the provider disclosure; it expands when a report or analysis is active.
 Editing wizard answers alone preserves an independently completed bounded scan.
 Starting a new read/discovery or refreshing sources invalidates prior evidence;
 starting a sibling manual read or scan also clears cached wizard results.
+Editing an advanced file path, source or reader format while a report is open
+dismisses that report and clears its cached wizard results, while retaining setup
+answers and keyboard focus in the edited control. Find sessions explicitly again
+before opening another report.
 Opening a Local report requires fresh analysis consent. Report opening moves
 keyboard focus to its heading; returning moves focus to the wizard question,
 without stealing focus on initial page load.

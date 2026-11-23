@@ -907,6 +907,89 @@ test("shared access review checks explicitly and discards a cached Local session
   });
 });
 
+for (const edit of ["path", "source", "format"]) {
+  test(`editing an advanced ${edit} dismisses a Local report without restoring cached wizard results`, async ({
+    page,
+  }) => {
+    await withWizard(
+      page,
+      async ({ wizard, requests }) => {
+        if (edit === "format") {
+          // Offer a second valid format for this UI edit only; no read uses it.
+          await page.route("**/api/status", async (route) => {
+            const status = await (await route.fetch()).json();
+            await route.fulfill({
+              json: {
+                ...status,
+                readers: [...status.readers, "vscode-chat-v3-json"],
+              },
+            });
+          });
+        }
+        await choose(wizard, /^Copilot Choose/);
+        await choose(wizard, /^Local/);
+        await choose(wizard, /^I have a recorded/);
+        await wizard
+          .getByLabel("Recording filename inside this folder")
+          .fill("synthetic.jsonl");
+        await wizard
+          .getByRole("button", { name: "Find sessions", exact: true })
+          .click();
+        await wizard.getByRole("radio", { name: /^second-native/ }).check();
+        await wizard
+          .getByRole("button", { name: "Open report", exact: true })
+          .click();
+        await expect(
+          page.getByRole("region", { name: "Session report", exact: true }),
+        ).toBeVisible();
+        await page.getByText("Advanced file tools", { exact: true }).click();
+        const control =
+          edit === "path"
+            ? page.getByLabel("File inside this directory")
+            : page.getByLabel(
+                edit === "source" ? "Source location" : "Reader format",
+                { exact: true },
+              );
+        await control.focus();
+        if (edit === "path") await control.fill("unread.jsonl");
+        else
+          await control.selectOption(
+            edit === "source" ? "source-2" : "vscode-chat-v3-json",
+          );
+        await expect(
+          page.getByRole("region", { name: "Session report", exact: true }),
+        ).toHaveCount(0);
+        await expect(
+          wizard.getByRole("button", { name: "Open report", exact: true }),
+        ).toHaveCount(0);
+        await expect(control).toBeFocused();
+        await expect(
+          wizard.getByLabel("Recording filename inside this folder"),
+        ).toHaveValue("synthetic.jsonl");
+        await expect(wizard.getByRole("radio")).toHaveCount(0);
+        expect(
+          requests.filter((url) => url.endsWith("/api/read")),
+        ).toHaveLength(1);
+        await wizard
+          .getByRole("button", { name: "Find sessions", exact: true })
+          .click();
+        await expect(
+          wizard.getByRole("radio", { name: /^second-native/ }),
+        ).not.toBeChecked();
+        expect(
+          requests.filter((url) => url.endsWith("/api/read")),
+        ).toHaveLength(2);
+        expect(
+          requests.some((url) =>
+            /\/api\/(read-set|discover|analysis\/start)$/.test(url),
+          ),
+        ).toBe(false);
+      },
+      true,
+    );
+  });
+}
+
 test("sibling reads and scans invalidate a cached Local selection even when the new read fails", async ({
   page,
 }) => {

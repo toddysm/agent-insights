@@ -198,6 +198,7 @@ function App(): ReactElement {
   const fileTools = useRef<HTMLDetailsElement>(null);
   const wizard = useRef<SourceDiscoveryHandle>(null);
   const pendingWizardFocus = useRef(false);
+  const pendingFileFocus = useRef<HTMLElement | null>(null);
   useEffect(() => {
     if (view) document.getElementById("report-heading")?.focus();
   }, [view]);
@@ -205,6 +206,10 @@ function App(): ReactElement {
     if (pendingWizardFocus.current) {
       document.getElementById("wizard-question")?.focus();
       pendingWizardFocus.current = false;
+    }
+    if (pendingFileFocus.current) {
+      pendingFileFocus.current.focus();
+      pendingFileFocus.current = null;
     }
   }, [discoveryReset, view, scannedReport]);
   const generation = useRef(0);
@@ -265,6 +270,17 @@ function App(): ReactElement {
     setSessionId("");
     setReportSession("");
     setAcknowledged(false);
+  }
+
+  /** Dismiss report results on advanced-source edits without losing wizard setup or the edited control's focus. */
+  function clearFileSelection(): void {
+    if (view || scannedReport) {
+      pendingFileFocus.current = document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+      wizard.current?.findAnotherSession();
+    }
+    clearView();
   }
 
   /**
@@ -700,7 +716,7 @@ function App(): ReactElement {
                           setSourceId(id);
                           setRelativePath("");
                           setReadNotice("");
-                          clearView();
+                          clearFileSelection();
                         }}
                       />
                       {selected?.kind === "directory" && (
@@ -715,7 +731,7 @@ function App(): ReactElement {
                             onChange={(event) => {
                               setRelativePath(event.target.value);
                               setReadNotice("");
-                              clearView();
+                              clearFileSelection();
                             }}
                             placeholder="session.jsonl"
                           />
@@ -728,7 +744,7 @@ function App(): ReactElement {
                         onChange={(event) => {
                           setFormat(event.target.value);
                           setReadNotice("");
-                          clearView();
+                          clearFileSelection();
                         }}
                         disabled={
                           busy || analysisLocked || status.readers.length === 0
