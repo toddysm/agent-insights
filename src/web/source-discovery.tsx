@@ -25,7 +25,7 @@ import { sourceName } from "./source-names.js";
 
 /** Parent navigation returns to this workspace without discarding its configured selections. */
 export interface SourceDiscoveryHandle {
-  /** Show the shared configured-access workspace without selecting a session type or checking automatically. */
+  /** Focus the shared configured-access workspace without selecting a session type or checking automatically. */
   reviewLocations(): void;
   /** Discard old results and return to the current session type's setup with its selections retained. */
   findAnotherSession(): void;
@@ -242,6 +242,7 @@ export function SourceDiscoveryPanel({
               : step;
       invalidate();
       setStep("locations");
+      if (!hidden) heading.current?.focus({ preventScroll: true });
     },
     findAnotherSession() {
       invalidate();

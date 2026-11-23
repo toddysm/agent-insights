@@ -844,6 +844,73 @@ test("a failed Local status refresh keeps the read unavailable and allows an exp
   });
 });
 
+test("initial status failure offers an explicit retry without reloading launch access or reading a source", async ({
+  page,
+}) => {
+  let failRefresh = true;
+  await page.route("**/api/status", (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        error: {
+          code: "STATUS_UNAVAILABLE",
+          message: "Synthetic initial status failure.",
+        },
+      },
+    }),
+  );
+  await page.route("**/api/refresh", async (route) => {
+    if (failRefresh) {
+      await route.fulfill({
+        status: 503,
+        json: {
+          error: {
+            code: "STATUS_UNAVAILABLE",
+            message: "Synthetic retry check failed.",
+          },
+        },
+      });
+    } else {
+      await route.continue();
+    }
+  });
+  await withWizard(page, async ({ wizard, requests }) => {
+    await expect(page.getByRole("alert")).toContainText(
+      "Synthetic initial status failure.",
+    );
+    await expect(wizard).toHaveCount(0);
+    const retry = page.getByRole("button", {
+      name: "Retry location check",
+      exact: true,
+    });
+    await retry.click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Synthetic retry check failed.",
+    );
+    await expect(retry).toBeEnabled();
+    failRefresh = false;
+    await retry.click();
+    await expect(
+      wizard.getByRole("heading", {
+        name: "Which coding assistant did you use?",
+      }),
+    ).toBeFocused();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(retry).toHaveCount(0);
+    expect(requests.filter((url) => url.endsWith("/api/status"))).toHaveLength(
+      1,
+    );
+    expect(requests.filter((url) => url.endsWith("/api/refresh"))).toHaveLength(
+      2,
+    );
+    expect(
+      requests.some((url) =>
+        /\/api\/(read|read-set|discover|scan|analysis\/start)$/.test(url),
+      ),
+    ).toBe(false);
+  });
+});
+
 test("shared access review checks explicitly and discards a cached Local session without losing its filename", async ({
   page,
 }) => {
@@ -858,6 +925,13 @@ test("shared access review checks explicitly and discards a cached Local session
       .getByRole("button", { name: "Find sessions", exact: true })
       .click();
     await wizard.getByRole("radio", { name: /^second-native/ }).check();
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Review configured access", exact: true })
+      .click();
+    await expect(
+      wizard.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
     await page.getByText("Advanced file tools", { exact: true }).click();
     await page
       .getByRole("button", { name: "Review configured access", exact: true })

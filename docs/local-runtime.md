@@ -616,7 +616,11 @@ the example alone cannot guarantee either. Follow managed policy and the
 
 **Advanced file tools** retains the explicit manual reader and bounded scan.
 Its **Review configured access** action returns to the same wizard workspace
-without choosing a session type or checking automatically. **Check locations**
+and focuses its question, including repeated returns, without choosing a session
+type or checking automatically. If initial status loading fails before the wizard
+can appear, **Retry location check** explicitly checks access again with the
+in-memory launch credential; failure remains retryable without a page reload.
+**Check locations**
 is also available in the Local file step. **Analysis availability and privacy**
 holds the provider disclosure; it expands when a report or analysis is active.
 Editing wizard answers alone preserves an independently completed bounded scan.

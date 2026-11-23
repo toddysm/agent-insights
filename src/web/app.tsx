@@ -203,7 +203,7 @@ function App(): ReactElement {
     if (view) document.getElementById("report-heading")?.focus();
   }, [view]);
   useEffect(() => {
-    if (pendingWizardFocus.current) {
+    if (pendingWizardFocus.current && status) {
       document.getElementById("wizard-question")?.focus();
       pendingWizardFocus.current = false;
     }
@@ -211,7 +211,7 @@ function App(): ReactElement {
       pendingFileFocus.current.focus();
       pendingFileFocus.current = null;
     }
-  }, [discoveryReset, view, scannedReport]);
+  }, [discoveryReset, view, scannedReport, status]);
   const generation = useRef(0);
   const [startAttempt, setStartAttempt] = useState<{
     previousRunId: string | null;
@@ -310,6 +310,21 @@ function App(): ReactElement {
       throw failure;
     } finally {
       if (current === generation.current) setBusy(false);
+    }
+  }
+
+  /** Retry unavailable initial status with retained launch access; display failures or focus the newly available wizard. */
+  async function retryLocationCheck(): Promise<void> {
+    pendingWizardFocus.current = true;
+    try {
+      await checkLocations();
+    } catch (failure) {
+      pendingWizardFocus.current = false;
+      setError(
+        failure instanceof Error
+          ? failure.message
+          : "Configured locations could not be checked.",
+      );
     }
   }
 
@@ -585,6 +600,7 @@ function App(): ReactElement {
       {status && (
         <span> Previously checked source status is shown below.</span>
       )}
+      {!status && <button type="button" disabled={busy || analysisLocked} onClick={() => void retryLocationCheck()}>Retry location check</button>}
       {oversizedRead && (
         <div>
           <p>Read source accepts at most 64 MiB. No report was created from this failed read.</p>
@@ -645,13 +661,14 @@ function App(): ReactElement {
           </section>
         ) : (
           <>
+            {!status && busy && <p className="notice" role="status">Loading configured access...</p>}
             {!showWizard && readFeedback}
             {status && <SourceDiscoveryPanel
               key={discoveryReset}
               ref={wizard}
               status={status}
               hidden={!showWizard}
-              disabled={busy || analysisLocked}
+              disabled={busy || analysisLocked || !status}
               locationCheck={locationCheck}
               feedback={showWizard ? readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null) : null}
               send={request}
