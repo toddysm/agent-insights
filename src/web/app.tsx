@@ -35,7 +35,7 @@ import {
 } from "../runtime/protocol.js";
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
-import { SourceDiscoveryPanel, type SourceDiscoveryHandle } from "./source-discovery.js";
+import { SourceDiscoveryPanel, type SourceDiscoveryHandle, type LocationCheckState } from "./source-discovery.js";
 import { SourceChoice } from "./source-choice.js";
 import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
@@ -167,7 +167,7 @@ function SourceClassification({
 }
 
 /**
- * Own the displayed read, selection, acknowledgement and current-run controls.
+ * Own the displayed read, location-check validity, selection, acknowledgement and current-run controls.
  * It never infers metrics or changes captured evidence. Lost start responses are
  * reconciled through status instead of resubmitting work; terminal data is shown
  * only for the matching selection, while active cancellation remains reachable.
@@ -175,6 +175,7 @@ function SourceClassification({
  */
 function App(): ReactElement {
   const [status, setStatus] = useState<RuntimeStatus | null>(null);
+  const [locationCheck, setLocationCheck] = useState<LocationCheckState>("idle");
   const [error, setError] = useState("");
   const [pollError, setPollError] = useState("");
   const [reconciling, setReconciling] = useState(false);
@@ -269,10 +270,12 @@ function App(): ReactElement {
   /**
    * Explicitly recheck configured access and invalidate backend/browser evidence without remounting wizard selections.
    * Reject failures or superseded replies so the wizard never presents old availability as a successful check.
+   * Retain failure across sibling reads/scans and wizard resets until an explicit check succeeds.
    */
   async function checkLocations(): Promise<void> {
     const current = ++generation.current;
     setBusy(true);
+    setLocationCheck("checking");
     setError("");
     setReadNotice("");
     clearView();
@@ -285,6 +288,10 @@ function App(): ReactElement {
       if (current !== generation.current)
         throw new Error("The location check was superseded. Check locations again.");
       adoptStatus(result);
+      setLocationCheck("checked");
+    } catch (failure) {
+      if (current === generation.current) setLocationCheck("failed");
+      throw failure;
     } finally {
       if (current === generation.current) setBusy(false);
     }
@@ -629,6 +636,7 @@ function App(): ReactElement {
               status={status}
               hidden={!showWizard}
               disabled={busy || analysisLocked}
+              locationCheck={locationCheck}
               feedback={showWizard ? readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null) : null}
               send={request}
               onStart={(resetScan) => {

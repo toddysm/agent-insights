@@ -689,6 +689,117 @@ test("location checks preserve selections but clear results and consent; failed 
   );
 });
 
+for (const sibling of [
+  "failed manual read",
+  "successful manual read",
+  "scan",
+]) {
+  test(`failed location checks survive a sibling ${sibling} until an explicit successful check`, async ({
+    page,
+  }) => {
+    await withWizard(page, async ({ wizard, requests }) => {
+      let failCheck = true;
+      await page.route("**/api/refresh", async (route) => {
+        if (failCheck) {
+          await route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "STATUS_UNAVAILABLE",
+                message: "Synthetic location check failed.",
+              },
+            },
+          });
+        } else {
+          await route.continue();
+        }
+      });
+      await choose(wizard, /^Copilot Choose/);
+      await choose(wizard, /^Agent Host/);
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("alert")).toContainText(
+        "Synthetic location check failed.",
+      );
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      await page
+        .getByLabel("File inside this directory")
+        .fill(
+          sibling === "failed manual read"
+            ? "missing.jsonl"
+            : "synthetic.jsonl",
+        );
+      await page
+        .getByRole("button", {
+          name: sibling === "scan" ? "Scan JSONL source" : "Read source",
+          exact: true,
+        })
+        .click();
+      if (sibling === "successful manual read") {
+        await expect(
+          page.getByRole("region", { name: "Session report", exact: true }),
+        ).toBeVisible();
+        await page
+          .getByRole("button", { name: "Find another session", exact: true })
+          .click();
+      }
+      await expect(
+        wizard.getByRole("heading", {
+          name: "Which coding assistant did you use?",
+        }),
+      ).toBeVisible();
+      await choose(wizard, /^Copilot Choose/);
+      await choose(wizard, /^Agent Host/);
+      await expect(
+        wizard.getByText(/Previously checked availability is shown/),
+      ).toBeVisible();
+      await wizard
+        .getByRole("checkbox", { name: /I've reviewed these locations/ })
+        .check();
+      await expect(
+        wizard.getByRole("button", { name: "Continue", exact: true }),
+      ).toBeDisabled();
+      await wizard.getByRole("button", { name: "Back", exact: true }).click();
+      await choose(wizard, /^Local/);
+      await choose(wizard, /^I have a recorded/);
+      await wizard
+        .getByLabel("Recording filename inside this folder")
+        .fill("synthetic.jsonl");
+      await expect(
+        wizard.getByRole("button", { name: "Find sessions", exact: true }),
+      ).toBeDisabled();
+      await expect(
+        wizard.getByText(/Previously checked availability is shown/),
+      ).toBeVisible();
+      expect(
+        requests.some((url) =>
+          /\/api\/(discover|read-set|analysis\/start)$/.test(url),
+        ),
+      ).toBe(false);
+      expect(requests.filter((url) => url.endsWith("/api/read"))).toHaveLength(
+        sibling === "scan" ? 0 : 1,
+      );
+      expect(requests.filter((url) => url.endsWith("/api/scan"))).toHaveLength(
+        sibling === "scan" ? 1 : 0,
+      );
+      failCheck = false;
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("status")).toContainText(
+        "Locations checked at",
+      );
+      await expect(
+        wizard.getByRole("button", { name: "Find sessions", exact: true }),
+      ).toBeEnabled();
+      expect(
+        requests.filter((url) => url.endsWith("/api/refresh")),
+      ).toHaveLength(2);
+    });
+  });
+}
+
 test("a failed Local status refresh keeps the read unavailable and allows an explicit retry", async ({
   page,
 }) => {

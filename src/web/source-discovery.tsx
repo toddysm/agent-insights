@@ -31,12 +31,16 @@ export interface SourceDiscoveryHandle {
   findAnotherSession(): void;
 }
 
-/** Parent owns authenticated transport, report handoff, operation locks and read feedback; callbacks do not grant source access. */
+/** Explicit check validity survives wizard resets; only a successful check clears failure. */
+export type LocationCheckState = "idle" | "checking" | "checked" | "failed";
+
+/** Parent owns authenticated transport, check validity, report handoff, operation locks and read feedback; callbacks do not grant source access. */
 interface DiscoveryProps {
   readonly ref: Ref<SourceDiscoveryHandle>;
   readonly status: RuntimeStatus;
   readonly hidden: boolean;
   readonly disabled: boolean;
+  readonly locationCheck: LocationCheckState;
   readonly feedback: ReactElement | null;
   readonly send: <T>(
     route: string,
@@ -150,6 +154,7 @@ export function SourceDiscoveryPanel({
   status,
   hidden,
   disabled,
+  locationCheck,
   feedback,
   send,
   onStart,
@@ -183,9 +188,6 @@ export function SourceDiscoveryPanel({
   const [fileView, setFileView] = useState<ReadView | null>(null);
   const [selectedSession, setSelectedSession] = useState("");
   const [error, setError] = useState("");
-  const [locationCheck, setLocationCheck] = useState<
-    "idle" | "checking" | "checked" | "failed"
-  >("idle");
   const sequence = useRef(1);
   const generation = useRef(0);
   const body = useRef<HTMLDivElement>(null);
@@ -306,14 +308,11 @@ export function SourceDiscoveryPanel({
   /** Explicitly check availability, preserving choices but dropping evidence/consent before either success or failure. */
   async function checkLocations(): Promise<void> {
     invalidate(true, true);
-    setLocationCheck("checking");
     const current = generation.current;
     try {
       await onCheckLocations();
-      if (current === generation.current) setLocationCheck("checked");
     } catch (failure) {
       if (current === generation.current) {
-        setLocationCheck("failed");
         setError(
           failure instanceof Error
             ? failure.message

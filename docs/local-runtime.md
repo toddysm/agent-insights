@@ -585,7 +585,8 @@ It preserves selected locations, layouts and confined paths, but drops prior
 discovery results, source reads, bounded scans, reports and access/analysis
 acknowledgements before the request. A failed check displays its error, explicitly
 labels the previous availability as stale, and blocks finding sessions until a
-successful explicit check. Neither a check nor selecting a location starts a
+successful explicit check. Manual reads, scans and restarting the wizard do not
+clear that failed-check state. Neither a check nor selecting a location starts a
 search or opens a report. A successfully checked location can still have an
 unavailable reader; reader gates remain independent. No watcher,
 session database, saved catalog or archive is created.
