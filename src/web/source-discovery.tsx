@@ -16,10 +16,11 @@ import {
 import { SourceChoice } from "./source-choice.js";
 import { sourceName } from "./source-names.js";
 
-/** Parent owns authenticated transport, report handoff and operation locks; callbacks do not grant source access. */
+/** Parent owns authenticated transport, report handoff, operation locks and read feedback; callbacks do not grant source access. */
 interface DiscoveryProps {
   readonly status: RuntimeStatus;
   readonly disabled: boolean;
+  readonly feedback: ReactElement | null;
   readonly send: <T>(
     route: string,
     schema: z.ZodType<T>,
@@ -126,6 +127,7 @@ function Choices<T extends string>({
 export function SourceDiscoveryPanel({
   status,
   disabled,
+  feedback,
   send,
   onStart,
   onBusy,
@@ -528,7 +530,8 @@ export function SourceDiscoveryPanel({
         <h3 ref={heading} id="wizard-question" tabIndex={-1}>
           {title[step]}
         </h3>
-        {error && (
+        {feedback}
+        {error && !feedback && (
           <p className="alert" role="alert">
             {error}
           </p>

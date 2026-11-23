@@ -295,10 +295,20 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
     ).toBeDisabled();
     await wizard.getByRole("radio", { name: /^fictional-native-id/ }).check();
     expect(opened).toHaveLength(0);
+    await page.setViewportSize({ width: 320, height: 225 });
     await wizard.getByRole("button", { name: "Open report" }).click();
     await expect(
       page.getByText(/Synthetic retained history changed/).first(),
     ).toBeVisible();
+    const errorHeader = await wizard.locator(".wizard-header").boundingBox();
+    const errorFooter = await wizard.locator(".wizard-footer").boundingBox();
+    expect(errorHeader.y).toBeGreaterThanOrEqual(0);
+    expect(errorFooter.y + errorFooter.height).toBeLessThanOrEqual(225);
+    expect(await page.evaluate(() => scrollY)).toBe(0);
+    await expect(
+      wizard.locator(".wizard-body").getByRole("alert"),
+    ).toContainText("Synthetic retained history changed");
+    await page.setViewportSize({ width: 1200, height: 900 });
     expect(opened).toEqual([selection]);
     for (state of ["ambiguous", "unavailable", "empty"]) {
       await wizard.getByRole("button", { name: "Find sessions again" }).click();

@@ -39,6 +39,7 @@ test("source selection, cloud disclosure and memory-only access work on desktop 
   page.on("request", (request) => requests.push(request.url()));
   try {
     await page.goto(runtime.launchUrl);
+    await expect(page.getByRole("link", { name: "Skip to content" })).toBeVisible();
     await page.keyboard.press("Tab");
     await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
     await page.keyboard.press("Enter");

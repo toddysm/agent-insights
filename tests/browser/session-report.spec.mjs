@@ -378,6 +378,12 @@ test("refresh discards an outstanding metric response instead of resurrecting th
     entered = resolve;
   });
   try {
+    await expect(
+      page.getByRole("button", {
+        name: "Tool calls: 2; partial coverage",
+        exact: true,
+      }),
+    ).toBeVisible();
     const view = await nativeReportView({ readId: "replacement-read" });
     fixture.setView(view);
     await page.route("**/api/report", async (route) => {

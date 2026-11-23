@@ -584,7 +584,8 @@ wizard; expanded details/results scroll internally while Back/Next stay visible.
 On mobile the wizard temporarily omits the surrounding Sources header/sidebar,
 so moving between questions does not require scrolling the page.
 On short or highly zoomed screens it fills the viewport. Its header/footer remain
-visible while the step body scrolls; advanced tools remain reachable below it.
+visible while the step body scrolls, including read errors and their recovery
+guidance; advanced tools remain reachable below it.
 Claude Code, Codex and Cloud Hosted stop with a **Not supported** banner.
 **I'm not sure** provides identification guidance without guessing a runtime.
 Local recording instructions cover only future sessions, start with content

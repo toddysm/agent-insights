@@ -554,6 +554,31 @@ function App(): ReactElement {
     }
   }
 
+  const showWizard = status !== null && !view && !scannedReport;
+  const readFeedback = error ? (
+    <div className="alert" role="alert">
+      {error}
+      {status && (
+        <span> Previously checked source status is shown below.</span>
+      )}
+      {oversizedRead && (
+        <div>
+          <p>Read source accepts at most 64 MiB. No report was created from this failed read.</p>
+          {format === "vscode-otel-jsonl" && selected?.available ? <>
+            <p>For a supported extension JSONL export, scan the original file in place.
+              Scanning discovers sessions; then select a Scanned session and choose Open session report.
+              Original evidence pages are separate from whole-admitted-session reports.</p>
+            <a href="#scan-source">Go to Scan JSONL source</a>
+            <p>Your source location, relative file and reader format are unchanged.
+              Scanning starts only when you activate the scan button. No model is called.</p>
+          </> : <p>Large-file scanning supports only vscode-otel-jsonl extension exports,
+            not SQLite, saved chats or arbitrary JSONL. Select that reader only for a matching export.
+            Source grants and database safety limits still apply.</p>}
+        </div>
+      )}
+    </div>
+  ) : null;
+
   return (
     <>
       <a className="skip" href="#content">
@@ -596,33 +621,12 @@ function App(): ReactElement {
           </section>
         ) : (
           <>
-            {error && (
-              <div className="alert" role="alert">
-                {error}
-                {status && (
-                  <span> Previously checked source status is shown below.</span>
-                )}
-                {oversizedRead && (
-                  <div>
-                    <p>Read source accepts at most 64 MiB. No report was created from this failed read.</p>
-                    {format === "vscode-otel-jsonl" && selected?.available ? <>
-                      <p>For a supported extension JSONL export, scan the original file in place.
-                        Scanning discovers sessions; then select a Scanned session and choose Open session report.
-                        Original evidence pages are separate from whole-admitted-session reports.</p>
-                      <a href="#scan-source">Go to Scan JSONL source</a>
-                      <p>Your source location, relative file and reader format are unchanged.
-                        Scanning starts only when you activate the scan button. No model is called.</p>
-                    </> : <p>Large-file scanning supports only vscode-otel-jsonl extension exports,
-                      not SQLite, saved chats or arbitrary JSONL. Select that reader only for a matching export.
-                      Source grants and database safety limits still apply.</p>}
-                  </div>
-                )}
-              </div>
-            )}
-            {status && !view && !scannedReport && <SourceDiscoveryPanel
+            {!showWizard && readFeedback}
+            {status && showWizard && <SourceDiscoveryPanel
               key={discoveryReset}
               status={status}
               disabled={busy || analysisLocked}
+              feedback={readFeedback}
               send={request}
               onStart={(resetScan) => {
                 generation.current++;
