@@ -25,7 +25,7 @@ import { sourceName } from "./source-names.js";
 
 /** Parent navigation returns to this workspace without discarding its configured selections. */
 export interface SourceDiscoveryHandle {
-  /** Focus the shared configured-access workspace without selecting a session type or checking automatically. */
+  /** Clear report/results through onStart and focus configured access without selecting a session type or checking automatically. */
   reviewLocations(): void;
   /** Discard old results and return to the current session type's setup with its selections retained. */
   findAnotherSession(): void;

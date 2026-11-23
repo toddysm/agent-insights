@@ -73,6 +73,18 @@ test("browser Forward locks source controls until its metric request settles eve
     await expect(
       report.getByRole("button", { name: "Cancel report operation" }),
     ).toHaveCount(0);
+    let locationChecks = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/refresh")) locationChecks++;
+    });
+    await page
+      .getByRole("button", { name: "Review configured access", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
+    await expect(report).toHaveCount(0);
+    expect(locationChecks).toBe(0);
   } finally {
     release();
     await source.close();

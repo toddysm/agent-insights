@@ -668,7 +668,7 @@ function App(): ReactElement {
               ref={wizard}
               status={status}
               hidden={!showWizard}
-              disabled={busy || analysisLocked || !status}
+              disabled={busy || analysisLocked}
               locationCheck={locationCheck}
               feedback={showWizard ? readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null) : null}
               send={request}
@@ -705,7 +705,7 @@ function App(): ReactElement {
                     wizard.current?.reviewLocations();
                     document.getElementById("session-wizard")?.scrollIntoView({ block: "start" });
                   }}
-                  disabled={busy || analysisLocked}
+                  disabled={busy || analysisLocked || !status}
                 >
                   Review configured access
                 </button>

@@ -879,6 +879,13 @@ test("initial status failure offers an explicit retry without reloading launch a
       "Synthetic initial status failure.",
     );
     await expect(wizard).toHaveCount(0);
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await expect(
+      page.getByRole("button", {
+        name: "Review configured access",
+        exact: true,
+      }),
+    ).toBeDisabled();
     const retry = page.getByRole("button", {
       name: "Retry location check",
       exact: true,
@@ -897,6 +904,12 @@ test("initial status failure offers an explicit retry without reloading launch a
     ).toBeFocused();
     await expect(page.getByRole("alert")).toHaveCount(0);
     await expect(retry).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: "Review configured access",
+        exact: true,
+      }),
+    ).toBeEnabled();
     expect(requests.filter((url) => url.endsWith("/api/status"))).toHaveLength(
       1,
     );
@@ -965,9 +978,20 @@ test("shared access review checks explicitly and discards a cached Local session
     await expect(
       page.getByRole("region", { name: "Session report", exact: true }),
     ).toBeVisible();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page
-      .getByRole("button", { name: "Find another session", exact: true })
+      .getByRole("button", { name: "Review configured access", exact: true })
       .click();
+    await expect(
+      wizard.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
+    await expect(
+      page.getByRole("region", { name: "Session report", exact: true }),
+    ).toHaveCount(0);
+    expect(requests.filter((url) => url.endsWith("/api/refresh"))).toHaveLength(
+      1,
+    );
+    await wizard.getByRole("button", { name: "Back", exact: true }).click();
     await expect(
       wizard.getByLabel("Recording filename inside this folder"),
     ).toHaveValue("synthetic.jsonl");
