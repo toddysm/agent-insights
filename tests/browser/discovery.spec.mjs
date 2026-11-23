@@ -573,6 +573,62 @@ test("multiple grants are readable choices; unavailable paths stay visible and s
   );
 });
 
+test("short and highly zoomed viewports keep wizard header and footer visible without a hard minimum height", async ({
+  page,
+}) => {
+  await withWizard(page, async ({ wizard }) => {
+    for (const viewport of [
+      { width: 1200, height: 480 },
+      { width: 320, height: 225 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await wizard.getByRole("button", { name: "Start over" }).click();
+      await choose(wizard, /^Copilot Choose/);
+      const header = wizard.locator(".wizard-header");
+      const footer = wizard.locator(".wizard-footer");
+      const headerBounds = await header.boundingBox();
+      const footerBounds = await footer.boundingBox();
+      expect(headerBounds.y).toBeGreaterThanOrEqual(0);
+      expect(footerBounds.y + footerBounds.height).toBeLessThanOrEqual(
+        viewport.height,
+      );
+      await expect(
+        wizard.getByRole("button", { name: "Back", exact: true }),
+      ).toBeInViewport();
+      await expect(
+        wizard.getByRole("button", { name: "Next", exact: true }),
+      ).toBeInViewport();
+      const body = wizard.locator(".wizard-body");
+      await body.evaluate((element) => {
+        element.scrollTop = element.scrollHeight;
+      });
+      expect(await footer.boundingBox()).toEqual(footerBounds);
+      expect(await header.boundingBox()).toEqual(headerBounds);
+      expect(
+        await page.evaluate(
+          () => document.documentElement.scrollWidth <= innerWidth,
+        ),
+      ).toBe(true);
+    }
+    await choose(wizard, /^Local/);
+    await choose(wizard, /^I have a recorded/);
+    await wizard
+      .getByLabel("Recording filename inside this folder")
+      .fill("synthetic.jsonl");
+    await wizard
+      .getByRole("button", { name: "Large recordings and file tools" })
+      .click();
+    await expect(
+      page.getByText("Advanced file tools and configured access", {
+        exact: true,
+      }),
+    ).toBeFocused();
+    await expect(
+      page.getByRole("region", { name: "Bounded JSONL scan" }),
+    ).toBeVisible();
+  });
+});
+
 test("normal steps fit desktop and mobile; expanded details scroll inside a stationary navigation footer", async ({
   page,
 }) => {

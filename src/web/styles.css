@@ -607,3 +607,16 @@ summary { cursor: pointer; }
   .wizard-card { padding: 10px 12px; }
   .wizard-card strong { font-size: 14px; line-height: 1.4; }
 }
+@media (max-height: 540px) {
+  body:has(.source-wizard) .sidebar,
+  main:has(.source-wizard) > header { display: none; }
+  main:has(.source-wizard) { margin: 0; padding: 0; max-width: none; }
+  .source-wizard { height: 100dvh; min-height: 0; border-radius: 0; margin-bottom: 0; }
+  .wizard-header { padding: 8px 12px; }
+  .wizard-heading h2 { font-size: 18px; }
+  .wizard-progress { margin-top: 8px; gap: 6px; }
+  .wizard-progress li { font-size: 10px; padding-top: 4px; }
+  .wizard-body { padding: 12px; }
+  .wizard-footer { padding: 8px 12px; }
+  .wizard-footer button { padding: 6px 10px; font-size: 13px; line-height: 1.4; }
+}

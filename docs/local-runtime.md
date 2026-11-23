@@ -581,6 +581,9 @@ requires a renewed review, and repeating a search clears the previous selection.
 **Open report** opens only a selected available session. **Find another session**
 discards the current report and starts again. Normal questions fit a compact
 wizard; expanded details/results scroll internally while Back/Next stay visible.
+On short or highly zoomed screens the wizard fills the viewport and temporarily
+omits the surrounding Sources header/sidebar. Its compact header/footer remain
+visible while the step body scrolls; advanced tools remain reachable below it.
 Claude Code, Codex and Cloud Hosted stop with a **Not supported** banner.
 **I'm not sure** provides identification guidance without guessing a runtime.
 Local recording instructions cover only future sessions, start with content
