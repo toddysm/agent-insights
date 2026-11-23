@@ -29,11 +29,13 @@ import {
   errorSchema,
   statusSchema,
   type RuntimeStatus,
+  type ReadRequest,
   type ReadSetRequest,
 } from "../runtime/protocol.js";
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
 import { SourceDiscoveryPanel } from "./source-discovery.js";
+import { SourceChoice } from "./source-choice.js";
 import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
 import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
@@ -190,6 +192,8 @@ function App(): ReactElement {
   const [discoveryReset, setDiscoveryReset] = useState(0);
   const [operationId, setOperationId] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
+  const [reportSession, setReportSession] = useState("");
+  const fileTools = useRef<HTMLDetailsElement>(null);
   const generation = useRef(0);
   const [startAttempt, setStartAttempt] = useState<{
     previousRunId: string | null;
@@ -245,6 +249,7 @@ function App(): ReactElement {
     setView(null);
     setScannedReport(null);
     setSessionId("");
+    setReportSession("");
     setAcknowledged(false);
   }
 
@@ -458,8 +463,9 @@ function App(): ReactElement {
    * This resets analysis acknowledgement and does not invoke a model.
    * The backend owns parsing; absent readers are not replaced with synthetic evidence.
    * Informational notices remain visible without relabeling a completed read as partial.
+   * Resolve with the opened view, or null after a visible failure or superseded request.
    */
-  async function read(selection?: ReadSetRequest): Promise<void> {
+  async function read(selection?: ReadSetRequest): Promise<ReadView | null> {
     const current = ++generation.current;
     setBusy(true);
     setError("");
@@ -471,9 +477,9 @@ function App(): ReactElement {
         relativePath,
         format,
       });
-      if (current !== generation.current) return;
+      if (current !== generation.current) return null;
       const nextStatus = await request("/api/status", statusSchema);
-      if (current !== generation.current) return;
+      if (current !== generation.current) return null;
       setView(view);
       setStatus(nextStatus);
       const partial =
@@ -499,6 +505,7 @@ function App(): ReactElement {
       setReadNotice(
         `${summary} ${limitations}`,
       );
+      return view;
     } catch (failure) {
       if (current === generation.current) {
         setOversizedRead(!selection && failure instanceof RequestError && failure.code === "SOURCE_TOO_LARGE");
@@ -508,8 +515,30 @@ function App(): ReactElement {
             : "The source could not be read.",
         );
       }
+      return null;
     } finally {
       if (current === generation.current) setBusy(false);
+    }
+  }
+
+  /** Hand off an explicitly selected Local session from the wizard's retained read; no new read or model call occurs. */
+  function openWizardFile(next: ReadView, selectedSession: string): void {
+    setView(next);
+    setSessionId(selectedSession);
+    setReportSession(selectedSession);
+    setReadNotice("");
+  }
+
+  /** Preserve the wizard's configured selection when navigating to explicit large-file and supplemental tools. */
+  function showFileTools(selection: ReadRequest): void {
+    setSourceId(selection.sourceId);
+    setRelativePath(selection.relativePath);
+    setFormat(selection.format);
+    clearView();
+    if (fileTools.current) {
+      fileTools.current.open = true;
+      fileTools.current.scrollIntoView({ block: "start" });
+      fileTools.current.querySelector("summary")?.focus();
     }
   }
 
@@ -578,7 +607,7 @@ function App(): ReactElement {
                 )}
               </div>
             )}
-            {status && <SourceDiscoveryPanel
+            {status && !view && !scannedReport && <SourceDiscoveryPanel
               key={discoveryReset}
               status={status}
               disabled={busy || analysisLocked}
@@ -590,12 +619,17 @@ function App(): ReactElement {
               }}
               onBusy={setBusy}
               onRead={read}
+              onOpenFile={openWizardFile}
+              onFileTools={showFileTools}
             />}
+            {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { generation.current++; clearView(); setDiscoveryReset((previous) => previous + 1); }}>Find another session</button>}
             <section
               id="sources"
               className="panel"
               aria-labelledby="sources-heading"
             >
+              <details ref={fileTools} className="file-tools">
+              <summary>Advanced file tools and configured access</summary>
               <div className="section-heading">
                 <div>
                   <h2 id="sources-heading">Configured locations</h2>
@@ -653,24 +687,18 @@ function App(): ReactElement {
                         void read();
                       }}
                     >
-                      <label htmlFor="source">Source location</label>
-                      <select
-                        id="source"
+                      <SourceChoice
+                        id="source" label="Source location"
+                        sources={status.sources}
                         value={sourceId}
                         disabled={busy || analysisLocked}
-                        onChange={(event) => {
-                          setSourceId(event.target.value);
+                        onChange={(id) => {
+                          setSourceId(id);
                           setRelativePath("");
                           setReadNotice("");
                           clearView();
                         }}
-                      >
-                        {status.sources.map((source) => (
-                          <option value={source.id} key={source.id}>
-                            {source.path}
-                          </option>
-                        ))}
-                      </select>
+                      />
                       {selected?.kind === "directory" && (
                         <>
                           <label htmlFor="relative-path">
@@ -760,6 +788,7 @@ function App(): ReactElement {
               ) : (
                 <p role="status">Checking configured locations...</p>
               )}
+              </details>
               {readNotice && (
                 <p className="notice" role="status">
                   {readNotice}
@@ -817,9 +846,11 @@ function App(): ReactElement {
                 </section>
               )}
             </section>
-            {view && <SessionReportPanel key={view.id} view={view} send={request} />}
+            {view && <SessionReportPanel key={view.id} view={view} send={request} initialSession={reportSession} />}
             {scannedReport && <ScannedSessionReportPanel key={`${scannedReport.id}/${scannedReport.sessionId}/${scannedReportAttempt}`}
               selection={scannedReport} send={request} onBusy={setBusy} />}
+            <details className="analysis-details" open={Boolean(view || scannedReport || run || analysisLocked)}>
+            <summary>Analysis availability and privacy</summary>
             <section
               className="panel analysis"
               aria-labelledby="analysis-heading"
@@ -997,6 +1028,7 @@ function App(): ReactElement {
                 </div>
               )}
             </section>
+            </details>
           </>
         )}
       </main>

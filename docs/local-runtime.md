@@ -292,13 +292,16 @@ smoke test. Synthetic success is not live-producer or Agent Host certification.
 
 1. Start with `--source` pointing to an existing VS Code OpenTelemetry file export
    or its authorized parent directory. Do not copy the capture into this project.
-2. Open the private launch URL and select the configured source. For a directory,
-   enter the relative capture filename.
-3. Select `vscode-otel-jsonl`. For a capture up to 64 MiB, choose **Read source**.
-   For a larger capture, choose **Scan JSONL source**, select a **Scanned session**,
+2. Open the private launch URL. In **Find your sessions**, choose **Copilot**,
+   then **Local**, then **I have a recorded file**. Confirm each choice with
+   **Next**. For a directory, enter the relative recording filename.
+3. For a capture up to 64 MiB, choose **Find sessions**, select a recorded session,
+   then **Open report**. The format is explicitly `vscode-otel-jsonl`, not guessed.
+   For a larger capture, choose **Large recordings and file tools**, then
+   **Scan JSONL source**, select a **Scanned session**,
    then **Open session report** as described [above](#scan-large-jsonl-captures-in-place).
    Do not route a large capture back through **Read source**.
-4. For a small read, inspect the observed session/record counts, **Read coverage** and expandable
+4. After opening a small read, inspect the observed session/record counts, **Read coverage** and expandable
    **Read limitations**. Reading does not invoke a model.
    **Operation classification** separates model calls (chat/embeddings), tool
    calls, agent executions and hook executions. Missing/empty, malformed and
@@ -526,15 +529,25 @@ defines coverage, accounting and original-anchor requirements.
 
 ### Discover Agent Host sessions
 
-The **Discover Agent Host sessions** panel is the primary source workflow.
+The **Find your sessions** wizard is the primary source workflow.
 Like native reading, production discovery is **explicitly unavailable** until a
 separately qualified compatible helper release is shipped. Preparing a developer
 candidate does not remove that gate. The supplemental extension exporter remains
 a separate format, not a substitute for Agent Host evidence.
 
-Start with `--source` for every approved location, then select discovery roots
-in the panel. Nothing scans the home directory or guesses an operating-system
-default. Each root selects a startup grant and a confined relative path:
+Start with `--source` for every approved file or folder. Choose **Copilot**,
+then **Agent Host**, confirming each choice with **Next**. Choose **VS Code
+session information**, then review read-only access. **Add saved session folder**
+adds **Copilot saved session history**, **VS Code saved session details**, or
+another session-information selection. **Folder guidance and custom selection**
+preserves custom/profile paths and exact-file selection. **Full paths and read-only
+access** shows every configured path. One configured file or folder is shown as
+information, not a redundant dropdown; multiple choices use distinguishing path
+names, with unavailable choices and recovery guidance kept visible.
+
+The browser does not detect VS Code installations, grant permissions, scan the
+home directory or guess an operating-system default. These choices use only
+startup-configured access. Each selection confines its relative path:
 
 | Role | Inspected locations |
 | --- | --- |
@@ -554,12 +567,29 @@ extensionless files and directories ending in `.jsonl` or `.db` remain usable.
 An absent `profiles` directory means no custom profiles, not a missing selected
 settings home. Invalid selected roots and inaccessible existing children remain explicit issues.
 
-**Discover sessions** sends an authenticated `POST /api/discover` with
+After reviewing access, **Continue** reaches the explicit search step.
+**Find sessions** sends an authenticated `POST /api/discover` with
 `{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
-`catalog`, `history` or `overlay`. **Refresh discovered sessions** repeats that
+`catalog`, `history` or `overlay`. **Find sessions again** repeats that
 explicit request, replacing the list and invalidating prior read/analysis.
 **Refresh sources** drops the discovery list and current evidence. No watcher,
 session database, saved catalog or archive is created.
+
+Selection alone never advances or reads. **Back** preserves setup answers;
+changing an upstream answer clears dependent setup/results. Editing access
+requires a renewed review, and repeating a search clears the previous selection.
+**Open report** opens only a selected available session. **Find another session**
+discards the current report and starts again. Normal questions fit a compact
+wizard; expanded details/results scroll internally while Back/Next stay visible.
+Claude Code, Codex and Cloud Hosted stop with a **Not supported** banner.
+**I'm not sure** provides identification guidance without guessing a runtime.
+Local recording instructions cover only future sessions, start with content
+capture off and never change VS Code settings automatically. Model analysis and
+its consent remain separate from finding/opening sessions.
+
+**Advanced file tools and configured access** retains the explicit manual reader,
+bounded scan and **Refresh sources** controls. **Analysis availability and privacy**
+holds the provider disclosure; it expands when a report or analysis is active.
 
 Discovery verifies the pinned native header and current normalized catalog
 ownership. Physical aliases deduplicate; distinct files claiming one SDK identity

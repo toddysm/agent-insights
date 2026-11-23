@@ -70,6 +70,7 @@ async function openNativeReport(page, includeExcluded = false) {
   });
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page
       .getByRole("button", { name: "Read source", exact: true })
       .click();

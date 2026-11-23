@@ -459,6 +459,109 @@ dd {
 .streaming-scan label {
   display: block;
 }
+.source-wizard {
+  display: flex;
+  flex-direction: column;
+  height: min(660px, calc(100dvh - 180px));
+  min-height: 340px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  margin-bottom: 16px;
+}
+.wizard-header {
+  padding: 20px 24px 16px;
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.wizard-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+.wizard-heading h2 { margin: 0; }
+.wizard-heading button { font-size: 12px; padding: 4px 8px; }
+.wizard-progress {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin: 20px 0 0;
+  padding: 0;
+}
+.wizard-progress li {
+  border-top: 3px solid var(--line);
+  padding-top: 8px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.wizard-progress .done { border-color: var(--muted); }
+.wizard-progress [aria-current="step"] { color: var(--teal); border-color: var(--teal); font-weight: bold; }
+.wizard-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 20px 24px;
+  overflow-wrap: anywhere;
+  scroll-padding: 12px;
+}
+.wizard-body h3 { font-size: 24px; line-height: 1.25; margin-bottom: 16px; }
+.wizard-context { font-size: 12px; color: var(--muted); margin: 0 0 12px; }
+.wizard-choices { border: 0; display: grid; padding: 0; gap: 8px; }
+.wizard-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  cursor: pointer;
+}
+.wizard-card:hover { border-color: var(--teal); }
+.wizard-card:has(input:checked) { border-color: var(--teal); background: var(--paper); }
+.wizard-card:has(input:disabled) { cursor: not-allowed; }
+.wizard-card input, .wizard-check input { width: 16px; height: 16px; flex: none; margin: 0; accent-color: var(--teal); }
+.wizard-card strong { display: block; font-size: 15px; }
+.wizard-card small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; line-height: 1.4; font-weight: normal; }
+.wizard-check { display: flex; gap: 10px; align-items: start; margin: 16px 0; font-weight: normal; }
+.wizard-check input { margin-top: 3px; }
+.wizard-body details { margin: 12px 0; padding: 12px; border: 1px solid var(--line); border-radius: 10px; }
+summary { cursor: pointer; }
+.wizard-body summary { font-size: 13px; }
+.wizard-body pre { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; }
+.wizard-footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex: none;
+  border-top: 1px solid var(--line);
+  padding: 16px 24px;
+  background: var(--paper);
+}
+.wizard-footer button.primary { margin: 0; }
+.wizard-footer span { color: var(--muted); font-size: 12px; }
+.wizard-searches { list-style: none; padding: 0; margin: 0; }
+.wizard-searches li { padding: 12px 0; border-bottom: 1px solid var(--line); }
+.wizard-searches strong, .wizard-searches code { display: block; }
+.wizard-searches button { margin: 4px 8px 0 0; font-size: 12px; }
+.source-choice code { display: block; margin: 4px 0; }
+.source-choice select { display: block; }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+.file-tools > summary, .analysis-details > summary { padding: 4px 0; font-size: 14px; }
+.file-tools .section-heading { margin-top: 20px; }
+.analysis-details .analysis { margin-top: 16px; }
 @media (max-width: 760px) {
   .sidebar {
     position: static;
@@ -494,4 +597,13 @@ dd {
     flex-direction: column;
     gap: 10px;
   }
+  .source-wizard { height: min(640px, calc(100dvh - 180px)); }
+  .wizard-header, .wizard-body { padding: 16px; }
+  .wizard-heading h2 { font-size: 21px; }
+  .wizard-progress { gap: 8px; }
+  .wizard-progress li { font-size: 11px; }
+  .wizard-footer { padding: 12px 16px; }
+  .wizard-footer span { display: none; }
+  .wizard-card { padding: 10px 12px; }
+  .wizard-card strong { font-size: 14px; line-height: 1.4; }
 }
