@@ -295,7 +295,8 @@ smoke test. Synthetic success is not live-producer or Agent Host certification.
 2. Open the private launch URL. In **Find your sessions**, choose **Copilot**,
    then **Local**, then **I have a recorded file**. Confirm each choice with
    **Next**. For a directory, enter the relative recording filename; surrounding
-   whitespace is removed when the read is submitted.
+   whitespace is removed when the read is submitted or the selection is sent to
+   **Large recordings and file tools**.
 3. For a capture up to 64 MiB, choose **Find sessions**, select a recorded session,
    then **Open report**. The format is explicitly `vscode-otel-jsonl`, not guessed.
    For a larger capture, choose **Large recordings and file tools**, then

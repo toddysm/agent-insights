@@ -978,7 +978,14 @@ export function SourceDiscoveryPanel({
             <button
               type="button"
               disabled={disabled}
-              onClick={() => onFileTools(file)}
+              onClick={() => {
+                const selection = {
+                  ...file,
+                  relativePath: file.relativePath.trim(),
+                };
+                setFile(selection);
+                onFileTools(selection);
+              }}
             >
               Large recordings and file tools
             </button>

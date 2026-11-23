@@ -392,6 +392,19 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     await wizard
       .getByLabel("Recording filename inside this folder")
       .fill("  synthetic.jsonl  ");
+    await wizard
+      .getByRole("button", { name: "Large recordings and file tools" })
+      .click();
+    await expect(page.getByLabel("File inside this directory")).toHaveValue(
+      "synthetic.jsonl",
+    );
+    await expect(
+      wizard.getByLabel("Recording filename inside this folder"),
+    ).toHaveValue("synthetic.jsonl");
+    expect(requests.some((url) => /\/api\/(read|scan)$/.test(url))).toBe(false);
+    await wizard
+      .getByLabel("Recording filename inside this folder")
+      .fill("  synthetic.jsonl  ");
     expect(requests.some((url) => url.endsWith("/api/read"))).toBe(false);
     await page.route("**/api/read", (route) => {
       expect(route.request().postDataJSON().relativePath).toBe(
