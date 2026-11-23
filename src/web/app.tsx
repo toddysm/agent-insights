@@ -194,6 +194,16 @@ function App(): ReactElement {
   const [acknowledged, setAcknowledged] = useState(false);
   const [reportSession, setReportSession] = useState("");
   const fileTools = useRef<HTMLDetailsElement>(null);
+  const pendingWizardFocus = useRef(false);
+  useEffect(() => {
+    if (view) document.getElementById("report-heading")?.focus();
+  }, [view]);
+  useEffect(() => {
+    if (pendingWizardFocus.current) {
+      document.getElementById("wizard-question")?.focus();
+      pendingWizardFocus.current = false;
+    }
+  }, [discoveryReset]);
   const generation = useRef(0);
   const [startAttempt, setStartAttempt] = useState<{
     previousRunId: string | null;
@@ -471,6 +481,7 @@ function App(): ReactElement {
     setError("");
     setReadNotice("");
     clearView();
+    if (!selection) setDiscoveryReset((previous) => previous + 1);
     try {
       const view = await request(selection ? "/api/read-set" : "/api/read", readViewSchema, selection ?? {
         sourceId,
@@ -526,6 +537,7 @@ function App(): ReactElement {
     setView(next);
     setSessionId(selectedSession);
     setReportSession(selectedSession);
+    setAcknowledged(false);
     setReadNotice("");
   }
 
@@ -534,7 +546,7 @@ function App(): ReactElement {
     setSourceId(selection.sourceId);
     setRelativePath(selection.relativePath);
     setFormat(selection.format);
-    clearView();
+    clearView(false);
     if (fileTools.current) {
       fileTools.current.open = true;
       fileTools.current.scrollIntoView({ block: "start" });
@@ -612,9 +624,9 @@ function App(): ReactElement {
               status={status}
               disabled={busy || analysisLocked}
               send={request}
-              onStart={() => {
+              onStart={(resetScan) => {
                 generation.current++;
-                clearView();
+                clearView(resetScan);
                 setReadNotice("");
               }}
               onBusy={setBusy}
@@ -622,7 +634,7 @@ function App(): ReactElement {
               onOpenFile={openWizardFile}
               onFileTools={showFileTools}
             />}
-            {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { generation.current++; clearView(); setDiscoveryReset((previous) => previous + 1); }}>Find another session</button>}
+            {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { pendingWizardFocus.current = true; generation.current++; clearView(); setDiscoveryReset((previous) => previous + 1); }}>Find another session</button>}
             <section
               id="sources"
               className="panel"
@@ -767,7 +779,7 @@ function App(): ReactElement {
                       relativePath={relativePath}
                       disabled={busy || analysisLocked || !selected?.available}
                       send={request}
-                      onStart={() => { clearView(false); setReadNotice(""); }}
+                      onStart={() => { clearView(false); setDiscoveryReset((previous) => previous + 1); setReadNotice(""); }}
                       onBusy={setBusy}
                       onReport={openScannedReport}
                     />

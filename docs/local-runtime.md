@@ -590,6 +590,12 @@ its consent remain separate from finding/opening sessions.
 **Advanced file tools and configured access** retains the explicit manual reader,
 bounded scan and **Refresh sources** controls. **Analysis availability and privacy**
 holds the provider disclosure; it expands when a report or analysis is active.
+Editing wizard answers alone preserves an independently completed bounded scan.
+Starting a new read/discovery or refreshing sources invalidates prior evidence;
+starting a sibling manual read or scan also clears cached wizard results.
+Opening a Local report requires fresh analysis consent. Report opening moves
+keyboard focus to its heading; returning moves focus to the wizard question,
+without stealing focus on initial page load.
 
 Discovery verifies the pinned native header and current normalized catalog
 ownership. Physical aliases deduplicate; distinct files claiming one SDK identity

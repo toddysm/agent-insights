@@ -134,6 +134,17 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
     await expect(panel.getByText("FICTIONAL_DETAIL_AFTER_SELECTION", { exact: false })).toHaveCount(0);
     await expect(panel.getByLabel("Scanned session").locator("option")).toHaveCount(21);
     await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    const selectedSession = await panel.getByLabel("Scanned session").inputValue();
+    const wizard = page.getByRole("region", { name: "Find your sessions", exact: true });
+    await wizard.getByRole("radio", { name: /^Copilot Choose/ }).check();
+    await wizard.getByRole("button", { name: "Next", exact: true }).click();
+    await wizard.getByRole("radio", { name: /^Agent Host/ }).check();
+    await wizard.getByRole("button", { name: "Next", exact: true }).click();
+    await wizard.getByRole("button", { name: "Next", exact: true }).click();
+    await wizard.getByRole("checkbox").check();
+    await expect(panel.getByLabel("Scanned session")).toHaveValue(selectedSession);
+    await expect(panel.getByLabel("Scanned session").locator("option")).toHaveCount(21);
+    expect(requests.filter((url) => url.endsWith("/api/scan"))).toHaveLength(1);
     await panel.getByRole("button", { name: "Load original evidence" }).click();
     await expect(panel.getByRole("heading", { name: "Original line 1", exact: true })).toBeVisible();
     await expect(panel.locator("article")).toHaveCount(20);

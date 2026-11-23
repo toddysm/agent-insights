@@ -9,7 +9,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { productionMultiSourceReaders } from "../../.build/src/evidence/readers/index.js";
-import { syntheticReader } from "../../.build/tests/fixtures/analysis.js";
+import {
+  syntheticOperation,
+  syntheticProvider,
+  syntheticReader,
+} from "../../.build/tests/fixtures/analysis.js";
 
 /** Own all test grants and teardown; no private source or external model is used. */
 async function withWizard(page, run, multiple = false) {
@@ -50,6 +54,8 @@ async function withWizard(page, run, multiple = false) {
         },
       ],
       multiSourceReaders: productionMultiSourceReaders,
+      analysisOperations: [syntheticOperation],
+      analysisProvider: syntheticProvider,
     },
   );
   const requests = [];
@@ -405,6 +411,16 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     await expect(
       page.getByRole("region", { name: "Session report", exact: true }),
     ).toHaveCount(0);
+    await page
+      .getByText("Analysis availability and privacy", { exact: true })
+      .click();
+    await page
+      .getByRole("combobox", { name: "Analysis", exact: true })
+      .selectOption("synthetic");
+    const consent = page.getByRole("checkbox", {
+      name: /I understand that selected content/,
+    });
+    await consent.check();
     await wizard.getByRole("radio", { name: /^second-native/ }).check();
     await wizard.getByRole("button", { name: "Open report" }).click();
     await expect(
@@ -413,6 +429,17 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     await expect(
       page.getByLabel("Report session (from source read)"),
     ).toHaveValue("second-session");
+    await expect(
+      page.getByRole("heading", { name: "Session report", exact: true }),
+    ).toBeFocused();
+    await expect(consent).not.toBeChecked();
+    await expect(
+      page.getByRole("button", { name: "Analyze", exact: true }),
+    ).toBeDisabled();
+    await consent.check();
+    await expect(
+      page.getByRole("button", { name: "Analyze", exact: true }),
+    ).toBeEnabled();
     await expect(wizard).toHaveCount(0);
     expect(requests.some((url) => url.endsWith("/api/analysis/start"))).toBe(
       false,
@@ -423,7 +450,61 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
         name: "Which coding assistant did you use?",
       }),
     ).toBeVisible();
+    await expect(
+      wizard.getByRole("heading", {
+        name: "Which coding assistant did you use?",
+      }),
+    ).toBeFocused();
   });
+});
+
+test("sibling reads and scans invalidate a cached Local selection even when the new read fails", async ({
+  page,
+}) => {
+  for (const sibling of ["manual", "scan"]) {
+    await withWizard(page, async ({ wizard }) => {
+      await choose(wizard, /^Copilot Choose/);
+      await choose(wizard, /^Local/);
+      await choose(wizard, /^I have a recorded/);
+      await wizard
+        .getByLabel("Recording filename inside this folder")
+        .fill("synthetic.jsonl");
+      await wizard
+        .getByRole("button", { name: "Find sessions", exact: true })
+        .click();
+      await wizard.getByRole("radio", { name: /^second-native/ }).check();
+      await expect(
+        wizard.getByRole("button", { name: "Open report" }),
+      ).toBeEnabled();
+      await page
+        .getByText("Advanced file tools and configured access", { exact: true })
+        .click();
+      await page
+        .getByLabel("File inside this directory")
+        .fill(sibling === "manual" ? "missing.jsonl" : "synthetic.jsonl");
+      if (sibling === "manual") {
+        await page
+          .getByRole("button", { name: "Read source", exact: true })
+          .click();
+        await expect(page.getByRole("alert").first()).toBeVisible();
+      } else {
+        await page
+          .getByRole("button", { name: "Scan JSONL source", exact: true })
+          .click();
+      }
+      await expect(
+        wizard.getByRole("button", { name: "Open report" }),
+      ).toHaveCount(0);
+      await expect(
+        wizard.getByRole("heading", {
+          name: "Which coding assistant did you use?",
+        }),
+      ).toBeVisible();
+      await expect(
+        page.getByRole("region", { name: "Session report", exact: true }),
+      ).toHaveCount(0);
+    });
+  }
 });
 
 test("multiple grants are readable choices; unavailable paths stay visible and source changes reset contained paths", async ({

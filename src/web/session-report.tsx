@@ -914,7 +914,7 @@ export function SessionReportPanel({ view, send, initialSession }: ReportProps):
       className="panel session-report"
       aria-labelledby="report-heading"
     >
-      <h2 id="report-heading">Session report</h2>
+      <h2 id="report-heading" tabIndex={-1}>Session report</h2>
       {view.sessions.length === 0 ? (
         <div className="empty">
           <h3>No attributable session is available</h3>

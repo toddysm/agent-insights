@@ -25,7 +25,7 @@ interface DiscoveryProps {
     schema: z.ZodType<T>,
     body?: unknown,
   ) => Promise<T>;
-  readonly onStart: () => void;
+  readonly onStart: (resetScan: boolean) => void;
   readonly onBusy: (busy: boolean) => void;
   readonly onRead: (selection: ReadSetRequest) => Promise<ReadView | null>;
   readonly onOpenFile: (view: ReadView, sessionId: string) => void;
@@ -199,15 +199,15 @@ export function SourceDiscoveryPanel({
     [],
   );
 
-  /** Input changes discard all read/discovery selections; no backend operation starts from a radio or text edit. */
-  function invalidate(resetAccess = true): void {
+  /** Edits clear wizard evidence without discarding independent scans; only actual source submissions reset scans. */
+  function invalidate(resetAccess = true, resetScan = false): void {
     generation.current++;
     setResult(null);
     setFileView(null);
     setSelectedSession("");
     setError("");
     if (resetAccess) setAcknowledged(false);
-    onStart();
+    onStart(resetScan);
   }
 
   /** Edit one stable entry without renumbering or replacing the remaining entries. */
@@ -252,7 +252,7 @@ export function SourceDiscoveryPanel({
 
   /** Search only on explicit submission. Transport/backend errors remain visible and never restore earlier sessions. */
   async function discover(): Promise<void> {
-    invalidate(false);
+    invalidate(false, true);
     const current = generation.current;
     onBusy(true);
     try {
@@ -281,7 +281,7 @@ export function SourceDiscoveryPanel({
 
   /** Read the explicit Local recording, not an inferred format or another producer; large-file tools remain an explicit alternative. */
   async function readFile(): Promise<void> {
-    invalidate(false);
+    invalidate(false, true);
     const current = generation.current;
     onBusy(true);
     try {
