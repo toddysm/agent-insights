@@ -939,7 +939,7 @@ function App(): ReactElement {
                   it may differ from another Copilot chat's login.
                 </p>
                 <p>
-                  Selecting or refreshing sources does not send their content to
+                  Selecting sources or checking locations does not send their content to
                   a model. Analysis requires an explicit acknowledgement and
                   action. Results are model judgments, not independently
                   verified facts.

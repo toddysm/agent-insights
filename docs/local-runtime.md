@@ -624,8 +624,10 @@ in-memory launch credential; failure remains retryable without a page reload.
 is also available in the Local file step. **Analysis availability and privacy**
 holds the provider disclosure; it expands when a report or analysis is active.
 Editing wizard answers alone preserves an independently completed bounded scan.
-Starting a new read/discovery or refreshing sources invalidates prior evidence;
+Starting a new read/discovery or checking locations invalidates prior evidence;
 starting a sibling manual read or scan also clears cached wizard results.
+Returning from configured-access review to Agent Host discovery goes back to the
+location-review checkbox, so access can be acknowledged again before searching.
 Editing an advanced file path, source or reader format while a report is open
 dismisses that report and clears its cached wizard results, while retaining setup
 answers and keyboard focus in the edited control. Find sessions explicitly again

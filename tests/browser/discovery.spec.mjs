@@ -503,6 +503,85 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
   });
 });
 
+for (const stage of ["find", "sessions"]) {
+  test(`access review from ${stage} returns to renewed location consent before discovery`, async ({
+    page,
+  }) => {
+    await withWizard(page, async ({ wizard, runtime, requests }) => {
+      await page.route("**/api/status", async (route) => {
+        const status = await (await route.fetch()).json();
+        await route.fulfill({
+          json: {
+            ...status,
+            multiSourceReaders: status.multiSourceReaders.map((reader) =>
+              reader.id === "agent-host-sessions"
+                ? { ...reader, available: true, reason: null }
+                : reader,
+            ),
+          },
+        });
+      });
+      await page.route("**/api/discover", (route) =>
+        route.fulfill({
+          json: {
+            id: "synthetic-access-return",
+            startedAtMs: 1,
+            finishedAtMs: 2,
+            issues: [],
+            observations: [],
+            locators: [],
+            sessions: [],
+          },
+        }),
+      );
+      await page.goto("about:blank");
+      await page.goto(runtime.launchUrl);
+      await reviewHost(wizard);
+      if (stage === "sessions") {
+        await wizard
+          .getByRole("button", { name: "Find sessions", exact: true })
+          .click();
+        await expect(
+          wizard.getByRole("button", {
+            name: "Find sessions again",
+            exact: true,
+          }),
+        ).toBeVisible();
+      }
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      await page
+        .getByRole("button", { name: "Review configured access", exact: true })
+        .click();
+      await expect(
+        wizard.getByRole("heading", { name: "Configured access", exact: true }),
+      ).toBeFocused();
+      await wizard.getByRole("button", { name: "Back", exact: true }).click();
+      const review = wizard.getByRole("checkbox", {
+        name: /I've reviewed these locations/,
+      });
+      await expect(review).not.toBeChecked();
+      await expect(
+        wizard.getByRole("button", { name: "Continue", exact: true }),
+      ).toBeDisabled();
+      await review.check();
+      await wizard
+        .getByRole("button", { name: "Continue", exact: true })
+        .click();
+      await expect(
+        wizard.getByRole("button", { name: "Find sessions", exact: true }),
+      ).toBeEnabled();
+      expect(
+        requests.filter((url) => url.endsWith("/api/discover")),
+      ).toHaveLength(stage === "sessions" ? 1 : 0);
+      expect(
+        requests.some((url) =>
+          /\/api\/(refresh|read|read-set|analysis\/start)$/.test(url),
+        ),
+      ).toBe(false);
+    });
+  });
+}
+
 test("location checks preserve selections but clear results and consent; failed checks cannot reuse old availability", async ({
   page,
 }) => {

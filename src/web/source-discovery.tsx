@@ -235,8 +235,8 @@ export function SourceDiscoveryPanel({
       locationReturn.current =
         step === "locations"
           ? locationReturn.current
-          : step === "sessions"
-            ? "find"
+          : step === "find" || step === "sessions"
+            ? "access"
             : step === "file-sessions"
               ? "file"
               : step;
