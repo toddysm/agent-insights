@@ -87,9 +87,19 @@ async function choose(wizard, name) {
 async function reviewHost(wizard) {
   await choose(wizard, /^Copilot Choose/);
   await choose(wizard, /^Agent Host/);
-  await wizard.getByRole("button", { name: "Next", exact: true }).click();
-  await wizard.getByRole("checkbox").check();
+  await wizard
+    .getByRole("checkbox", { name: /I've reviewed these locations/ })
+    .check();
   await wizard.getByRole("button", { name: "Continue", exact: true }).click();
+}
+
+/** Expand one stable location's existing source/custom controls without changing its selection. */
+async function locationOptions(wizard, index = 0) {
+  const location = wizard.locator(".wizard-searches > li").nth(index);
+  const details = location.locator("details");
+  if (!(await details.evaluate((element) => element.open)))
+    await details.locator("summary").click();
+  return location;
 }
 
 test("decisions stay separate from Next; unsupported branches and the real Agent Host gate do not read", async ({
@@ -125,7 +135,6 @@ test("decisions stay separate from Next; unsupported branches and the real Agent
     await wizard.getByRole("button", { name: "Back", exact: true }).click();
     await choose(wizard, /^Agent Host/);
     await expect(wizard.getByRole("combobox")).toHaveCount(0);
-    await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await expect(
       wizard.getByRole("button", { name: "Continue", exact: true }),
     ).toBeDisabled();
@@ -148,7 +157,7 @@ test("decisions stay separate from Next; unsupported branches and the real Agent
 test("explicit custom/profile roots retain stable identity; refresh and edits discard stale sessions", async ({
   page,
 }) => {
-  await withWizard(page, async ({ wizard, runtime, directory, requests }) => {
+  await withWizard(page, async ({ wizard, runtime, requests }) => {
     await page.route("**/api/status", async (route) => {
       const status = await (await route.fetch()).json();
       await route.fulfill({
@@ -239,39 +248,34 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
     await page.goto(runtime.launchUrl);
     await choose(wizard, /^Copilot Choose/);
     await choose(wizard, /^Agent Host/);
-    await wizard
-      .getByText("Folder guidance and custom selection", { exact: true })
-      .click();
-    await wizard
+    const settings = await locationOptions(wizard);
+    await settings
       .getByLabel("File or folder inside this directory")
       .fill("profiles/example/globalStorage/agent-host.db");
-    await wizard.getByRole("checkbox").check();
-    await wizard.getByRole("button", { name: "Next", exact: true }).click();
+    await settings.getByRole("checkbox").check();
     await wizard
       .getByRole("button", { name: "Add saved session folder" })
       .click();
     await choose(wizard, /^VS Code saved session details/);
-    await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard
       .getByRole("button", { name: "Add saved session folder" })
       .click();
     await choose(wizard, /^Copilot saved session history/);
-    await wizard
-      .getByText("Folder guidance and custom selection", { exact: true })
-      .click();
-    await wizard
+    const history = await locationOptions(wizard, 2);
+    await history
       .getByLabel("File or folder inside this directory")
       .fill("native");
-    await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard
       .getByRole("button", { name: /^Remove.*VS Code saved session details/ })
       .click();
     await expect(
       wizard
-        .locator(".wizard-searches code")
+        .locator(".wizard-location-name")
         .filter({ hasText: / \/ native$/ }),
     ).toBeVisible();
-    await wizard.getByRole("checkbox").check();
+    await wizard
+      .getByRole("checkbox", { name: /I've reviewed these locations/ })
+      .check();
     await wizard.getByRole("button", { name: "Continue", exact: true }).click();
     expect(selections).toHaveLength(0);
     await wizard
@@ -327,16 +331,10 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
       wizard.getByRole("button", { name: "Find sessions", exact: true }),
     ).toBeEnabled();
     await wizard.getByRole("button", { name: "Back", exact: true }).click();
-    await wizard
-      .getByRole("button", { name: new RegExp(`^Edit.*${directory} native`) })
-      .click();
-    await wizard
-      .getByText("Folder guidance and custom selection", { exact: true })
-      .click();
-    await wizard
+    const retainedHistory = await locationOptions(wizard, 1);
+    await retainedHistory
       .getByLabel("File or folder inside this directory")
       .fill("changed");
-    await wizard.getByRole("button", { name: "Back", exact: true }).click();
     await expect(
       wizard.getByRole("button", { name: "Continue", exact: true }),
     ).toBeDisabled();
@@ -494,16 +492,392 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     await page.getByRole("button", { name: "Find another session" }).click();
     await expect(
       wizard.getByRole("heading", {
-        name: "Which coding assistant did you use?",
+        name: "Find sessions in your recorded file",
       }),
     ).toBeVisible();
     await expect(
       wizard.getByRole("heading", {
-        name: "Which coding assistant did you use?",
+        name: "Find sessions in your recorded file",
       }),
     ).toBeFocused();
   });
 });
+
+for (const stage of ["find", "sessions"]) {
+  test(`access review from ${stage} returns to renewed location consent before discovery`, async ({
+    page,
+  }) => {
+    await withWizard(page, async ({ wizard, runtime, requests }) => {
+      await page.route("**/api/status", async (route) => {
+        const status = await (await route.fetch()).json();
+        await route.fulfill({
+          json: {
+            ...status,
+            multiSourceReaders: status.multiSourceReaders.map((reader) =>
+              reader.id === "agent-host-sessions"
+                ? { ...reader, available: true, reason: null }
+                : reader,
+            ),
+          },
+        });
+      });
+      await page.route("**/api/discover", (route) =>
+        route.fulfill({
+          json: {
+            id: "synthetic-access-return",
+            startedAtMs: 1,
+            finishedAtMs: 2,
+            issues: [],
+            observations: [],
+            locators: [],
+            sessions: [],
+          },
+        }),
+      );
+      await page.goto("about:blank");
+      await page.goto(runtime.launchUrl);
+      await reviewHost(wizard);
+      if (stage === "sessions") {
+        await wizard
+          .getByRole("button", { name: "Find sessions", exact: true })
+          .click();
+        await expect(
+          wizard.getByRole("button", {
+            name: "Find sessions again",
+            exact: true,
+          }),
+        ).toBeVisible();
+      }
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      await page
+        .getByRole("button", { name: "Review configured access", exact: true })
+        .click();
+      await expect(
+        wizard.getByRole("heading", { name: "Configured access", exact: true }),
+      ).toBeFocused();
+      await wizard.getByRole("button", { name: "Back", exact: true }).click();
+      const review = wizard.getByRole("checkbox", {
+        name: /I've reviewed these locations/,
+      });
+      await expect(review).not.toBeChecked();
+      await expect(
+        wizard.getByRole("button", { name: "Continue", exact: true }),
+      ).toBeDisabled();
+      await review.check();
+      await wizard
+        .getByRole("button", { name: "Continue", exact: true })
+        .click();
+      await expect(
+        wizard.getByRole("button", { name: "Find sessions", exact: true }),
+      ).toBeEnabled();
+      expect(
+        requests.filter((url) => url.endsWith("/api/discover")),
+      ).toHaveLength(stage === "sessions" ? 1 : 0);
+      expect(
+        requests.some((url) =>
+          /\/api\/(refresh|read|read-set|analysis\/start)$/.test(url),
+        ),
+      ).toBe(false);
+    });
+  });
+}
+
+test("location checks preserve selections but clear results and consent; failed checks cannot reuse old availability", async ({
+  page,
+}) => {
+  await withWizard(
+    page,
+    async ({ wizard, runtime, requests }) => {
+      let failCheck = false;
+      await page.route(/\/api\/(status|refresh)$/, async (route) => {
+        if (failCheck && route.request().url().endsWith("/api/refresh")) {
+          await route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "STATUS_UNAVAILABLE",
+                message: "Synthetic location check failed.",
+              },
+            },
+          });
+          return;
+        }
+        const status = await (await route.fetch()).json();
+        await route.fulfill({
+          json: {
+            ...status,
+            multiSourceReaders: status.multiSourceReaders.map((reader) =>
+              reader.id === "agent-host-sessions"
+                ? { ...reader, available: true, reason: null }
+                : reader,
+            ),
+          },
+        });
+      });
+      const searches = [];
+      await page.route("**/api/discover", async (route) => {
+        searches.push(route.request().postDataJSON());
+        await route.fulfill({
+          json: {
+            id: "synthetic-checked-discovery",
+            startedAtMs: 1,
+            finishedAtMs: 2,
+            issues: [],
+            observations: [],
+            locators: [],
+            sessions: [
+              {
+                id: "checked-session",
+                sdkSessionId: "checked-native",
+                runtime: "copilot-agent-host",
+                mode: null,
+                executionLocation: "unknown",
+                archived: false,
+                state: "ready",
+                reason: "Synthetic matching identities.",
+                references: [],
+                selection: {
+                  readerId: "agent-host-sessions",
+                  sources: [
+                    {
+                      key: "history",
+                      sourceId: "source-2",
+                      relativePath: "custom/events.jsonl",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        });
+      });
+      await page.goto("about:blank");
+      await page.goto(runtime.launchUrl);
+      await choose(wizard, /^Copilot Choose/);
+      await choose(wizard, /^Agent Host/);
+      const location = await locationOptions(wizard);
+      await location.getByRole("combobox").selectOption("source-2");
+      await location
+        .getByLabel("File or folder inside this directory")
+        .fill("custom");
+      const review = wizard.getByRole("checkbox", {
+        name: /I've reviewed these locations/,
+      });
+      await review.check();
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("status")).toContainText(
+        "Locations checked at",
+      );
+      await expect(review).not.toBeChecked();
+      await expect(location.getByRole("combobox")).toHaveValue("source-2");
+      await expect(
+        location.getByLabel("File or folder inside this directory"),
+      ).toHaveValue("custom");
+      expect(searches).toHaveLength(0);
+      await review.check();
+      await wizard
+        .getByRole("button", { name: "Continue", exact: true })
+        .click();
+      await wizard
+        .getByRole("button", { name: "Find sessions", exact: true })
+        .click();
+      await wizard.getByRole("radio", { name: /^checked-native/ }).check();
+      await wizard
+        .getByRole("button", { name: "Review locations", exact: true })
+        .click();
+      await expect(
+        wizard.getByRole("radio", { name: /^checked-native/ }),
+      ).toHaveCount(0);
+      failCheck = true;
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("alert")).toContainText(
+        "Synthetic location check failed.",
+      );
+      await expect(
+        wizard.getByText(/Previously checked availability is shown/),
+      ).toBeVisible();
+      await review.check();
+      await expect(
+        wizard.getByRole("button", { name: "Continue", exact: true }),
+      ).toBeDisabled();
+      expect(searches).toHaveLength(1);
+      failCheck = false;
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("alert")).toHaveCount(0);
+      await expect(wizard.getByRole("status")).toContainText(
+        "Locations checked at",
+      );
+      await expect(review).not.toBeChecked();
+      await locationOptions(wizard);
+      await expect(location.getByRole("combobox")).toHaveValue("source-2");
+      await expect(
+        location.getByLabel("File or folder inside this directory"),
+      ).toHaveValue("custom");
+      await review.check();
+      await wizard
+        .getByRole("button", { name: "Continue", exact: true })
+        .click();
+      await wizard
+        .getByRole("button", { name: "Find sessions", exact: true })
+        .click();
+      await expect(
+        wizard.getByRole("button", { name: "Open report", exact: true }),
+      ).toBeDisabled();
+      expect(searches).toEqual([
+        {
+          roots: [
+            {
+              sourceId: "source-2",
+              relativePath: "custom",
+              layout: "settings",
+            },
+          ],
+        },
+        {
+          roots: [
+            {
+              sourceId: "source-2",
+              relativePath: "custom",
+              layout: "settings",
+            },
+          ],
+        },
+      ]);
+      expect(
+        requests.filter((url) => url.endsWith("/api/refresh")),
+      ).toHaveLength(3);
+      expect(
+        requests.some((url) =>
+          /\/api\/(read|read-set|analysis\/start)$/.test(url),
+        ),
+      ).toBe(false);
+      await expect(
+        page.getByRole("heading", {
+          name: "Configured locations",
+          exact: true,
+        }),
+      ).toHaveCount(0);
+    },
+    true,
+  );
+});
+
+for (const sibling of [
+  "failed manual read",
+  "successful manual read",
+  "scan",
+]) {
+  test(`failed location checks survive a sibling ${sibling} until an explicit successful check`, async ({
+    page,
+  }) => {
+    await withWizard(page, async ({ wizard, requests }) => {
+      let failCheck = true;
+      await page.route("**/api/refresh", async (route) => {
+        if (failCheck) {
+          await route.fulfill({
+            status: 503,
+            json: {
+              error: {
+                code: "STATUS_UNAVAILABLE",
+                message: "Synthetic location check failed.",
+              },
+            },
+          });
+        } else {
+          await route.continue();
+        }
+      });
+      await choose(wizard, /^Copilot Choose/);
+      await choose(wizard, /^Agent Host/);
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("alert")).toContainText(
+        "Synthetic location check failed.",
+      );
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      await page
+        .getByLabel("File inside this directory")
+        .fill(
+          sibling === "failed manual read"
+            ? "missing.jsonl"
+            : "synthetic.jsonl",
+        );
+      await page
+        .getByRole("button", {
+          name: sibling === "scan" ? "Scan JSONL source" : "Read source",
+          exact: true,
+        })
+        .click();
+      if (sibling === "successful manual read") {
+        await expect(
+          page.getByRole("region", { name: "Session report", exact: true }),
+        ).toBeVisible();
+        await page
+          .getByRole("button", { name: "Find another session", exact: true })
+          .click();
+      }
+      await expect(
+        wizard.getByRole("heading", {
+          name: "Which coding assistant did you use?",
+        }),
+      ).toBeVisible();
+      await choose(wizard, /^Copilot Choose/);
+      await choose(wizard, /^Agent Host/);
+      await expect(
+        wizard.getByText(/Previously checked availability is shown/),
+      ).toBeVisible();
+      await wizard
+        .getByRole("checkbox", { name: /I've reviewed these locations/ })
+        .check();
+      await expect(
+        wizard.getByRole("button", { name: "Continue", exact: true }),
+      ).toBeDisabled();
+      await wizard.getByRole("button", { name: "Back", exact: true }).click();
+      await choose(wizard, /^Local/);
+      await choose(wizard, /^I have a recorded/);
+      await wizard
+        .getByLabel("Recording filename inside this folder")
+        .fill("synthetic.jsonl");
+      await expect(
+        wizard.getByRole("button", { name: "Find sessions", exact: true }),
+      ).toBeDisabled();
+      await expect(
+        wizard.getByText(/Previously checked availability is shown/),
+      ).toBeVisible();
+      expect(
+        requests.some((url) =>
+          /\/api\/(discover|read-set|analysis\/start)$/.test(url),
+        ),
+      ).toBe(false);
+      expect(requests.filter((url) => url.endsWith("/api/read"))).toHaveLength(
+        sibling === "scan" ? 0 : 1,
+      );
+      expect(requests.filter((url) => url.endsWith("/api/scan"))).toHaveLength(
+        sibling === "scan" ? 1 : 0,
+      );
+      failCheck = false;
+      await wizard
+        .getByRole("button", { name: "Check locations", exact: true })
+        .click();
+      await expect(wizard.getByRole("status")).toContainText(
+        "Locations checked at",
+      );
+      await expect(
+        wizard.getByRole("button", { name: "Find sessions", exact: true }),
+      ).toBeEnabled();
+      expect(
+        requests.filter((url) => url.endsWith("/api/refresh")),
+      ).toHaveLength(2);
+    });
+  });
+}
 
 test("a failed Local status refresh keeps the read unavailable and allows an explicit retry", async ({
   page,
@@ -549,6 +923,250 @@ test("a failed Local status refresh keeps the read unavailable and allows an exp
   });
 });
 
+test("initial status failure offers an explicit retry without reloading launch access or reading a source", async ({
+  page,
+}) => {
+  let failRefresh = true;
+  await page.route("**/api/status", (route) =>
+    route.fulfill({
+      status: 503,
+      json: {
+        error: {
+          code: "STATUS_UNAVAILABLE",
+          message: "Synthetic initial status failure.",
+        },
+      },
+    }),
+  );
+  await page.route("**/api/refresh", async (route) => {
+    if (failRefresh) {
+      await route.fulfill({
+        status: 503,
+        json: {
+          error: {
+            code: "STATUS_UNAVAILABLE",
+            message: "Synthetic retry check failed.",
+          },
+        },
+      });
+    } else {
+      await route.continue();
+    }
+  });
+  await withWizard(page, async ({ wizard, requests }) => {
+    await expect(page.getByRole("alert")).toContainText(
+      "Synthetic initial status failure.",
+    );
+    await expect(wizard).toHaveCount(0);
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await expect(
+      page.getByRole("button", {
+        name: "Review configured access",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    const retry = page.getByRole("button", {
+      name: "Retry location check",
+      exact: true,
+    });
+    await retry.click();
+    await expect(page.getByRole("alert")).toContainText(
+      "Synthetic retry check failed.",
+    );
+    await expect(retry).toBeEnabled();
+    failRefresh = false;
+    await retry.click();
+    await expect(
+      wizard.getByRole("heading", {
+        name: "Which coding assistant did you use?",
+      }),
+    ).toBeFocused();
+    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(retry).toHaveCount(0);
+    await expect(
+      page.getByRole("button", {
+        name: "Review configured access",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    expect(requests.filter((url) => url.endsWith("/api/status"))).toHaveLength(
+      1,
+    );
+    expect(requests.filter((url) => url.endsWith("/api/refresh"))).toHaveLength(
+      2,
+    );
+    expect(
+      requests.some((url) =>
+        /\/api\/(read|read-set|discover|scan|analysis\/start)$/.test(url),
+      ),
+    ).toBe(false);
+  });
+});
+
+test("shared access review checks explicitly and discards a cached Local session without losing its filename", async ({
+  page,
+}) => {
+  await withWizard(page, async ({ wizard, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Local/);
+    await choose(wizard, /^I have a recorded/);
+    await wizard
+      .getByLabel("Recording filename inside this folder")
+      .fill("synthetic.jsonl");
+    await wizard
+      .getByRole("button", { name: "Find sessions", exact: true })
+      .click();
+    await wizard.getByRole("radio", { name: /^second-native/ }).check();
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Review configured access", exact: true })
+      .click();
+    await expect(
+      wizard.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Review configured access", exact: true })
+      .click();
+    await expect(
+      wizard.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
+    expect(requests.some((url) => url.endsWith("/api/refresh"))).toBe(false);
+    await expect(
+      wizard.getByRole("button", { name: "Open report", exact: true }),
+    ).toHaveCount(0);
+    await wizard
+      .getByRole("button", { name: "Check locations", exact: true })
+      .click();
+    await expect(wizard.getByRole("status")).toContainText(
+      "Locations checked at",
+    );
+    await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(
+      wizard.getByLabel("Recording filename inside this folder"),
+    ).toHaveValue("synthetic.jsonl");
+    await expect(wizard.getByRole("radio")).toHaveCount(0);
+    expect(requests.filter((url) => url.endsWith("/api/read"))).toHaveLength(1);
+    await wizard
+      .getByRole("button", { name: "Find sessions", exact: true })
+      .click();
+    await wizard.getByRole("radio", { name: /^second-native/ }).check();
+    await wizard
+      .getByRole("button", { name: "Open report", exact: true })
+      .click();
+    await expect(
+      page.getByRole("region", { name: "Session report", exact: true }),
+    ).toBeVisible();
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await page
+      .getByRole("button", { name: "Review configured access", exact: true })
+      .click();
+    await expect(
+      wizard.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
+    await expect(
+      page.getByRole("region", { name: "Session report", exact: true }),
+    ).toHaveCount(0);
+    expect(requests.filter((url) => url.endsWith("/api/refresh"))).toHaveLength(
+      1,
+    );
+    await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(
+      wizard.getByLabel("Recording filename inside this folder"),
+    ).toHaveValue("synthetic.jsonl");
+    await expect(
+      wizard.getByRole("button", { name: "Open report", exact: true }),
+    ).toHaveCount(0);
+    expect(requests.filter((url) => url.endsWith("/api/read"))).toHaveLength(2);
+    expect(requests.some((url) => url.endsWith("/api/analysis/start"))).toBe(
+      false,
+    );
+  });
+});
+
+for (const edit of ["path", "source", "format"]) {
+  test(`editing an advanced ${edit} dismisses a Local report without restoring cached wizard results`, async ({
+    page,
+  }) => {
+    await withWizard(
+      page,
+      async ({ wizard, requests }) => {
+        if (edit === "format") {
+          // Offer a second valid format for this UI edit only; no read uses it.
+          await page.route("**/api/status", async (route) => {
+            const status = await (await route.fetch()).json();
+            await route.fulfill({
+              json: {
+                ...status,
+                readers: [...status.readers, "vscode-chat-v3-json"],
+              },
+            });
+          });
+        }
+        await choose(wizard, /^Copilot Choose/);
+        await choose(wizard, /^Local/);
+        await choose(wizard, /^I have a recorded/);
+        await wizard
+          .getByLabel("Recording filename inside this folder")
+          .fill("synthetic.jsonl");
+        await wizard
+          .getByRole("button", { name: "Find sessions", exact: true })
+          .click();
+        await wizard.getByRole("radio", { name: /^second-native/ }).check();
+        await wizard
+          .getByRole("button", { name: "Open report", exact: true })
+          .click();
+        await expect(
+          page.getByRole("region", { name: "Session report", exact: true }),
+        ).toBeVisible();
+        await page.getByText("Advanced file tools", { exact: true }).click();
+        const control =
+          edit === "path"
+            ? page.getByLabel("File inside this directory")
+            : page.getByLabel(
+                edit === "source" ? "Source location" : "Reader format",
+                { exact: true },
+              );
+        await control.focus();
+        if (edit === "path") await control.fill("unread.jsonl");
+        else
+          await control.selectOption(
+            edit === "source" ? "source-2" : "vscode-chat-v3-json",
+          );
+        await expect(
+          page.getByRole("region", { name: "Session report", exact: true }),
+        ).toHaveCount(0);
+        await expect(
+          wizard.getByRole("button", { name: "Open report", exact: true }),
+        ).toHaveCount(0);
+        await expect(control).toBeFocused();
+        await expect(
+          wizard.getByLabel("Recording filename inside this folder"),
+        ).toHaveValue("synthetic.jsonl");
+        await expect(wizard.getByRole("radio")).toHaveCount(0);
+        expect(
+          requests.filter((url) => url.endsWith("/api/read")),
+        ).toHaveLength(1);
+        await wizard
+          .getByRole("button", { name: "Find sessions", exact: true })
+          .click();
+        await expect(
+          wizard.getByRole("radio", { name: /^second-native/ }),
+        ).not.toBeChecked();
+        expect(
+          requests.filter((url) => url.endsWith("/api/read")),
+        ).toHaveLength(2);
+        expect(
+          requests.some((url) =>
+            /\/api\/(read-set|discover|analysis\/start)$/.test(url),
+          ),
+        ).toBe(false);
+      },
+      true,
+    );
+  });
+}
+
 test("sibling reads and scans invalidate a cached Local selection even when the new read fails", async ({
   page,
 }) => {
@@ -567,9 +1185,7 @@ test("sibling reads and scans invalidate a cached Local selection even when the 
       await expect(
         wizard.getByRole("button", { name: "Open report" }),
       ).toBeEnabled();
-      await page
-        .getByText("Advanced file tools and configured access", { exact: true })
-        .click();
+      await page.getByText("Advanced file tools", { exact: true }).click();
       await page
         .getByLabel("File inside this directory")
         .fill(sibling === "manual" ? "missing.jsonl" : "synthetic.jsonl");
@@ -625,27 +1241,25 @@ test("multiple grants are readable choices; unavailable paths stay visible and s
       await page.goto(runtime.launchUrl);
       await choose(wizard, /^Copilot Choose/);
       await choose(wizard, /^Agent Host/);
-      await wizard
-        .getByText("Folder guidance and custom selection", { exact: true })
-        .click();
-      await wizard
+      const location = await locationOptions(wizard);
+      await location
         .getByLabel("File or folder inside this directory")
         .fill("custom");
-      const sources = wizard.getByRole("combobox");
+      const sources = location.getByRole("combobox");
       await expect(sources.locator("option")).not.toContainText([
         "source-1",
         "source-2",
       ]);
       await sources.selectOption("source-2");
-      await expect(wizard.getByRole("alert")).toContainText(
+      await expect(wizard.getByRole("alert").first()).toContainText(
         "Synthetic access denied.",
       );
       await expect(
-        wizard.getByRole("button", { name: "Next", exact: true }),
+        wizard.getByRole("button", { name: "Continue", exact: true }),
       ).toBeDisabled();
       await sources.selectOption("source-1");
       await expect(
-        wizard.getByLabel("File or folder inside this directory"),
+        location.getByLabel("File or folder inside this directory"),
       ).toHaveValue("");
       await wizard.getByRole("button", { name: "Back", exact: true }).click();
       await choose(wizard, /^Local/);
@@ -704,7 +1318,7 @@ test("short and highly zoomed viewports keep wizard header and footer visible wi
       .getByRole("button", { name: "Large recordings and file tools" })
       .click();
     await expect(
-      page.getByText("Advanced file tools and configured access", {
+      page.getByText("Advanced file tools", {
         exact: true,
       }),
     ).toBeFocused();
@@ -742,9 +1356,7 @@ test("normal steps fit desktop and mobile; expanded details scroll inside a stat
         `${viewport.width}px step height`,
       ).toBeLessThanOrEqual(dimensions.body + 1);
       await choose(wizard, /^Agent Host/);
-      await wizard
-        .getByText("Folder guidance and custom selection", { exact: true })
-        .click();
+      await locationOptions(wizard);
       const footer = wizard.locator(".wizard-footer");
       const before = await footer.boundingBox();
       await body.evaluate((element) => {
@@ -757,7 +1369,7 @@ test("normal steps fit desktop and mobile; expanded details scroll inside a stat
         ),
       ).toBe(true);
       await expect(
-        wizard.getByRole("button", { name: "Next", exact: true }),
+        wizard.getByRole("button", { name: "Continue", exact: true }),
       ).toBeInViewport();
     }
   });

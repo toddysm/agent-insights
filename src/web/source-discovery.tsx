@@ -2,7 +2,14 @@
  * Guided source discovery over explicit startup grants. No installation inference,
  * permission changes, startup scan, storage or model call occurs in this wizard.
  */
-import { useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  type ReactElement,
+  type Ref,
+} from "react";
 import type { z } from "zod";
 import type { ReadView } from "../evidence/contracts.js";
 import {
@@ -16,10 +23,24 @@ import {
 import { SourceChoice } from "./source-choice.js";
 import { sourceName } from "./source-names.js";
 
-/** Parent owns authenticated transport, report handoff, operation locks and read feedback; callbacks do not grant source access. */
+/** Parent navigation returns to this workspace without discarding its configured selections. */
+export interface SourceDiscoveryHandle {
+  /** Clear report/results through onStart and focus configured access without selecting a session type or checking automatically. */
+  reviewLocations(): void;
+  /** Discard old results and return to the current session type's setup with its selections retained. */
+  findAnotherSession(): void;
+}
+
+/** Explicit check validity survives wizard resets; only a successful check clears failure. */
+export type LocationCheckState = "idle" | "checking" | "checked" | "failed";
+
+/** Parent owns authenticated transport, check validity, report handoff, operation locks and read feedback; callbacks do not grant source access. */
 interface DiscoveryProps {
+  readonly ref: Ref<SourceDiscoveryHandle>;
   readonly status: RuntimeStatus;
+  readonly hidden: boolean;
   readonly disabled: boolean;
+  readonly locationCheck: LocationCheckState;
   readonly feedback: ReactElement | null;
   readonly send: <T>(
     route: string,
@@ -33,6 +54,8 @@ interface DiscoveryProps {
   readonly onReadFile: (selection: ReadRequest) => Promise<ReadView | null>;
   readonly onOpenFile: (view: ReadView, sessionId: string) => void;
   readonly onFileTools: (selection: ReadRequest) => void;
+  /** Refresh configured availability and invalidate backend evidence; reject failures rather than reporting stale status as success. */
+  readonly onCheckLocations: () => Promise<void>;
 }
 
 /** Stable entry identity is separate from its source ID, role and current position in the wizard. */
@@ -49,7 +72,7 @@ type Step =
   | "session"
   | "unsupported"
   | "unsure"
-  | "folder"
+  | "locations"
   | "purpose"
   | "access"
   | "find"
@@ -127,8 +150,11 @@ function Choices<T extends string>({
 
 /** Own only transient wizard selections and discovery results; parent report state is invalidated on upstream changes. */
 export function SourceDiscoveryPanel({
+  ref,
   status,
+  hidden,
   disabled,
+  locationCheck,
   feedback,
   send,
   onStart,
@@ -137,6 +163,7 @@ export function SourceDiscoveryPanel({
   onReadFile,
   onOpenFile,
   onFileTools,
+  onCheckLocations,
 }: DiscoveryProps): ReactElement {
   const [step, setStep] = useState<Step>("assistant");
   const [assistant, setAssistant] = useState("");
@@ -149,8 +176,6 @@ export function SourceDiscoveryPanel({
       layout: status.sources[0]?.kind === "file" ? "catalog" : "settings",
     },
   ]);
-  const [editing, setEditing] = useState(1);
-  const [returnToAccess, setReturnToAccess] = useState(false);
   const [additionalPurpose, setAdditionalPurpose] = useState<Purpose | "">("");
   const [acknowledged, setAcknowledged] = useState(false);
   const [localChoice, setLocalChoice] = useState("");
@@ -168,7 +193,7 @@ export function SourceDiscoveryPanel({
   const body = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const firstStep = useRef(true);
-  const entry = entries.find((item) => item.id === editing);
+  const locationReturn = useRef<Step>("assistant");
   const reader = status.multiSourceReaders.find(
     (item) => item.id === "agent-host-sessions",
   );
@@ -190,19 +215,46 @@ export function SourceDiscoveryPanel({
           : 2;
 
   useEffect(() => {
+    if (hidden) return;
     if (firstStep.current) {
       firstStep.current = false;
       return;
     }
     body.current?.scrollTo(0, 0);
     heading.current?.focus({ preventScroll: true });
-  }, [step]);
+  }, [step, hidden]);
   useEffect(
     () => () => {
       generation.current++;
     },
     [],
   );
+
+  useImperativeHandle(ref, () => ({
+    reviewLocations() {
+      locationReturn.current =
+        step === "locations"
+          ? locationReturn.current
+          : step === "find" || step === "sessions"
+            ? "access"
+            : step === "file-sessions"
+              ? "file"
+              : step;
+      invalidate();
+      setStep("locations");
+      if (!hidden) heading.current?.focus({ preventScroll: true });
+    },
+    findAnotherSession() {
+      invalidate();
+      setStep(
+        sessionType === "Agent Host"
+          ? "access"
+          : sessionType === "Local"
+            ? "file"
+            : "assistant",
+      );
+    },
+  }));
 
   /** Edits clear wizard evidence without discarding independent scans; only actual source submissions reset scans. */
   function invalidate(resetAccess = true, resetScan = false): void {
@@ -216,12 +268,13 @@ export function SourceDiscoveryPanel({
   }
 
   /** Edit one stable entry without renumbering or replacing the remaining entries. */
-  function updateEntry(patch: Partial<Omit<SearchEntry, "id">>): void {
+  function updateEntry(
+    id: number,
+    patch: Partial<Omit<SearchEntry, "id">>,
+  ): void {
     invalidate();
     setEntries((previous) =>
-      previous.map((item) =>
-        item.id === editing ? { ...item, ...patch } : item,
-      ),
+      previous.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     );
   }
 
@@ -238,7 +291,6 @@ export function SourceDiscoveryPanel({
     invalidate();
     setLocalChoice("");
     setAdditionalPurpose("");
-    setReturnToAccess(false);
     setEntries([
       {
         id: ++sequence.current,
@@ -247,12 +299,28 @@ export function SourceDiscoveryPanel({
         layout: status.sources[0]?.kind === "file" ? "catalog" : "settings",
       },
     ]);
-    setEditing(sequence.current);
     setFile({
       sourceId: status.sources[0]?.id ?? "",
       relativePath: "",
       format: "vscode-otel-jsonl",
     });
+  }
+
+  /** Explicitly check availability, preserving choices but dropping evidence/consent before either success or failure. */
+  async function checkLocations(): Promise<void> {
+    invalidate(true, true);
+    const current = generation.current;
+    try {
+      await onCheckLocations();
+    } catch (failure) {
+      if (current === generation.current) {
+        setError(
+          failure instanceof Error
+            ? failure.message
+            : "Configured locations could not be checked.",
+        );
+      }
+    }
   }
 
   /** Search only on explicit submission. Transport/backend errors remain visible and never restore earlier sessions. */
@@ -336,9 +404,9 @@ export function SourceDiscoveryPanel({
     setError("");
     const previous: Partial<Record<Step, Step>> = {
       session: "assistant",
-      folder: returnToAccess ? "access" : "session",
       purpose: "access",
-      access: "folder",
+      access: "session",
+      locations: locationReturn.current,
       find: "access",
       sessions: "find",
       local: "session",
@@ -351,10 +419,6 @@ export function SourceDiscoveryPanel({
     };
     if (step === "assistant") return;
     if (step === "sessions" || step === "file-sessions") invalidate(false);
-    if (step === "access") {
-      setEditing(entries[0]?.id ?? editing);
-      setReturnToAccess(false);
-    }
     setStep(
       step === "unsupported"
         ? assistant === "Copilot"
@@ -374,16 +438,13 @@ export function SourceDiscoveryPanel({
       case "session":
         setStep(
           sessionType === "Agent Host"
-            ? "folder"
+            ? "access"
             : sessionType === "Local"
               ? "local"
               : sessionType === "Not sure"
                 ? "unsure"
                 : "unsupported",
         );
-        break;
-      case "folder":
-        setStep("access");
         break;
       case "purpose":
         if (additionalPurpose) {
@@ -402,10 +463,8 @@ export function SourceDiscoveryPanel({
                   : additionalPurpose,
             },
           ]);
-          setEditing(id);
           setAdditionalPurpose("");
-          setReturnToAccess(true);
-          setStep("folder");
+          setStep("access");
         }
         break;
       case "access":
@@ -436,6 +495,7 @@ export function SourceDiscoveryPanel({
         break;
       case "unsupported":
       case "unsure":
+      case "locations":
         break;
     }
   }
@@ -445,14 +505,14 @@ export function SourceDiscoveryPanel({
     disabled ||
     (step === "assistant" && !assistant) ||
     (step === "session" && !sessionType) ||
-    (step === "folder" &&
-      (noSources ||
-        !entry ||
-        !status.sources.find((source) => source.id === entry.sourceId)
-          ?.available)) ||
     (step === "purpose" && !additionalPurpose) ||
-    (step === "access" && (!acknowledged || unavailable)) ||
-    (step === "find" && (!ready || unavailable || !acknowledged)) ||
+    (step === "access" &&
+      (noSources ||
+        !acknowledged ||
+        unavailable ||
+        locationCheck === "failed")) ||
+    (step === "find" &&
+      (!ready || unavailable || !acknowledged || locationCheck === "failed")) ||
     (step === "sessions" &&
       !result?.sessions.find((session) => session.id === selectedSession)
         ?.selection) ||
@@ -460,6 +520,7 @@ export function SourceDiscoveryPanel({
     (step === "file" &&
       (!selectedFile?.available ||
         (selectedFile.kind === "directory" && !file.relativePath.trim()) ||
+        locationCheck === "failed" ||
         !status.readers.includes("vscode-otel-jsonl"))) ||
     (step === "privacy" && !acknowledged) ||
     (step === "file-sessions" &&
@@ -469,11 +530,9 @@ export function SourceDiscoveryPanel({
     session: "Which Copilot session option did you use?",
     unsupported: "Not supported",
     unsure: "Let's identify your session option",
-    folder: entry
-      ? `Choose ${purposeCopy[purpose(entry)].title.toLowerCase()}`
-      : "Choose a session folder",
+    locations: "Configured access",
     purpose: "Which saved session files are you adding?",
-    access: "Review access to your saved sessions",
+    access: "Review your search locations",
     find: "Find your Agent Host sessions",
     sessions: "Choose an Agent Host session",
     local: "Do you have a recorded session file?",
@@ -494,11 +553,44 @@ export function SourceDiscoveryPanel({
             ? "Back to file choice"
             : "Next";
 
+  const locationControls = (
+    <div className="location-check">
+      <p
+        className="checked"
+        role={locationCheck === "checked" ? "status" : undefined}
+      >
+        {locationCheck === "checking"
+          ? "Checking locations..."
+          : locationCheck === "failed"
+            ? "The check failed. Previously checked availability is shown; check again before finding sessions."
+            : `${locationCheck === "checked" ? "Locations checked" : "Availability checked"} at ${new Date(status.checkedAtMs).toLocaleTimeString()}. Nothing was searched.`}
+      </p>
+      <button
+        type="button"
+        disabled={disabled || locationCheck === "checking"}
+        onClick={() => void checkLocations()}
+      >
+        {locationCheck === "checking" ? "Checking..." : "Check locations"}
+      </button>
+    </div>
+  );
+  const startupGuidance = (
+    <details>
+      <summary>Need access to a different folder?</summary>
+      <p>
+        Restart with explicit access to that file or folder. The browser cannot
+        grant new access.
+      </p>
+      <code>npm start -- --source /path/to/session-data</code>
+    </details>
+  );
+
   return (
     <section
       id="session-wizard"
       className="source-wizard"
       aria-labelledby="wizard-heading"
+      hidden={hidden}
     >
       <div className="wizard-header">
         <div className="wizard-heading">
@@ -618,7 +710,8 @@ export function SourceDiscoveryPanel({
             switch session types to work around missing evidence.
           </p>
         )}
-        {(step === "folder" || step === "file") && noSources && (
+        {["access", "locations", "file"].includes(step) && locationControls}
+        {["access", "locations", "file"].includes(step) && noSources && (
           <div role="status">
             <h4>No files or folders configured</h4>
             <p>
@@ -640,86 +733,36 @@ export function SourceDiscoveryPanel({
             )}
           />
         )}
-        {step === "folder" && entry && !noSources && (
+        {step === "locations" && !noSources && (
           <>
             <p>
-              {purposeCopy[purpose(entry)].description} Choose only a file or
-              folder configured when Agent Insights started.
+              These are the files and folders configured at startup. Checking
+              access does not search for sessions or open a report.
             </p>
-            <SourceChoice
-              id="wizard-folder"
-              label={purposeCopy[purpose(entry)].title}
-              sources={status.sources}
-              value={entry.sourceId}
-              disabled={disabled}
-              onChange={(sourceId) =>
-                updateEntry({
-                  sourceId,
-                  relativePath: "",
-                  layout:
-                    purpose(entry) === "settings"
-                      ? status.sources.find((source) => source.id === sourceId)
-                          ?.kind === "file"
-                        ? "catalog"
-                        : "settings"
-                      : entry.layout,
-                })
-              }
-            />
-            <details>
-              <summary>Folder guidance and custom selection</summary>
-              <p>
-                {purpose(entry) === "settings"
-                  ? "For the VS Code installation you used, choose its User settings folder. It contains the saved session information for the default setup and profiles. You may instead select an exact session-information file."
-                  : purpose(entry) === "history"
-                    ? "Choose the Copilot session-state folder used by that agent, or an exact retained events file. This is not your project folder."
-                    : "Choose the agentSessionData folder used by VS Code, or an exact session database."}
-              </p>
-              {status.sources.find((source) => source.id === entry.sourceId)
-                ?.kind === "directory" && (
-                <>
-                  <label htmlFor="wizard-subfolder">
-                    File or folder inside this directory (optional)
-                  </label>
-                  <input
-                    id="wizard-subfolder"
-                    value={entry.relativePath}
-                    disabled={disabled}
-                    onChange={(event) =>
-                      updateEntry({ relativePath: event.target.value })
-                    }
-                  />
-                  <p>
-                    Leave blank to use the selected folder itself. Paths must
-                    stay inside it.
-                  </p>
-                  {purpose(entry) === "settings" && (
-                    <label className="wizard-check">
-                      <input
-                        type="checkbox"
-                        checked={entry.layout === "catalog"}
-                        disabled={disabled}
-                        onChange={(event) =>
-                          updateEntry({
-                            layout: event.target.checked
-                              ? "catalog"
-                              : "settings",
-                          })
-                        }
-                      />
-                      Use an exact session-information file inside this folder
-                    </label>
-                  )}
-                </>
-              )}
-            </details>
+            <ul className="source-list">
+              {status.sources.map((source) => (
+                <li key={source.id}>
+                  <div>
+                    <strong>{sourceName(source, status.sources)}</strong>
+                    <code>{source.path}</code>
+                    {source.reason && <p>{source.reason}</p>}
+                  </div>
+                  <span
+                    className={`status-tag ${source.available ? "" : "warning"}`}
+                  >
+                    {source.available ? "Accessible" : "Unavailable"}
+                  </span>
+                </li>
+              ))}
+            </ul>
+            {startupGuidance}
           </>
         )}
-        {step === "access" && (
+        {step === "access" && !noSources && (
           <>
             <p>
-              Read retained sessions without changing files, VS Code settings,
-              or logging. This review does not grant new access.
+              Choose from startup-configured access. Nothing is searched
+              automatically.
             </p>
             <ul className="wizard-searches">
               {entries.map((item) => {
@@ -728,35 +771,109 @@ export function SourceDiscoveryPanel({
                 );
                 return (
                   <li key={item.id}>
-                    <strong>{purposeCopy[purpose(item)].title}</strong>
-                    <code>
+                    <div className="wizard-location-heading">
+                      <div>
+                        <h4>{purposeCopy[purpose(item)].title}</h4>
+                        <p>{purposeCopy[purpose(item)].description}</p>
+                      </div>
+                      <span
+                        className={`status-tag ${source?.available ? "" : "warning"}`}
+                      >
+                        {source?.available ? "Accessible" : "Unavailable"}
+                      </span>
+                    </div>
+                    <p className="wizard-location-name">
                       {source
                         ? sourceName(source, status.sources)
                         : "Unavailable"}
                       {item.relativePath && ` / ${item.relativePath}`}
-                    </code>
+                    </p>
                     {!source?.available && (
                       <p role="alert">
                         {source?.reason ??
-                          "This configured file or folder is unavailable."}
+                          "This configured file or folder is unavailable."}{" "}
+                        Restore access, then choose Check locations. If its path
+                        changed, restart with the corrected source.
                       </p>
                     )}
-                    <div>
-                      <button
-                        type="button"
-                        disabled={disabled}
-                        onClick={() => {
-                          setEditing(item.id);
-                          setReturnToAccess(true);
-                          setStep("folder");
-                        }}
-                      >
-                        Edit{" "}
+                    <details>
+                      <summary>
+                        Location and custom options
                         <span className="sr-only">
-                          {source?.path} {item.relativePath}{" "}
-                          {purposeCopy[purpose(item)].title}
+                          {" "}
+                          for {purposeCopy[purpose(item)].title}, location{" "}
+                          {item.id}
                         </span>
-                      </button>
+                      </summary>
+                      <SourceChoice
+                        id={`wizard-folder-${item.id}`}
+                        label={purposeCopy[purpose(item)].title}
+                        sources={status.sources}
+                        value={item.sourceId}
+                        disabled={disabled}
+                        onChange={(sourceId) =>
+                          updateEntry(item.id, {
+                            sourceId,
+                            relativePath: "",
+                            layout:
+                              purpose(item) === "settings"
+                                ? status.sources.find(
+                                    (candidate) => candidate.id === sourceId,
+                                  )?.kind === "file"
+                                  ? "catalog"
+                                  : "settings"
+                                : item.layout,
+                          })
+                        }
+                      />
+                      <p>
+                        {purpose(item) === "settings"
+                          ? "Choose the User settings folder for your VS Code setup, including profiles, or an exact session-information file."
+                          : purpose(item) === "history"
+                            ? "Choose the Copilot session-state folder used by that agent, or an exact retained events file. This is not your project folder."
+                            : "Choose the agentSessionData folder used by VS Code, or an exact session database."}
+                      </p>
+                      {source?.kind === "directory" && (
+                        <>
+                          <label htmlFor={`wizard-subfolder-${item.id}`}>
+                            File or folder inside this directory (optional)
+                          </label>
+                          <input
+                            id={`wizard-subfolder-${item.id}`}
+                            value={item.relativePath}
+                            disabled={disabled}
+                            onChange={(event) =>
+                              updateEntry(item.id, {
+                                relativePath: event.target.value,
+                              })
+                            }
+                          />
+                          <p>
+                            Leave blank to use the selected folder itself. Paths
+                            must stay inside it.
+                          </p>
+                          {purpose(item) === "settings" && (
+                            <label className="wizard-check">
+                              <input
+                                type="checkbox"
+                                checked={item.layout === "catalog"}
+                                disabled={disabled}
+                                onChange={(event) =>
+                                  updateEntry(item.id, {
+                                    layout: event.target.checked
+                                      ? "catalog"
+                                      : "settings",
+                                  })
+                                }
+                              />
+                              Use an exact session-information file inside this
+                              folder
+                            </label>
+                          )}
+                        </>
+                      )}
+                    </details>
+                    <div>
                       {entries.length > 1 && (
                         <button
                           type="button"
@@ -790,27 +907,7 @@ export function SourceDiscoveryPanel({
             >
               Add saved session folder
             </button>
-            <details>
-              <summary>Full paths and read-only access</summary>
-              {entries.map((item) => (
-                <p key={item.id}>
-                  <code>
-                    {
-                      status.sources.find(
-                        (source) => source.id === item.sourceId,
-                      )?.path
-                    }{" "}
-                    {item.relativePath}
-                  </code>
-                </p>
-              ))}
-              <p>
-                Session content can be private. Finding and opening sessions
-                does not send it to a model. Model-based analysis has a separate
-                action and consent. To change allowed files or folders, restart
-                with explicit source configuration.
-              </p>
-            </details>
+            {startupGuidance}
             <label className="wizard-check">
               <input
                 type="checkbox"
@@ -818,7 +915,7 @@ export function SourceDiscoveryPanel({
                 disabled={disabled}
                 onChange={(event) => setAcknowledged(event.target.checked)}
               />
-              I've reviewed the read-only access described above.
+              I've reviewed these locations for read-only access.
             </label>
           </>
         )}
@@ -828,6 +925,13 @@ export function SourceDiscoveryPanel({
               Search only the configured session folders reviewed in the
               previous step. No search has run automatically.
             </p>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => setStep("access")}
+            >
+              Review locations
+            </button>
             {!ready && (
               <div role="status">
                 <strong>
@@ -858,6 +962,16 @@ export function SourceDiscoveryPanel({
               Checked at {new Date(result.finishedAtMs).toLocaleTimeString()}.
               Results are transient, not saved history.
             </p>
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                invalidate();
+                setStep("access");
+              }}
+            >
+              Review locations
+            </button>
             {result.issues.length > 0 && (
               <div role="status">
                 <strong>Some session files could not be used.</strong>
@@ -951,6 +1065,7 @@ export function SourceDiscoveryPanel({
                 }));
               }}
             />
+            {startupGuidance}
             {selectedFile?.kind === "directory" && (
               <>
                 <label htmlFor="wizard-filename">
@@ -1112,7 +1227,7 @@ export function SourceDiscoveryPanel({
             ? "An operation is in progress"
             : "Read-only · no model calls"}
         </span>
-        {!["unsupported", "unsure"].includes(step) && (
+        {!["unsupported", "unsure", "locations"].includes(step) && (
           <button
             type="button"
             className="primary"

@@ -41,7 +41,7 @@ only to installation; it does not disable later startup hooks.
 to 32. Relative paths resolve against the startup directory. Shell-expanded home
 paths work; the application does not expand a quoted literal `~`.
 No locations are discovered or scanned automatically. Starting without sources
-is valid and displays "No sources configured."
+is valid; session Setup and configured-access review show "No files or folders configured."
 
 The server binds only to `127.0.0.1`. Its default port is chosen by the operating
 system, avoiding collisions with other local services. Use `--port NUMBER` to
@@ -56,7 +56,7 @@ http://127.0.0.1:<port>/#access=<generated-value>
 
 Treat that URL like a password; do not share or commit it. The browser removes
 the credential from the visible URL and retains it only in memory. A page reload
-therefore requires reopening the original launch URL. The "Refresh sources"
+therefore requires reopening the original launch URL. The "Check locations"
 button does not reload the page or lose access. Restarting the process changes
 the credential. Stop the runtime with Ctrl+C.
 
@@ -65,7 +65,9 @@ the credential. Stop the runtime with Ctrl+C.
 Configured locations are checked for availability and shown only after
 authentication. A missing or unreadable startup location remains unavailable;
 correct it and restart to grant access. Existing authorized locations can be
-rechecked with "Refresh sources."
+rechecked with **Check locations** in the wizard. **Advanced file tools** uses
+the same access and offers **Review configured access** to return to that
+workspace; it has no separate path inventory or refresh control.
 
 ### Read the session report
 
@@ -541,12 +543,13 @@ candidate does not remove that gate. The supplemental extension exporter remains
 a separate format, not a substitute for Agent Host evidence.
 
 Start with `--source` for every approved file or folder. Choose **Copilot**,
-then **Agent Host**, confirming each choice with **Next**. Choose **VS Code
-session information**, then review read-only access. **Add saved session folder**
+then **Agent Host**, confirming each choice with **Next**. **Review your search
+locations** combines **VS Code session information**, accessibility, selection
+and read-only review. **Add saved session folder**
 adds **Copilot saved session history**, **VS Code saved session details**, or
-another session-information selection. **Folder guidance and custom selection**
-preserves custom/profile paths and exact-file selection. **Full paths and read-only
-access** shows every configured path. One configured file or folder is shown as
+another session-information selection. Each location's **Location and custom options**
+preserves custom/profile paths and exact-file selection and shows its full
+configured path. One configured file or folder is shown as
 information, not a redundant dropdown; multiple choices use distinguishing path
 names, with unavailable choices and recovery guidance kept visible.
 
@@ -577,14 +580,23 @@ After reviewing access, **Continue** reaches the explicit search step.
 `{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
 `catalog`, `history` or `overlay`. **Find sessions again** repeats that
 explicit request, replacing the list and invalidating prior read/analysis.
-**Refresh sources** drops the discovery list and current evidence. No watcher,
+**Check locations** only checks the accessibility of startup-configured locations.
+It preserves selected locations, layouts and confined paths, but drops prior
+discovery results, source reads, bounded scans, reports and access/analysis
+acknowledgements before the request. A failed check displays its error, explicitly
+labels the previous availability as stale, and blocks finding sessions until a
+successful explicit check. Manual reads, scans and restarting the wizard do not
+clear that failed-check state. Neither a check nor selecting a location starts a
+search or opens a report. A successfully checked location can still have an
+unavailable reader; reader gates remain independent. No watcher,
 session database, saved catalog or archive is created.
 
 Selection alone never advances or reads. **Back** preserves setup answers;
 changing an upstream answer clears dependent setup/results. Editing access
 requires a renewed review, and repeating a search clears the previous selection.
 **Open report** opens only a selected available session. **Find another session**
-discards the current report and starts again. Normal questions fit a compact
+discards the current report and results and returns to setup with the current
+Agent Host or Local choices retained. Normal questions fit a compact
 wizard; expanded details/results scroll internally while Back/Next stay visible.
 On mobile the wizard temporarily omits the surrounding Sources header/sidebar,
 so moving between questions does not require scrolling the page.
@@ -602,12 +614,24 @@ content capture is off and routing targets the intended private file; applying
 the example alone cannot guarantee either. Follow managed policy and the
 [configuration precedence guidance](capture-setup.md#user-profile-workspace-and-inherited-configuration).
 
-**Advanced file tools and configured access** retains the explicit manual reader,
-bounded scan and **Refresh sources** controls. **Analysis availability and privacy**
+**Advanced file tools** retains the explicit manual reader and bounded scan.
+Its **Review configured access** action returns to the same wizard workspace
+and focuses its question, including repeated returns, without choosing a session
+type or checking automatically. If initial status loading fails before the wizard
+can appear, **Retry location check** explicitly checks access again with the
+in-memory launch credential; failure remains retryable without a page reload.
+**Check locations**
+is also available in the Local file step. **Analysis availability and privacy**
 holds the provider disclosure; it expands when a report or analysis is active.
 Editing wizard answers alone preserves an independently completed bounded scan.
-Starting a new read/discovery or refreshing sources invalidates prior evidence;
+Starting a new read/discovery or checking locations invalidates prior evidence;
 starting a sibling manual read or scan also clears cached wizard results.
+Returning from configured-access review to Agent Host discovery goes back to the
+location-review checkbox, so access can be acknowledged again before searching.
+Editing an advanced file path, source or reader format while a report is open
+dismisses that report and clears its cached wizard results, while retaining setup
+answers and keyboard focus in the edited control. Find sessions explicitly again
+before opening another report.
 Opening a Local report requires fresh analysis consent. Report opening moves
 keyboard focus to its heading; returning moves focus to the wizard question,
 without stealing focus on initial page load.

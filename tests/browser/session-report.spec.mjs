@@ -70,7 +70,7 @@ async function openNativeReport(page, includeExcluded = false) {
   });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page
       .getByRole("button", { name: "Read source", exact: true })
       .click();
@@ -339,8 +339,11 @@ test("invalid/stale evidence links, missing catalog and wrong-runtime sources ne
     ).toBeVisible();
     await page.keyboard.press("Escape");
     await page
-      .getByRole("button", { name: "Refresh sources", exact: true })
+      .getByRole("button", { name: "Review configured access", exact: true })
       .click();
+    await page.getByRole("button", { name: "Check locations", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Check locations", exact: true })).toBeEnabled();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await expect(report).toHaveCount(0);
     for (const view of [
       await nativeReportView({ raw: "" }),
@@ -397,8 +400,10 @@ test("refresh discards an outstanding metric response instead of resurrecting th
       .click();
     await waiting;
     await page
-      .getByRole("button", { name: "Refresh sources", exact: true })
+      .getByRole("button", { name: "Review configured access", exact: true })
       .click();
+    await page.getByRole("button", { name: "Check locations", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Check locations", exact: true })).toBeEnabled();
     await expect(
       page.getByRole("region", { name: "Session report", exact: true }),
     ).toHaveCount(0);

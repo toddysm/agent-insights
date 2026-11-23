@@ -74,7 +74,7 @@ test("a lost accepted-start response is reconciled without resubmitting analysis
       } else await route.continue();
     });
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByRole("button", { name: "Read source" }).click();
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page
@@ -152,7 +152,7 @@ test("failed analysis errors and usage do not follow a different operation or so
   );
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByRole("button", { name: "Read source" }).click();
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page
@@ -241,7 +241,7 @@ test("long evidence citations remain intact without horizontal overflow", async 
   );
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByRole("button", { name: "Read source" }).click();
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page

@@ -33,7 +33,7 @@ for (const outcome of ["empty", "unassigned", "failed", "unsupported"]) {
     }));
     try {
       await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
       await page.getByRole("button", { name: "Read source", exact: true }).click();
       const recovery = page.getByRole("link", { name: "Go to Scan JSONL source" });
       await expect(recovery).toBeVisible();
@@ -89,7 +89,7 @@ test("size recovery is code-specific, never offers scanning for another format, 
   }));
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByRole("button", { name: "Read source", exact: true }).click();
     await expect(page.getByRole("alert")).toBeVisible();
     await expect(page.getByRole("link", { name: "Go to Scan JSONL source" })).toHaveCount(0);
@@ -127,7 +127,7 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
   page.on("pageerror", (error) => errors.push(error.message));
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByText("complete", { exact: true })).toBeVisible();
@@ -139,7 +139,6 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
     await wizard.getByRole("radio", { name: /^Copilot Choose/ }).check();
     await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard.getByRole("radio", { name: /^Agent Host/ }).check();
-    await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard.getByRole("checkbox").check();
     await expect(panel.getByLabel("Scanned session")).toHaveValue(selectedSession);
@@ -169,6 +168,13 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
     expect(requests.every((url) => url.startsWith(runtime.origin + "/"))).toBe(true);
     expect(requests.some((url) => url.includes("/api/analysis/start"))).toBe(false);
     expect(errors).toEqual([]);
+    await page.getByRole("button", { name: "Review configured access", exact: true }).click();
+    await wizard.getByRole("button", { name: "Check locations", exact: true }).click();
+    await expect(wizard.getByRole("status")).toContainText("Locations checked at");
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.locator("article")).toHaveCount(0);
+    expect(requests.filter((url) => url.endsWith("/api/scan"))).toHaveLength(2);
   } finally {
     await runtime.close();
     await rm(root, { recursive: true });
@@ -196,7 +202,7 @@ test("cancel acknowledges a running bounded-record scan within one second and ne
       }
     } finally { await handle.close(); }
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByRole("button", { name: "Cancel scan" })).toBeVisible();
@@ -233,7 +239,7 @@ test("a delayed initial catalog response cannot resurrect a cancelled generation
   });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await catalogArrived;
@@ -268,7 +274,7 @@ test("late reconciliation from an unmounted panel cannot relock its parent", asy
   });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect.poll(() => pending.length).toBeGreaterThanOrEqual(3);
@@ -298,7 +304,7 @@ test("a start request lost before admission cannot restore the previous scan cat
   const { root, runtime } = await fixture(text);
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
@@ -330,7 +336,7 @@ for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
     });
     try {
       await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
       const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
       await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
       await expect(panel.getByLabel("Scanned session")).toBeEnabled();
@@ -359,7 +365,7 @@ test("unknown initial cleanup keeps reconciling until status transport recovers"
   });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByText("Checking source cleanup before accepting new work…")).toBeVisible();
@@ -394,7 +400,7 @@ test("expired catalog pagination clears cached sessions and evidence before allo
   });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByRole("button", { name: "Next session page" })).toBeEnabled();
@@ -429,7 +435,7 @@ test("an expired status after a lost scan response does not restore a catalog or
   await page.route("**/api/scan/catalog", async (route) => { catalogRequests++; await route.continue(); });
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByText("budget-exceeded", { exact: true })).toBeVisible();
@@ -448,7 +454,7 @@ test("a source-changed detail failure clears the invalidated catalog and evidenc
   const { root, file, runtime } = await fixture(text);
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
@@ -480,7 +486,7 @@ test("failed detail responses reconcile cleanup before unlocking even when a pro
   let recovered = false;
   try {
     await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();

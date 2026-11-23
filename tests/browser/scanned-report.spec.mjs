@@ -21,7 +21,7 @@ test("browser Forward locks source controls until its metric request settles eve
   });
   try {
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     const rescan = scan.getByRole("button", { name: "Rescan JSONL source" });
     const session = scan.getByLabel("Scanned session");
@@ -73,6 +73,18 @@ test("browser Forward locks source controls until its metric request settles eve
     await expect(
       report.getByRole("button", { name: "Cancel report operation" }),
     ).toHaveCount(0);
+    let locationChecks = 0;
+    page.on("request", (request) => {
+      if (request.url().endsWith("/api/refresh")) locationChecks++;
+    });
+    await page
+      .getByRole("button", { name: "Review configured access", exact: true })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Configured access", exact: true }),
+    ).toBeFocused();
+    await expect(report).toHaveCount(0);
+    expect(locationChecks).toBe(0);
   } finally {
     release();
     await source.close();
@@ -93,7 +105,7 @@ test("lost cancellation cannot publish a late report even when the backend gener
   });
   try {
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     await scan
       .getByRole("button", { name: "Scan JSONL source", exact: true })
@@ -154,7 +166,7 @@ test("failed report cleanup exposes an explicit runtime cleanup retry before unl
   });
   try {
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     await scan
       .getByRole("button", { name: "Scan JSONL source", exact: true })
@@ -299,7 +311,7 @@ test("an oversized reread discards the previous report and changing the path cle
   const source = await fixture(0, true);
   try {
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByLabel("File inside this directory").fill("large.jsonl");
     const read = page.getByRole("button", { name: "Read source", exact: true });
     await read.click();
@@ -334,7 +346,7 @@ test("oversized read recovers by explicit keyboard scan into exact whole-session
   try {
     expect(source.bytes).toBeGreaterThan(64 * 1024 * 1024);
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     await page.getByLabel("File inside this directory").fill("large.jsonl");
     const selectedPath = await page.locator("#source-path").textContent();
     const readResponse = page.waitForResponse((response) => response.url().endsWith("/api/read"));
@@ -538,7 +550,7 @@ test("unknown report cleanup retains its lock until status recovers", async ({
   });
   try {
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     await scan
       .getByRole("button", { name: "Scan JSONL source", exact: true })
@@ -590,7 +602,7 @@ test("large report rejects prefix changes and a delayed report cannot resurrect 
   });
   try {
     await page.goto(source.runtime.launchUrl);
-    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Advanced file tools", { exact: true }).click();
     const scan = page.getByRole("region", { name: "Bounded JSONL scan" });
     await scan
       .getByRole("button", { name: "Scan JSONL source", exact: true })
