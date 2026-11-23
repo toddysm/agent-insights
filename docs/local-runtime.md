@@ -586,6 +586,11 @@ Claude Code, Codex and Cloud Hosted stop with a **Not supported** banner.
 Local recording instructions cover only future sessions, start with content
 capture off and never change VS Code settings automatically. Model analysis and
 its consent remain separate from finding/opening sessions.
+Before recording, verify the exporting machine's effective User/profile,
+Workspace/Remote settings and inherited exporter environment. Confirm that
+content capture is off and routing targets the intended private file; applying
+the example alone cannot guarantee either. Follow managed policy and the
+[configuration precedence guidance](capture-setup.md#user-profile-workspace-and-inherited-configuration).
 
 **Advanced file tools and configured access** retains the explicit manual reader,
 bounded scan and **Refresh sources** controls. **Analysis availability and privacy**

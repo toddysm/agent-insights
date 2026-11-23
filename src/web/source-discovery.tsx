@@ -1062,6 +1062,13 @@ export function SourceDiscoveryPanel({
               These are Local-specific instructions, not Agent Host settings.
               Managed settings must not be overridden.
             </p>
+            <p>
+              Before starting a session, verify effective User, profile,
+              Workspace and Remote settings and inherited exporter variables on
+              the exporting machine. Confirm content capture is off and output
+              goes to your intended private file; the example alone cannot
+              ensure this.
+            </p>
           </>
         )}
         {step === "recorded" && (

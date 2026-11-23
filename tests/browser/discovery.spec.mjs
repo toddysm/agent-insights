@@ -364,6 +364,12 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     await expect(wizard.locator("pre")).toContainText(
       '"github.copilot.chat.otel.captureContent": false',
     );
+    await expect(
+      wizard.getByText(/verify effective User, profile, Workspace/),
+    ).toBeVisible();
+    await expect(
+      wizard.getByText(/Confirm content capture is off and output goes/),
+    ).toBeVisible();
     await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard.getByRole("button", { name: "Back to file choice" }).click();
     await expect(wizard.getByRole("combobox")).toHaveCount(0);
