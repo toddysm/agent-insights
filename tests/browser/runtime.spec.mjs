@@ -308,6 +308,10 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
     await expect(page.getByText(/Analysis input tokens:/)).toHaveCount(0);
     expect(calls).toBe(2);
     await page.getByRole("button", { name: "Refresh sources" }).click();
+    await expect(page.getByRole("button", { name: "Refresh sources" })).toBeEnabled();
+    if (!(await page.locator(".analysis-details").evaluate((element) => element.open))) {
+      await page.getByText("Analysis availability and privacy", { exact: true }).click();
+    }
     await expect(page.getByRole("checkbox")).not.toBeChecked();
     await expect(
       page.getByRole("button", { name: "Analyze", exact: true }),
