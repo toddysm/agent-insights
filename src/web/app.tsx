@@ -27,6 +27,7 @@ import {
 } from "../analysis/contracts.js";
 import {
   errorSchema,
+  readRequestSchema,
   statusSchema,
   type RuntimeStatus,
   type ReadRequest,
@@ -252,6 +253,7 @@ function App(): ReactElement {
   function clearView(resetScan = true): void {
     if (resetScan) setScanReset((previous) => previous + 1);
     setError("");
+    setReadNotice("");
     setOversizedRead(false);
     setStartAttempt(null);
     setAnalysisNotice("");
@@ -467,13 +469,49 @@ function App(): ReactElement {
   }
 
   /**
-   * Request the selected source grant, relative path and registered reader format.
-   * @returns Resolves after retaining a current-generation read/status or displaying an
-   * error. A whole-file size rejection offers navigation, never an automatic scan.
-   * This resets analysis acknowledgement and does not invoke a model.
-   * The backend owns parsing; absent readers are not replaced with synthetic evidence.
-   * Informational notices remain visible without relabeling a completed read as partial.
-   * Resolve with the opened view, or null after a visible failure or superseded request.
+   * Read an explicit selection and refresh its status/summary without opening a report.
+   * Reject transport/status failures; ignore stale generations rather than publishing their evidence.
+   */
+  async function readWithStatus(
+    selection: ReadRequest | ReadSetRequest,
+    current: number,
+  ): Promise<ReadView | null> {
+    const view = await request(
+      "readerId" in selection ? "/api/read-set" : "/api/read",
+      readViewSchema,
+      selection,
+    );
+    if (current !== generation.current) return null;
+    const nextStatus = await request("/api/status", statusSchema);
+    if (current !== generation.current) return null;
+    setStatus(nextStatus);
+    const partial =
+      view.issues.some((issue) => issue.affectsCoverage !== false) ||
+      view.sources.some((source) =>
+        Object.values(source.coverage).some(
+          (coverage) => coverage.status === "partial",
+        ),
+      );
+    const summary =
+      view.sessions.length === 0 && view.events.length === 0
+        ? view.sources.some((source) => source.classification &&
+            Object.values(source.classification.nonExecutionRecords).some((count) => count > 0))
+          ? "Non-execution telemetry was found; no supported executions or sessions are available."
+          : "No session evidence is available from this read."
+        : view.sessions.length === 0
+          ? `${view.events.length} record${view.events.length === 1 ? " was" : "s were"} read, but no session could be identified.`
+          : `${partial ? "Partial read" : "Read completed"}: ${view.sessions.length} session${view.sessions.length === 1 ? "" : "s"} and ${view.events.length} record${view.events.length === 1 ? "" : "s"}.`;
+    const limitations = view.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    setReadNotice(`${summary} ${limitations}`);
+    return view;
+  }
+
+  /**
+   * Open an explicit current-generation read with refreshed status/summary, or return null after a visible failure.
+   * Reset analysis acknowledgement without invoking a model; oversized reads offer explicit scan recovery.
    */
   async function read(selection?: ReadSetRequest): Promise<ReadView | null> {
     const current = ++generation.current;
@@ -483,39 +521,13 @@ function App(): ReactElement {
     clearView();
     if (!selection) setDiscoveryReset((previous) => previous + 1);
     try {
-      const view = await request(selection ? "/api/read-set" : "/api/read", readViewSchema, selection ?? {
+      const view = await readWithStatus(selection ?? readRequestSchema.parse({
         sourceId,
         relativePath,
         format,
-      });
-      if (current !== generation.current) return null;
-      const nextStatus = await request("/api/status", statusSchema);
-      if (current !== generation.current) return null;
+      }), current);
+      if (!view) return null;
       setView(view);
-      setStatus(nextStatus);
-      const partial =
-        view.issues.some((issue) => issue.affectsCoverage !== false) ||
-        view.sources.some((source) =>
-          Object.values(source.coverage).some(
-            (coverage) => coverage.status === "partial",
-          ),
-        );
-      const summary =
-        view.sessions.length === 0 && view.events.length === 0
-          ? view.sources.some((source) => source.classification &&
-              Object.values(source.classification.nonExecutionRecords).some((count) => count > 0))
-            ? "Non-execution telemetry was found; no supported executions or sessions are available."
-            : "No session evidence is available from this read."
-          : view.sessions.length === 0
-            ? `${view.events.length} record${view.events.length === 1 ? " was" : "s were"} read, but no session could be identified.`
-            : `${partial ? "Partial read" : "Read completed"}: ${view.sessions.length} session${view.sessions.length === 1 ? "" : "s"} and ${view.events.length} record${view.events.length === 1 ? "" : "s"}.`;
-      const limitations = view.issues
-        .slice(0, 3)
-        .map((issue) => issue.message)
-        .join(" ");
-      setReadNotice(
-        `${summary} ${limitations}`,
-      );
       return view;
     } catch (failure) {
       if (current === generation.current) {
@@ -538,7 +550,6 @@ function App(): ReactElement {
     setSessionId(selectedSession);
     setReportSession(selectedSession);
     setAcknowledged(false);
-    setReadNotice("");
   }
 
   /** Preserve the wizard's configured selection when navigating to explicit large-file and supplemental tools. */
@@ -626,7 +637,7 @@ function App(): ReactElement {
               key={discoveryReset}
               status={status}
               disabled={busy || analysisLocked}
-              feedback={readFeedback}
+              feedback={readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null)}
               send={request}
               onStart={(resetScan) => {
                 generation.current++;
@@ -635,6 +646,7 @@ function App(): ReactElement {
               }}
               onBusy={setBusy}
               onRead={read}
+              onReadFile={(selection) => readWithStatus(selection, generation.current)}
               onOpenFile={openWizardFile}
               onFileTools={showFileTools}
             />}
@@ -805,7 +817,7 @@ function App(): ReactElement {
                 <p role="status">Checking configured locations...</p>
               )}
               </details>
-              {readNotice && (
+              {readNotice && !showWizard && (
                 <p className="notice" role="status">
                   {readNotice}
                 </p>

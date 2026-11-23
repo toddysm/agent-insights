@@ -26,16 +26,14 @@ export function SourceChoice({
   return (
     <div className="source-choice">
       {sources.length === 1 ? (
-        <div>
-          <span id={`${id}-label`}>{label}</span>
-          <p aria-labelledby={`${id}-label`}>
-            <strong>
-              {selected
-                ? sourceName(selected, sources)
-                : "No file or folder selected"}
-            </strong>
-          </p>
-        </div>
+        <p>
+          <span>{label}: </span>
+          <strong>
+            {selected
+              ? sourceName(selected, sources)
+              : "No file or folder selected"}
+          </strong>
+        </p>
       ) : (
         <>
           <label htmlFor={id}>{label}</label>

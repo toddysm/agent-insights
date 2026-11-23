@@ -294,14 +294,18 @@ smoke test. Synthetic success is not live-producer or Agent Host certification.
    or its authorized parent directory. Do not copy the capture into this project.
 2. Open the private launch URL. In **Find your sessions**, choose **Copilot**,
    then **Local**, then **I have a recorded file**. Confirm each choice with
-   **Next**. For a directory, enter the relative recording filename.
+   **Next**. For a directory, enter the relative recording filename; surrounding
+   whitespace is removed when the read is submitted.
 3. For a capture up to 64 MiB, choose **Find sessions**, select a recorded session,
    then **Open report**. The format is explicitly `vscode-otel-jsonl`, not guessed.
    For a larger capture, choose **Large recordings and file tools**, then
    **Scan JSONL source**, select a **Scanned session**,
    then **Open session report** as described [above](#scan-large-jsonl-captures-in-place).
    Do not route a large capture back through **Read source**.
-4. After opening a small read, inspect the observed session/record counts, **Read coverage** and expandable
+4. **Find sessions** refreshes source status and shows the observed session/record
+   counts and **Partial read** warning, including reported limitations, before
+   opening a report. The summary remains visible after **Open report**.
+   Inspect **Read coverage** and expandable
    **Read limitations**. Reading does not invoke a model.
    **Operation classification** separates model calls (chat/embeddings), tool
    calls, agent executions and hook executions. Missing/empty, malformed and

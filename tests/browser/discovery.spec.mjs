@@ -383,15 +383,21 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     await wizard.getByRole("button", { name: "Next", exact: true }).click();
     await wizard.getByRole("button", { name: "Back to file choice" }).click();
     await expect(wizard.getByRole("combobox")).toHaveCount(0);
+    await expect(wizard.locator(".source-choice > p").first()).toContainText(
+      /^Recorded session file or its containing folder: .+/,
+    );
     await expect(
       wizard.getByRole("button", { name: "Find sessions", exact: true }),
     ).toBeDisabled();
     await wizard
       .getByLabel("Recording filename inside this folder")
-      .fill("synthetic.jsonl");
+      .fill("  synthetic.jsonl  ");
     expect(requests.some((url) => url.endsWith("/api/read"))).toBe(false);
-    await page.route("**/api/read", (route) =>
-      route.fulfill({
+    await page.route("**/api/read", (route) => {
+      expect(route.request().postDataJSON().relativePath).toBe(
+        "synthetic.jsonl",
+      );
+      return route.fulfill({
         status: 413,
         json: {
           error: {
@@ -399,8 +405,8 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
             message: "Synthetic oversized recording: use the bounded scan.",
           },
         },
-      }),
-    );
+      });
+    });
     await wizard
       .getByRole("button", { name: "Find sessions", exact: true })
       .click();
@@ -418,12 +424,21 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
       page.getByRole("region", { name: "Bounded JSONL scan" }),
     ).toBeVisible();
     await page.unroute("**/api/read");
+    const statusRequests = requests.filter((url) =>
+      url.endsWith("/api/status"),
+    ).length;
     await wizard
       .getByRole("button", { name: "Find sessions", exact: true })
       .click();
     await expect(
       wizard.getByRole("radio", { name: /^native-session/ }),
     ).toBeVisible();
+    await expect(wizard.getByRole("status")).toContainText(
+      "Partial read: 2 sessions and 2 records. Output usage was not reported",
+    );
+    expect(requests.filter((url) => url.endsWith("/api/status"))).toHaveLength(
+      statusRequests + 1,
+    );
     await expect(
       page.getByRole("region", { name: "Session report", exact: true }),
     ).toHaveCount(0);
@@ -450,6 +465,9 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
     ).toBeFocused();
     await expect(consent).not.toBeChecked();
     await expect(
+      page.getByRole("status").filter({ hasText: /^Partial read:/ }),
+    ).toContainText("Output usage was not reported");
+    await expect(
       page.getByRole("button", { name: "Analyze", exact: true }),
     ).toBeDisabled();
     await consent.check();
@@ -471,6 +489,50 @@ test("Local recording needs an explicit filename/read/open and preserves large-f
         name: "Which coding assistant did you use?",
       }),
     ).toBeFocused();
+  });
+});
+
+test("a failed Local status refresh keeps the read unavailable and allows an explicit retry", async ({
+  page,
+}) => {
+  await withWizard(page, async ({ wizard }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Local/);
+    await choose(wizard, /^I have a recorded/);
+    await wizard
+      .getByLabel("Recording filename inside this folder")
+      .fill("synthetic.jsonl");
+    await page.route("**/api/status", (route) =>
+      route.fulfill({
+        status: 503,
+        json: {
+          error: {
+            code: "STATUS_UNAVAILABLE",
+            message: "Synthetic status refresh unavailable.",
+          },
+        },
+      }),
+    );
+    await wizard
+      .getByRole("button", { name: "Find sessions", exact: true })
+      .click();
+    await expect(wizard.getByRole("alert")).toContainText(
+      "Synthetic status refresh unavailable.",
+    );
+    await expect(
+      wizard.getByRole("button", { name: "Open report" }),
+    ).toHaveCount(0);
+    await expect(wizard.getByRole("status")).toHaveCount(0);
+    await page.unroute("**/api/status");
+    await wizard
+      .getByRole("button", { name: "Find sessions", exact: true })
+      .click();
+    await expect(wizard.getByRole("status")).toContainText(
+      "Partial read: 2 sessions",
+    );
+    await expect(
+      wizard.getByRole("radio", { name: /^native-session/ }),
+    ).toBeVisible();
   });
 });
 

@@ -4,7 +4,7 @@
  */
 import { useEffect, useRef, useState, type ReactElement } from "react";
 import type { z } from "zod";
-import { readViewSchema, type ReadView } from "../evidence/contracts.js";
+import type { ReadView } from "../evidence/contracts.js";
 import {
   discoveryResultSchema,
   type DiscoveryRequest,
@@ -29,6 +29,8 @@ interface DiscoveryProps {
   readonly onStart: (resetScan: boolean) => void;
   readonly onBusy: (busy: boolean) => void;
   readonly onRead: (selection: ReadSetRequest) => Promise<ReadView | null>;
+  /** Refresh status and read summary without opening a report; rejects read/status failures. */
+  readonly onReadFile: (selection: ReadRequest) => Promise<ReadView | null>;
   readonly onOpenFile: (view: ReadView, sessionId: string) => void;
   readonly onFileTools: (selection: ReadRequest) => void;
 }
@@ -132,6 +134,7 @@ export function SourceDiscoveryPanel({
   onStart,
   onBusy,
   onRead,
+  onReadFile,
   onOpenFile,
   onFileTools,
 }: DiscoveryProps): ReactElement {
@@ -281,14 +284,16 @@ export function SourceDiscoveryPanel({
     }
   }
 
-  /** Read the explicit Local recording, not an inferred format or another producer; large-file tools remain an explicit alternative. */
+  /** Read the trimmed explicit filename and refresh status/coverage feedback; opening a report and large-file tools remain separate actions. */
   async function readFile(): Promise<void> {
     invalidate(false, true);
     const current = generation.current;
     onBusy(true);
     try {
-      const next = await send("/api/read", readViewSchema, file);
-      if (current === generation.current) {
+      const selection = { ...file, relativePath: file.relativePath.trim() };
+      setFile(selection);
+      const next = await onReadFile(selection);
+      if (next && current === generation.current) {
         setFileView(next);
         setStep("file-sessions");
       }
