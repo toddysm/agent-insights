@@ -74,6 +74,7 @@ test("a lost accepted-start response is reconciled without resubmitting analysis
       } else await route.continue();
     });
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page.getByRole("button", { name: "Read source" }).click();
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page
@@ -88,7 +89,7 @@ test("a lost accepted-start response is reconciled without resubmitting analysis
       page.getByRole("button", { name: "Analyze", exact: true }),
     ).toBeDisabled();
     await expect(
-      page.getByLabel("Source location", { exact: true }),
+      page.getByRole("button", { name: "Read source", exact: true }),
     ).toBeDisabled();
     await expect(
       page.getByRole("button", { name: "Cancel analysis" }),
@@ -151,6 +152,7 @@ test("failed analysis errors and usage do not follow a different operation or so
   );
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page.getByRole("button", { name: "Read source" }).click();
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page
@@ -171,7 +173,7 @@ test("failed analysis errors and usage do not follow a different operation or so
     await expect(page.getByText("Synthetic terminal failure.")).toBeVisible();
     await page
       .getByLabel("Source location", { exact: true })
-      .selectOption({ label: files[1] });
+      .selectOption("source-2");
     await expect(page.getByText("Synthetic terminal failure.")).toHaveCount(0);
     await expect(page.getByText(/Analysis input tokens:/)).toHaveCount(0);
   } finally {
@@ -239,6 +241,7 @@ test("long evidence citations remain intact without horizontal overflow", async 
   );
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page.getByRole("button", { name: "Read source" }).click();
     await page.getByLabel("Session to analyze").selectOption("session-fixture");
     await page

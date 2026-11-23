@@ -24,6 +24,7 @@ import {
 /** Reuse the local authenticated transport; a report request computes metrics without model execution. */
 interface ReportProps {
   readonly view: ReadView;
+  readonly initialSession?: string;
   readonly send: <T>(
     route: string,
     schema: z.ZodType<T>,
@@ -902,16 +903,18 @@ function SelectedReport({
   );
 }
 
-/** Select among sessions in the current read, distinct from scan discovery; never substitute an empty/wrong-runtime source. */
-export function SessionReportPanel({ view, send }: ReportProps): ReactElement {
-  const [sessionId, setSessionId] = useState(view.sessions[0]?.id ?? "");
+/** Start at the wizard's selected session when present in this read; legacy reads begin at the first session, never another source. */
+export function SessionReportPanel({ view, send, initialSession }: ReportProps): ReactElement {
+  const [sessionId, setSessionId] = useState(
+    view.sessions.find((session) => session.id === initialSession)?.id ?? view.sessions[0]?.id ?? "",
+  );
   return (
     <section
       id="session-report"
       className="panel session-report"
       aria-labelledby="report-heading"
     >
-      <h2 id="report-heading">Session report</h2>
+      <h2 id="report-heading" tabIndex={-1}>Session report</h2>
       {view.sessions.length === 0 ? (
         <div className="empty">
           <h3>No attributable session is available</h3>

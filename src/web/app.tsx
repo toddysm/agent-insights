@@ -27,13 +27,16 @@ import {
 } from "../analysis/contracts.js";
 import {
   errorSchema,
+  readRequestSchema,
   statusSchema,
   type RuntimeStatus,
+  type ReadRequest,
   type ReadSetRequest,
 } from "../runtime/protocol.js";
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
 import { SourceDiscoveryPanel } from "./source-discovery.js";
+import { SourceChoice } from "./source-choice.js";
 import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
 import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
@@ -190,6 +193,18 @@ function App(): ReactElement {
   const [discoveryReset, setDiscoveryReset] = useState(0);
   const [operationId, setOperationId] = useState("");
   const [acknowledged, setAcknowledged] = useState(false);
+  const [reportSession, setReportSession] = useState("");
+  const fileTools = useRef<HTMLDetailsElement>(null);
+  const pendingWizardFocus = useRef(false);
+  useEffect(() => {
+    if (view) document.getElementById("report-heading")?.focus();
+  }, [view]);
+  useEffect(() => {
+    if (pendingWizardFocus.current) {
+      document.getElementById("wizard-question")?.focus();
+      pendingWizardFocus.current = false;
+    }
+  }, [discoveryReset]);
   const generation = useRef(0);
   const [startAttempt, setStartAttempt] = useState<{
     previousRunId: string | null;
@@ -238,6 +253,7 @@ function App(): ReactElement {
   function clearView(resetScan = true): void {
     if (resetScan) setScanReset((previous) => previous + 1);
     setError("");
+    setReadNotice("");
     setOversizedRead(false);
     setStartAttempt(null);
     setAnalysisNotice("");
@@ -245,6 +261,7 @@ function App(): ReactElement {
     setView(null);
     setScannedReport(null);
     setSessionId("");
+    setReportSession("");
     setAcknowledged(false);
   }
 
@@ -452,53 +469,66 @@ function App(): ReactElement {
   }
 
   /**
-   * Request the selected source grant, relative path and registered reader format.
-   * @returns Resolves after retaining a current-generation read/status or displaying an
-   * error. A whole-file size rejection offers navigation, never an automatic scan.
-   * This resets analysis acknowledgement and does not invoke a model.
-   * The backend owns parsing; absent readers are not replaced with synthetic evidence.
-   * Informational notices remain visible without relabeling a completed read as partial.
+   * Read an explicit selection and refresh its status/summary without opening a report.
+   * Reject transport/status failures; ignore stale generations rather than publishing their evidence.
    */
-  async function read(selection?: ReadSetRequest): Promise<void> {
+  async function readWithStatus(
+    selection: ReadRequest | ReadSetRequest,
+    current: number,
+  ): Promise<ReadView | null> {
+    const view = await request(
+      "readerId" in selection ? "/api/read-set" : "/api/read",
+      readViewSchema,
+      selection,
+    );
+    if (current !== generation.current) return null;
+    const nextStatus = await request("/api/status", statusSchema);
+    if (current !== generation.current) return null;
+    setStatus(nextStatus);
+    const partial =
+      view.issues.some((issue) => issue.affectsCoverage !== false) ||
+      view.sources.some((source) =>
+        Object.values(source.coverage).some(
+          (coverage) => coverage.status === "partial",
+        ),
+      );
+    const summary =
+      view.sessions.length === 0 && view.events.length === 0
+        ? view.sources.some((source) => source.classification &&
+            Object.values(source.classification.nonExecutionRecords).some((count) => count > 0))
+          ? "Non-execution telemetry was found; no supported executions or sessions are available."
+          : "No session evidence is available from this read."
+        : view.sessions.length === 0
+          ? `${view.events.length} record${view.events.length === 1 ? " was" : "s were"} read, but no session could be identified.`
+          : `${partial ? "Partial read" : "Read completed"}: ${view.sessions.length} session${view.sessions.length === 1 ? "" : "s"} and ${view.events.length} record${view.events.length === 1 ? "" : "s"}.`;
+    const limitations = view.issues
+      .slice(0, 3)
+      .map((issue) => issue.message)
+      .join(" ");
+    setReadNotice(`${summary} ${limitations}`);
+    return view;
+  }
+
+  /**
+   * Open an explicit current-generation read with refreshed status/summary, or return null after a visible failure.
+   * Reset analysis acknowledgement without invoking a model; oversized reads offer explicit scan recovery.
+   */
+  async function read(selection?: ReadSetRequest): Promise<ReadView | null> {
     const current = ++generation.current;
     setBusy(true);
     setError("");
     setReadNotice("");
     clearView();
+    if (!selection) setDiscoveryReset((previous) => previous + 1);
     try {
-      const view = await request(selection ? "/api/read-set" : "/api/read", readViewSchema, selection ?? {
+      const view = await readWithStatus(selection ?? readRequestSchema.parse({
         sourceId,
         relativePath,
         format,
-      });
-      if (current !== generation.current) return;
-      const nextStatus = await request("/api/status", statusSchema);
-      if (current !== generation.current) return;
+      }), current);
+      if (!view) return null;
       setView(view);
-      setStatus(nextStatus);
-      const partial =
-        view.issues.some((issue) => issue.affectsCoverage !== false) ||
-        view.sources.some((source) =>
-          Object.values(source.coverage).some(
-            (coverage) => coverage.status === "partial",
-          ),
-        );
-      const summary =
-        view.sessions.length === 0 && view.events.length === 0
-          ? view.sources.some((source) => source.classification &&
-              Object.values(source.classification.nonExecutionRecords).some((count) => count > 0))
-            ? "Non-execution telemetry was found; no supported executions or sessions are available."
-            : "No session evidence is available from this read."
-          : view.sessions.length === 0
-            ? `${view.events.length} record${view.events.length === 1 ? " was" : "s were"} read, but no session could be identified.`
-            : `${partial ? "Partial read" : "Read completed"}: ${view.sessions.length} session${view.sessions.length === 1 ? "" : "s"} and ${view.events.length} record${view.events.length === 1 ? "" : "s"}.`;
-      const limitations = view.issues
-        .slice(0, 3)
-        .map((issue) => issue.message)
-        .join(" ");
-      setReadNotice(
-        `${summary} ${limitations}`,
-      );
+      return view;
     } catch (failure) {
       if (current === generation.current) {
         setOversizedRead(!selection && failure instanceof RequestError && failure.code === "SOURCE_TOO_LARGE");
@@ -508,10 +538,57 @@ function App(): ReactElement {
             : "The source could not be read.",
         );
       }
+      return null;
     } finally {
       if (current === generation.current) setBusy(false);
     }
   }
+
+  /** Hand off an explicitly selected Local session from the wizard's retained read; no new read or model call occurs. */
+  function openWizardFile(next: ReadView, selectedSession: string): void {
+    setView(next);
+    setSessionId(selectedSession);
+    setReportSession(selectedSession);
+    setAcknowledged(false);
+  }
+
+  /** Preserve the wizard's configured selection when navigating to explicit large-file and supplemental tools. */
+  function showFileTools(selection: ReadRequest): void {
+    setSourceId(selection.sourceId);
+    setRelativePath(selection.relativePath);
+    setFormat(selection.format);
+    clearView(false);
+    if (fileTools.current) {
+      fileTools.current.open = true;
+      fileTools.current.scrollIntoView({ block: "start" });
+      fileTools.current.querySelector("summary")?.focus();
+    }
+  }
+
+  const showWizard = status !== null && !view && !scannedReport;
+  const readFeedback = error ? (
+    <div className="alert" role="alert">
+      {error}
+      {status && (
+        <span> Previously checked source status is shown below.</span>
+      )}
+      {oversizedRead && (
+        <div>
+          <p>Read source accepts at most 64 MiB. No report was created from this failed read.</p>
+          {format === "vscode-otel-jsonl" && selected?.available ? <>
+            <p>For a supported extension JSONL export, scan the original file in place.
+              Scanning discovers sessions; then select a Scanned session and choose Open session report.
+              Original evidence pages are separate from whole-admitted-session reports.</p>
+            <a href="#scan-source">Go to Scan JSONL source</a>
+            <p>Your source location, relative file and reader format are unchanged.
+              Scanning starts only when you activate the scan button. No model is called.</p>
+          </> : <p>Large-file scanning supports only vscode-otel-jsonl extension exports,
+            not SQLite, saved chats or arbitrary JSONL. Select that reader only for a matching export.
+            Source grants and database safety limits still apply.</p>}
+        </div>
+      )}
+    </div>
+  ) : null;
 
   return (
     <>
@@ -555,47 +632,32 @@ function App(): ReactElement {
           </section>
         ) : (
           <>
-            {error && (
-              <div className="alert" role="alert">
-                {error}
-                {status && (
-                  <span> Previously checked source status is shown below.</span>
-                )}
-                {oversizedRead && (
-                  <div>
-                    <p>Read source accepts at most 64 MiB. No report was created from this failed read.</p>
-                    {format === "vscode-otel-jsonl" && selected?.available ? <>
-                      <p>For a supported extension JSONL export, scan the original file in place.
-                        Scanning discovers sessions; then select a Scanned session and choose Open session report.
-                        Original evidence pages are separate from whole-admitted-session reports.</p>
-                      <a href="#scan-source">Go to Scan JSONL source</a>
-                      <p>Your source location, relative file and reader format are unchanged.
-                        Scanning starts only when you activate the scan button. No model is called.</p>
-                    </> : <p>Large-file scanning supports only vscode-otel-jsonl extension exports,
-                      not SQLite, saved chats or arbitrary JSONL. Select that reader only for a matching export.
-                      Source grants and database safety limits still apply.</p>}
-                  </div>
-                )}
-              </div>
-            )}
-            {status && <SourceDiscoveryPanel
+            {!showWizard && readFeedback}
+            {status && showWizard && <SourceDiscoveryPanel
               key={discoveryReset}
               status={status}
               disabled={busy || analysisLocked}
+              feedback={readFeedback ?? (readNotice ? <p className="notice" role="status">{readNotice}</p> : null)}
               send={request}
-              onStart={() => {
+              onStart={(resetScan) => {
                 generation.current++;
-                clearView();
+                clearView(resetScan);
                 setReadNotice("");
               }}
               onBusy={setBusy}
               onRead={read}
+              onReadFile={(selection) => readWithStatus(selection, generation.current)}
+              onOpenFile={openWizardFile}
+              onFileTools={showFileTools}
             />}
+            {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { pendingWizardFocus.current = true; generation.current++; clearView(); setDiscoveryReset((previous) => previous + 1); }}>Find another session</button>}
             <section
               id="sources"
               className="panel"
               aria-labelledby="sources-heading"
             >
+              <details ref={fileTools} className="file-tools">
+              <summary>Advanced file tools and configured access</summary>
               <div className="section-heading">
                 <div>
                   <h2 id="sources-heading">Configured locations</h2>
@@ -653,24 +715,18 @@ function App(): ReactElement {
                         void read();
                       }}
                     >
-                      <label htmlFor="source">Source location</label>
-                      <select
-                        id="source"
+                      <SourceChoice
+                        id="source" label="Source location"
+                        sources={status.sources}
                         value={sourceId}
                         disabled={busy || analysisLocked}
-                        onChange={(event) => {
-                          setSourceId(event.target.value);
+                        onChange={(id) => {
+                          setSourceId(id);
                           setRelativePath("");
                           setReadNotice("");
                           clearView();
                         }}
-                      >
-                        {status.sources.map((source) => (
-                          <option value={source.id} key={source.id}>
-                            {source.path}
-                          </option>
-                        ))}
-                      </select>
+                      />
                       {selected?.kind === "directory" && (
                         <>
                           <label htmlFor="relative-path">
@@ -739,7 +795,7 @@ function App(): ReactElement {
                       relativePath={relativePath}
                       disabled={busy || analysisLocked || !selected?.available}
                       send={request}
-                      onStart={() => { clearView(false); setReadNotice(""); }}
+                      onStart={() => { clearView(false); setDiscoveryReset((previous) => previous + 1); setReadNotice(""); }}
                       onBusy={setBusy}
                       onReport={openScannedReport}
                     />
@@ -760,7 +816,8 @@ function App(): ReactElement {
               ) : (
                 <p role="status">Checking configured locations...</p>
               )}
-              {readNotice && (
+              </details>
+              {readNotice && !showWizard && (
                 <p className="notice" role="status">
                   {readNotice}
                 </p>
@@ -817,9 +874,11 @@ function App(): ReactElement {
                 </section>
               )}
             </section>
-            {view && <SessionReportPanel key={view.id} view={view} send={request} />}
+            {view && <SessionReportPanel key={view.id} view={view} send={request} initialSession={reportSession} />}
             {scannedReport && <ScannedSessionReportPanel key={`${scannedReport.id}/${scannedReport.sessionId}/${scannedReportAttempt}`}
               selection={scannedReport} send={request} onBusy={setBusy} />}
+            <details className="analysis-details" open={Boolean(view || scannedReport || run || analysisLocked)}>
+            <summary>Analysis availability and privacy</summary>
             <section
               className="panel analysis"
               aria-labelledby="analysis-heading"
@@ -997,6 +1056,7 @@ function App(): ReactElement {
                 </div>
               )}
             </section>
+            </details>
           </>
         )}
       </main>

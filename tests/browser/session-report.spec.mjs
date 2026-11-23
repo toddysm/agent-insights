@@ -70,6 +70,7 @@ async function openNativeReport(page, includeExcluded = false) {
   });
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page
       .getByRole("button", { name: "Read source", exact: true })
       .click();
@@ -377,6 +378,12 @@ test("refresh discards an outstanding metric response instead of resurrecting th
     entered = resolve;
   });
   try {
+    await expect(
+      page.getByRole("button", {
+        name: "Tool calls: 2; partial coverage",
+        exact: true,
+      }),
+    ).toBeVisible();
     const view = await nativeReportView({ readId: "replacement-read" });
     fixture.setView(view);
     await page.route("**/api/report", async (route) => {

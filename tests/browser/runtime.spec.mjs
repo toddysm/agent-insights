@@ -39,6 +39,13 @@ test("source selection, cloud disclosure and memory-only access work on desktop 
   page.on("request", (request) => requests.push(request.url()));
   try {
     await page.goto(runtime.launchUrl);
+    await expect(page.getByRole("link", { name: "Skip to content" })).toBeVisible();
+    await page.keyboard.press("Tab");
+    await expect(page.getByRole("link", { name: "Skip to content" })).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(page.locator("#content")).toBeFocused();
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
+    await page.getByText("Analysis availability and privacy", { exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "Configured locations" }),
     ).toBeVisible();
@@ -58,12 +65,6 @@ test("source selection, cloud disclosure and memory-only access work on desktop 
       page.getByText(/Analysis definitions are not installed yet/i),
     ).toBeVisible();
     await expect(page).toHaveTitle("Agent Insights");
-    await page.keyboard.press("Tab");
-    await expect(
-      page.getByRole("link", { name: "Skip to content" }),
-    ).toBeFocused();
-    await page.keyboard.press("Enter");
-    await expect(page.locator("#content")).toBeFocused();
     await expect
       .poll(() =>
         page.evaluate(() =>
@@ -85,7 +86,7 @@ test("source selection, cloud disclosure and memory-only access work on desktop 
     });
     await page.setViewportSize({ width: 390, height: 844 });
     await expect(
-      page.getByRole("heading", { name: "Sources", exact: true }),
+      page.getByRole("heading", { name: "Find your sessions", exact: true }),
     ).toBeVisible();
     expect(
       await page.evaluate(
@@ -123,6 +124,7 @@ test("an empty configuration stays explicit instead of rendering example session
 
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await expect(
       page.getByRole("heading", { name: "No sources configured" }),
     ).toBeVisible();
@@ -176,6 +178,7 @@ test("analysis consent counts direct and associated evidence once, including agr
   );
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page.getByRole("button", { name: "Read source", exact: true }).click();
     await page.getByLabel("Session to analyze").selectOption({ index: 1 });
     await page.getByRole("combobox", { name: "Analysis", exact: true }).selectOption("synthetic");
@@ -254,6 +257,7 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
   );
   try {
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await page.getByRole("button", { name: "Refresh sources" }).click();
     expect(calls).toBe(0);
     await page.getByRole("button", { name: "Read source" }).click();
@@ -270,7 +274,7 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
     await expect(page.getByText(/Retrying analysis status/)).toBeVisible();
     await expect(
-      page.getByLabel("Source location", { exact: true }),
+      page.getByRole("button", { name: "Read source", exact: true }),
     ).toBeDisabled();
     await expect(
       page.getByRole("button", { name: "Cancel analysis" }),
@@ -294,6 +298,7 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
     await page.getByRole("button", { name: "Analyze", exact: true }).click();
     await page.goto("about:blank");
     await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools and configured access", { exact: true }).click();
     await expect(page.getByLabel("Session to analyze")).toHaveValue("");
     await expect(
       page.getByRole("button", { name: "Cancel analysis" }),
@@ -304,6 +309,10 @@ test("analysis requires fresh acknowledgement, reports separate usage and suppor
     await expect(page.getByText(/Analysis input tokens:/)).toHaveCount(0);
     expect(calls).toBe(2);
     await page.getByRole("button", { name: "Refresh sources" }).click();
+    await expect(page.getByRole("button", { name: "Refresh sources" })).toBeEnabled();
+    if (!(await page.locator(".analysis-details").evaluate((element) => element.open))) {
+      await page.getByText("Analysis availability and privacy", { exact: true }).click();
+    }
     await expect(page.getByRole("checkbox")).not.toBeChecked();
     await expect(
       page.getByRole("button", { name: "Analyze", exact: true }),
