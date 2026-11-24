@@ -145,16 +145,16 @@ export const readSetRequestSchema = z.strictObject({
 /** Immutable selection for one installed multi-source adapter. */
 export type ReadSetRequest = z.infer<typeof readSetRequestSchema>;
 
-/** A discovery root is relative to an explicitly configured grant; its role never grants access to neighbors. */
+/** Harness recognition and legacy explicit layouts stay inside the selected grant and confined path. */
 const discoveryRootSchema = z.strictObject({
   sourceId: z.string().min(1),
   relativePath: z.string().max(4096).refine((value) => !value.includes("\0")),
-  layout: z.enum(["catalog", "settings", "history", "overlay"]),
+  layout: z.enum(["agent-host", "catalog", "settings", "history", "overlay"]),
 }).readonly();
 
 /**
- * Explicitly selected profile/per-user/custom locations. Settings expands only
- * globalStorage and profiles; history/overlay inspect one storage-directory level.
+ * Agent Host recognition uses the existing fixed settings/profile and one-level
+ * session layouts. Explicit layouts remain compatible; no home/profile inference.
  */
 export const discoveryRequestSchema = z.strictObject({
   roots: z.array(discoveryRootSchema).min(1).max(16).readonly(),

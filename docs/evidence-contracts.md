@@ -188,7 +188,7 @@ producer-generated verification; optional telemetry is not a native prerequisite
 
 Manual [source discovery](local-runtime.md#discover-agent-host-sessions) produces
 a transient list, not a `ReadView`, persisted session catalog or analysis result.
-Only explicitly selected configured grants/layouts are inspected. Initial
+Only explicitly selected configured grants and confined paths are inspected. Initial
 `--source` locations and explicitly UI-added current-run locations share the same
 read-only containment, identity, resource and qualified-reader boundaries.
 Authenticated `POST /api/locations/add` accepts `{ path, kind }`, with `kind`
@@ -211,6 +211,18 @@ slot, including at capacity. The response carries all
 alias availability failures observed during final revalidation, rather than
 reusing its earlier availability snapshot. Search and reading still require
 separate actions.
+The existing assistant/harness choices constrain discovery; no storage-role
+choice is required in the wizard. `layout: "agent-host"` recognizes only fixed
+supported settings/profile and one-level session layouts within selected
+locations. A bounded signature routes exact files, independent of their names,
+to the native header parser or disjoint guarded schema-22/schema-18 declarations.
+Only qualified contents establish format and ownership. Unreadable/unsupported
+data, linked children, missing correlation and ambiguous identities remain
+explicit; there is no fallback to another harness, source or default location.
+Legacy explicit API layouts remain compatible. The 16-root/64-file ceilings
+remain in force, with at most 64 session/profile directory probes and existing
+entry/read limits. Harness default paths are guidance only; selecting or adding
+a source does not initiate a read. Local recorded-file setup remains separate.
 The bounded
 `discovery_chats` projection uses the same schema-22 definition and ownership
 resolver as native reading; paths and shared SDK branding do not establish

@@ -8,13 +8,14 @@ import {
 } from "react";
 import type { AddLocationRequest } from "../runtime/protocol.js";
 
-/** Parent owns authenticated admission/status invalidation; this form retains failed input for correction. */
+/** Parent owns admission/status and an optional harness-specific example; examples never select paths. */
 interface LocationAddProps {
   readonly open: boolean;
   readonly disabled: boolean;
   readonly onOpen: (open: boolean) => void;
   readonly onAdd: (selection: AddLocationRequest) => Promise<void>;
   readonly trigger: RefObject<HTMLButtonElement | null>;
+  readonly example?: string;
 }
 
 /** Keep path entry reachable with or without existing locations; display backend errors without implying OS permissions changed. */
@@ -24,6 +25,7 @@ export function SourceLocationAdd({
   onOpen,
   onAdd,
   trigger,
+  example = "/path/to/session-data",
 }: LocationAddProps): ReactElement | null {
   const [path, setPath] = useState("");
   const [kind, setKind] = useState<AddLocationRequest["kind"]>("directory");
@@ -103,9 +105,8 @@ export function SourceLocationAdd({
           }}
         />
         <p id="location-add-help">
-          For example, <code>/Users/example/.copilot/session-state</code> on
-          macOS or <code>C:\Users\example\.copilot\session-state</code> on
-          Windows. Choose Add location to allow read access for this app run
+          For example, <code>{example}</code>. Use the path syntax of the
+          computer running Agent Insights. Choose Add location to allow read access for this app run
           only. A folder includes supported files inside it, within existing
           limits. Your computer&apos;s file permissions still apply. Nothing is
           searched and no model is called.

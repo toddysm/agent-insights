@@ -18,6 +18,7 @@ import {
   link,
   copyFile,
   rename,
+  truncate,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -392,7 +393,7 @@ test("production discovery keeps the helper gate and never turns inaccessible se
           {
             sourceId: "source-1",
             relativePath: "never-opened.db",
-            layout: "catalog",
+            layout: "agent-host",
           },
         ],
       },
@@ -416,29 +417,17 @@ for (const code of [
 ]) {
   test(`discovery rejects ${code} instead of publishing an incomplete correlation set`, async (t) => {
     const root = await temporary(t);
-    await writeFile(path.join(root, "catalog.db"), "");
+    await writeFile(path.join(root, "catalog.db"), "SQLite format 3\0");
     t.mock.method(SourceAccess.prototype, "database", async () => {
       throw new RuntimeError(code, "Synthetic source budget exceeded.", 413);
     });
-    const discovery = new SourceDiscovery(
-      await SourceAccess.create([root]),
-      testNativeHelper,
-      "limited",
-      signal,
-    );
-    t.after(() => discovery.dispose());
-    await assert.rejects(
-      discovery.run({
-        roots: [
-          {
-            sourceId: "source-1",
-            relativePath: "catalog.db",
-            layout: "catalog",
-          },
-        ],
-      }),
-      { code },
-    );
+    for (const layout of ["catalog", "agent-host"] as const) {
+      const discovery = new SourceDiscovery(await SourceAccess.create([root]), testNativeHelper, `limited-${layout}`, signal);
+      t.after(() => discovery.dispose());
+      await assert.rejects(discovery.run({
+        roots: [{ sourceId: "source-1", relativePath: "catalog.db", layout }],
+      }), { code });
+    }
   });
 }
 
@@ -538,6 +527,95 @@ test("empty, Local-exporter and unsupported histories stay unqualified; no roots
     }).success,
     false,
   );
+});
+
+test("harness recognition inspects only fixed source layouts and reports empty, linked and confined-path failures", async (t) => {
+  const root = await temporary(t);
+  const selected = path.join(root, "selected.db");
+  await mkdir(path.join(selected, "globalStorage"), { recursive: true });
+  await mkdir(path.join(selected, "too", "deep"), { recursive: true });
+  await mkdir(path.join(root, "outside"));
+  const header = JSON.stringify(records()[0]) + "\n";
+  await writeFile(path.join(selected, "events.jsonl"), header);
+  await writeFile(path.join(selected, "globalStorage", "events.jsonl"), header);
+  await writeFile(path.join(selected, "too", "deep", "events.jsonl"), header);
+  await writeFile(path.join(root, "outside", "events.jsonl"), header);
+  await symlink(path.join(root, "outside"), path.join(selected, "linked"), process.platform === "win32" ? "junction" : "dir");
+  const access = await SourceAccess.create([selected]);
+  const discovery = new SourceDiscovery(access, testNativeHelper, "recognition", signal);
+  t.after(() => discovery.dispose());
+  const result = await discovery.run({
+    roots: [{ sourceId: "source-1", relativePath: "", layout: "agent-host" }],
+  });
+  assert.deepEqual(result.locators.map((locator) => locator.relativePath).sort(), [
+    "events.jsonl", path.join("globalStorage", "events.jsonl"),
+  ].sort());
+  assert.ok(result.issues.some((issue) => issue.code === "SOURCE_LINK" && issue.relativePath === "linked"));
+  assert.equal(result.issues.filter((issue) => issue.code === "UNASSIGNED_HISTORY").length, 2);
+  const confinedDiscovery = new SourceDiscovery(access, testNativeHelper, "confined-recognition", signal);
+  t.after(() => confinedDiscovery.dispose());
+  const confined = await confinedDiscovery.run({
+    roots: [{ sourceId: "source-1", relativePath: "../outside", layout: "agent-host" }],
+  });
+  assert.ok(confined.issues.some((issue) => issue.code === "SOURCE_SCOPE"));
+  assert.deepEqual(confined.locators, []);
+
+  const empty = new SourceDiscovery(access, testNativeHelper, "empty-recognition", signal);
+  t.after(() => empty.dispose());
+  const unsupported = await empty.run({
+    roots: [{ sourceId: "source-1", relativePath: path.join("too", "deep"), layout: "agent-host" }],
+  });
+  assert.ok(unsupported.issues.some((issue) => issue.code === "UNASSIGNED_HISTORY"));
+  await mkdir(path.join(selected, "unrelated"));
+  await writeFile(path.join(selected, "unrelated", "local.jsonl"), '{"traceId":"local"}\n');
+  const noFilesDiscovery = new SourceDiscovery(access, testNativeHelper, "no-files-recognition", signal);
+  t.after(() => noFilesDiscovery.dispose());
+  const noFiles = await noFilesDiscovery.run({
+    roots: [{ sourceId: "source-1", relativePath: "unrelated", layout: "agent-host" }],
+  });
+  assert.ok(noFiles.issues.some((issue) => issue.code === "UNSUPPORTED_SOURCE"));
+});
+
+test("exact native files are recognized by headers regardless of filename without SQLite size limits or Local substitution", async (t) => {
+  const root = await temporary(t);
+  const history = path.join(root, "extensionless");
+  await writeFile(history, JSON.stringify(records()[0]) + "\n");
+  await truncate(history, 65 * 1024 * 1024);
+  await writeFile(path.join(root, "local.db"), '{"traceId":"local"}\n');
+  const discovery = new SourceDiscovery(
+    await SourceAccess.create([history, path.join(root, "local.db")]), testNativeHelper, "exact-recognition", signal,
+  );
+  t.after(() => discovery.dispose());
+  const result = await discovery.run({
+    roots: [
+      { sourceId: "source-1", relativePath: "", layout: "agent-host" },
+      { sourceId: "source-2", relativePath: "", layout: "agent-host" },
+    ],
+  });
+  assert.ok(result.issues.some((issue) => issue.sourceId === "source-1" && issue.code === "UNASSIGNED_HISTORY"));
+  assert.ok(result.issues.some((issue) => issue.sourceId === "source-2" && issue.code === "UNQUALIFIED_HISTORY"));
+  assert.deepEqual(result.sessions, []);
+});
+
+test("harness recognition admits 64 candidate histories and rejects candidate 65 before publishing", async (t) => {
+  const root = await temporary(t);
+  const header = JSON.stringify(records()[0]) + "\n";
+  await writeFile(path.join(root, "events.jsonl"), header);
+  for (let index = 0; index < 63; index++) {
+    const directory = path.join(root, String(index));
+    await mkdir(directory);
+    await writeFile(path.join(directory, "events.jsonl"), header);
+  }
+  const access = await SourceAccess.create([root]);
+  const discovery = new SourceDiscovery(access, testNativeHelper, "limit-recognition", signal);
+  t.after(() => discovery.dispose());
+  const selection: DiscoveryRequest = { roots: [{ sourceId: "source-1", relativePath: "", layout: "agent-host" }] };
+  assert.equal((await discovery.run(selection)).locators.length, 64);
+  await mkdir(path.join(root, "sixty-fifth"));
+  await writeFile(path.join(root, "sixty-fifth", "events.jsonl"), header);
+  const limited = new SourceDiscovery(access, testNativeHelper, "excess-recognition", signal);
+  t.after(() => limited.dispose());
+  await assert.rejects(limited.run(selection), { code: "DISCOVERY_LIMIT" });
 });
 
 /** Create source-owned WAL inputs and preserve their live writer sidecars until service cleanup completes. */
@@ -674,6 +752,58 @@ test("guarded Agent Host discovery and combined source read produce exact report
   assert.ok(observation.metric.contributors.some((reference) => reference.location.kind === "sqlite" && reference.location.table === "turn_usage"));
   await data.service.close();
   assert.throws(() => recordedReport(data.service.view, { readId: view.id, sessionId }), { code: "REPORT_STALE" });
+});
+
+test("role-free native discovery recognizes settings/profiles, histories and overlays with the original correlation and reopen controls", native, async (t) => {
+  const data = await fixture(t);
+  await mkdir(path.join(data.root, "User", "profiles", "example", "globalStorage"), { recursive: true });
+  const selection: DiscoveryRequest = {
+    roots: data.selection.roots.map((root) => ({ ...root, layout: "agent-host" })),
+  };
+  const result = await data.service.discover(selection, signal);
+  assert.equal(result.sessions.length, 1);
+  assert.equal(result.sessions[0]?.state, "ready");
+  assert.deepEqual(result.issues, []);
+  const view = await data.service.readSet(result.sessions[0].selection!, signal);
+  assert.ok(view.events.some((event) => event.kind === "message" && event.text === "Fictional request"));
+  assert.ok(view.sources.some((source) => source.format === "vscode-agenthost-session-sqlite"));
+  data.catalog.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  await copyFile(data.catalogPath, path.join(data.root, "User", "profiles", "example", "globalStorage", "agent-host.db"));
+  const ambiguous = await data.service.discover(selection, signal);
+  assert.equal(ambiguous.sessions.length, 2);
+  assert.ok(ambiguous.sessions.every((session) => session.state === "ambiguous" && !session.selection));
+  const profile = await data.service.discover({
+    roots: selection.roots.map((root, index) => index === 0 ? { ...root, relativePath: "User/profiles/example" } : root),
+  }, signal);
+  assert.equal(profile.sessions.length, 1);
+  assert.equal(profile.sessions[0]?.state, "ready");
+});
+
+test("role-free exact-file grants recognize renamed databases and preserve unsupported-schema failures", native, async (t) => {
+  const data = await fixture(t);
+  for (const writer of data.writers.splice(0)) writer.close();
+  const catalog = path.join(data.root, "custom-information");
+  const overlay = path.join(data.root, "custom-details");
+  await rename(data.catalogPath, catalog);
+  await rename(path.join(data.root, "agentSessionData", "unrelated-storage-key", "session.db"), overlay);
+  const wrong = path.join(data.root, "unsupported");
+  const database = new DatabaseSync(wrong);
+  database.exec("PRAGMA user_version=999; CREATE TABLE unsupported(id TEXT PRIMARY KEY NOT NULL);");
+  database.close();
+  const discovery = new SourceDiscovery(
+    await SourceAccess.create([catalog, data.historyPath, overlay, wrong]), testNativeHelper, "exact-native", signal,
+  );
+  try {
+    const result = await discovery.run({
+      roots: [1, 2, 3, 4].map((id) => ({ sourceId: `source-${id}`, relativePath: "", layout: "agent-host" })),
+    });
+    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions[0]?.state, "ready");
+    assert.equal(result.sessions[0]?.selection?.sources.length, 3);
+    assert.ok(result.issues.some((issue) => issue.sourceId === "source-4" && issue.code === "UNSUPPORTED_SOURCE"));
+  } finally {
+    await discovery.dispose();
+  }
 });
 
 test(

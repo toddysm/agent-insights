@@ -1,5 +1,5 @@
 /**
- * Discover qualified Agent Host records only inside explicitly selected startup grants.
+ * Discover qualified Agent Host records only inside explicitly selected source grants.
  * Paths identify candidates, never harness/session identity. Catalog snapshots and
  * native headers establish matches; no replicated catalog or historical fallback exists.
  */
@@ -66,6 +66,7 @@ export class SourceDiscovery {
   private readonly issues: DiscoveryResult["issues"][number][] = [];
   private sequence = 0;
   private candidates = 0;
+  private directoryCandidates = 0;
   private readonly implicitRoots = new Map<string, string>();
   private readonly explicitLocations = new Set<string>();
 
@@ -234,9 +235,135 @@ export class SourceDiscovery {
   }
 
   /**
+   * A bounded signature routes exact files to disjoint guarded schemas or the
+   * native header parser; only those validators qualify the format. Large native
+   * histories never acquire SQLite size limits. Only schema mismatch permits a
+   * second database declaration; all operational failures remain explicit.
+   */
+  private async recognizeFile(
+    location: Location,
+  ): Promise<"catalog" | "overlay" | "history" | null> {
+    const database = await this.access.withStream(
+      location.sourceId, location.relativePath, this.signal,
+      async (source) => {
+        let sqlite = false;
+        for await (const chunk of source.chunks()) {
+          sqlite = Buffer.from(chunk.subarray(0, 16)).equals(Buffer.from("SQLite format 3\0"));
+          break;
+        }
+        if ((await source.verify()).changed)
+          throw new RuntimeError("SOURCE_CHANGED", "The selected file changed during format recognition. Find sessions again.", 409);
+        return sqlite;
+      },
+    );
+    if (!database) {
+      const header = await this.header(location, await this.physical(location, false));
+      return header ? "history" : null;
+    }
+    const identity = await this.physical(location, true);
+    for (const role of ["catalog", "overlay"] as const) {
+      try {
+        return await this.database(
+          location,
+          identity,
+          role === "catalog" ? agentHostCatalogDefinition : agentHostOverlayDefinition,
+          role === "catalog" ? "vscode-agenthost-catalog-sqlite" : "vscode-agenthost-session-sqlite",
+          () => Promise.resolve(role),
+        );
+      } catch (error) {
+        if (!(error instanceof RuntimeError)) throw error;
+        if (error.code !== "SQLITE_SCHEMA") throw error;
+      }
+    }
+    this.issues.push({
+      ...location,
+      code: "UNSUPPORTED_SOURCE",
+      message: "This file does not match a supported Agent Host database schema. Choose the files used by the selected harness.",
+    });
+    return null;
+  }
+
+  /**
+   * Inspect only known filenames at the selected root, one session-folder level,
+   * and the existing globalStorage/profiles layout. Missing optional filenames
+   * are not failed sources; inaccessible/linked children and empty roots are explicit.
+   */
+  private async recognizeDirectory(
+    location: Location,
+    add: (kind: "catalog" | "history" | "overlay", candidate: Location, implicitRoot: string) => void,
+  ): Promise<void> {
+    let found = false;
+    /** Probe a fixed child without following links or enumerating arbitrary descendants. */
+    const probe = async (kind: "catalog" | "history" | "overlay", relativePath: string): Promise<void> => {
+      const candidate = { sourceId: location.sourceId, relativePath };
+      try {
+        await this.access.verifyDiscoveryPath(location.sourceId, location.relativePath, relativePath, this.signal);
+        if (await this.access.kind(location.sourceId, relativePath, this.signal) !== "file")
+          throw new RuntimeError("NOT_A_FILE", "An expected Agent Host session file is not a regular file.", 400);
+        add(kind, candidate, location.relativePath);
+        found = true;
+      } catch (error) {
+        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !this.signal.aborted) return;
+        this.problem(candidate, error);
+      }
+    };
+    /** Bound directory probes as well as actual files; empty folders cannot evade discovery budgets. */
+    const countDirectory = (): void => {
+      if (++this.directoryCandidates > 64)
+        throw new RuntimeError("DISCOVERY_LIMIT", "Discovery exceeds 64 session/profile folders; select narrower locations.", 413);
+    };
+    /** Links are visible exclusions, never inferred permission to follow a neighboring source. */
+    const linked = (relativePath: string): void => {
+      this.issues.push({
+        sourceId: location.sourceId, relativePath, code: "SOURCE_LINK",
+        message: "Linked discovery children are excluded; select an alias explicitly.",
+      });
+    };
+    const entries = await this.access.entries(location.sourceId, location.relativePath, this.signal);
+    for (const entry of entries) {
+      if (this.signal.aborted) throw cancelledRead(this.signal);
+      const child = path.join(location.relativePath, entry.name);
+      if (entry.kind === "link") {
+        linked(child);
+      } else if (entry.kind === "file") {
+        if (entry.name === "agent-host.db") await probe("catalog", child);
+        else if (entry.name === "events.jsonl") await probe("history", child);
+        else if (entry.name === "session.db") await probe("overlay", child);
+      } else if (entry.kind === "directory") {
+        if (entry.name !== "globalStorage" && entry.name !== "profiles") countDirectory();
+        await probe("history", path.join(child, "events.jsonl"));
+        await probe("overlay", path.join(child, "session.db"));
+        if (entry.name === "globalStorage") {
+          await probe("catalog", path.join(child, "agent-host.db"));
+        } else if (entry.name === "profiles") {
+          try {
+            await this.access.verifyDiscoveryPath(location.sourceId, location.relativePath, child, this.signal);
+            for (const profile of await this.access.entries(location.sourceId, child, this.signal)) {
+              const profilePath = path.join(child, profile.name);
+              if (profile.kind === "link") linked(profilePath);
+              else if (profile.kind === "directory") {
+                countDirectory();
+                await probe("catalog", path.join(profilePath, "globalStorage", "agent-host.db"));
+              }
+            }
+          } catch (error) {
+            this.problem({ sourceId: location.sourceId, relativePath: child }, error);
+          }
+        }
+      }
+    }
+    if (!found)
+      this.issues.push({
+        ...location,
+        code: "UNSUPPORTED_SOURCE",
+        message: "No supported Agent Host session files were found in this folder's supported layouts. Choose the VS Code User folder, Copilot session-state folder, agentSessionData folder, or an exact session file. No other location was searched.",
+      });
+  }
+
+  /**
    * Expand only documented layout levels. Settings means appSettingsHome
-   * (normally User), not a guessed OS home. Custom files use exact catalog/history/overlay roles.
-   * An absent implicit profiles directory is empty; selected-root failures remain explicit.
+   * (normally User), not a guessed OS home. Harness recognition qualifies exact
+   * files and preserves legacy explicit layouts. Selected-root failures stay explicit.
    */
   private async locations(
     request: DiscoveryRequest,
@@ -250,8 +377,9 @@ export class SourceDiscovery {
       kind: "catalog" | "history" | "overlay",
       location: Location,
       implicitRoot?: string,
+      alreadyCounted = false,
     ): void => {
-      this.count();
+      if (!alreadyCounted) this.count();
       const key = this.locationKey(location);
       if (implicitRoot === undefined) {
         this.explicitLocations.add(key);
@@ -274,6 +402,16 @@ export class SourceDiscovery {
           root.relativePath,
           this.signal,
         );
+        if (root.layout === "agent-host") {
+          if (kind === "file") {
+            this.count();
+            const recognized = await this.recognizeFile(location);
+            if (recognized) add(recognized, location, undefined, true);
+          } else {
+            await this.recognizeDirectory(location, add);
+          }
+          continue;
+        }
         if (root.layout === "catalog" || kind === "file") {
           if (root.layout === "settings")
             throw new RuntimeError(
@@ -766,7 +904,7 @@ export class SourceDiscovery {
         relativePath: "",
         code: "CATALOG_REQUIRED",
         message:
-          "Select a qualified Agent Host catalog or app settings root; SDK history alone cannot establish runtime identity.",
+          "Add the VS Code User folder or its exact agent-host.db file alongside Copilot's saved history. Agent Host sessions need VS Code's session information to verify ownership; history alone is not enough. No other location was searched.",
       });
     if (!correlated.length && !this.issues.length)
       this.issues.push({
