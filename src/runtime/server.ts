@@ -353,6 +353,7 @@ export async function startRuntime(
           "An approved origin is required for this operation.",
           403,
         );
+      if (url.pathname === "/api/locations/add") service.invalidate();
       const body = await controlBody(request);
       if (url.pathname === "/api/locations/add") {
         const selection = addLocationRequestSchema.safeParse(body);

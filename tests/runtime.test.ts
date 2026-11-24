@@ -257,6 +257,36 @@ test("UI admission from an empty runtime is authenticated, explicit and read-onl
   assert.deepEqual(await restarted.list(), []);
 });
 
+test("authenticated rejected additions invalidate old evidence, but unauthorized attempts do not", async (t) => {
+  const data = await fixture(t);
+  const runtime = await startRuntime(config([data.file]), { readers: [syntheticReader] });
+  t.after(() => runtime.close());
+  const selection = { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" } as const;
+  const old = await runtime.service.read(selection, new AbortController().signal);
+  const unauthorized = await fetch(runtime.origin + "/api/locations/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: runtime.origin },
+    body: JSON.stringify({ path: "", kind: "directory" }),
+  });
+  assert.equal(unauthorized.status, 401);
+  assert.equal(runtime.service.view?.id, old.id);
+  for (const location of ["", path.join(data.root, "missing")]) {
+    await runtime.service.read(selection, new AbortController().signal);
+    const rejected = await api(runtime, "/api/locations/add", { path: location, kind: "directory" });
+    assert.equal(rejected.status, location ? 404 : 400);
+    assert.equal(runtime.service.view, null);
+    assert.equal(runtime.service.selection, null);
+    assert.equal(runtime.service.readTiming, null);
+    assert.equal((await api(runtime, "/api/view")).status, 404);
+    const status = statusSchema.parse(await (await api(runtime, "/api/status")).json());
+    assert.equal(status.hasReadView, false);
+    assert.equal(status.sources.length, 1);
+  }
+  await runtime.service.read(selection, new AbortController().signal);
+  await assert.rejects(runtime.service.addLocation({ path: "relative", kind: "directory" }, new AbortController().signal), { code: "INVALID_LOCATION" });
+  assert.equal(runtime.service.view, null);
+});
+
 test("invalid UI locations never register grants and unavailable startup paths can be explicitly re-added", async (t) => {
   const data = await fixture(t);
   const absent = path.join(data.root, "later");

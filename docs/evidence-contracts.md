@@ -197,6 +197,10 @@ credential as existing controls. It validates an existing absolute local path
 and returns `{ sourceId, status }`; no file bytes, uploads, SQL, home-directory
 inference or persisted location catalog are involved. Canonical admissions are
 serialized and deduplicated under the shared 32-location ceiling. Admission
+attempts invalidate prior runtime evidence after authentication and Origin
+checks, even when body or path validation rejects the addition, matching the
+UI's cleared results and consent. Unauthenticated attempts do not invalidate
+evidence. Admission
 stages cleanup and status inspection before committing a new grant, then
 revalidates its path/identity. Cancellation governs the entire operation:
 unfinished cleanup remains runtime-owned, but a rejected addition does not

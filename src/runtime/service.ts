@@ -310,9 +310,11 @@ export class RuntimeService {
 
   /**
    * Prepare cleanup/status before committing explicit current-run access; no read/search/model run starts.
+   * Invalidate previous evidence immediately, including when path validation rejects the addition.
    * Cancellation rejects promptly without adding a grant; unfinished cleanup remains runtime-owned.
    */
   async addLocation(selection: AddLocationRequest, signal: AbortSignal): Promise<{ sourceId: string; status: RuntimeStatus }> {
+    this.invalidate();
     let status: RuntimeStatus | undefined;
     const { rejectedAliases, ...location } = await this.sources.add(selection, signal, async () => {
       await abortable(this.close(), signal);
