@@ -34,7 +34,7 @@ import {
 } from "../src/evidence/contracts.js";
 import { parseConfig, type RuntimeConfig } from "../src/runtime/config.js";
 import { RuntimeError } from "../src/runtime/errors.js";
-import { errorSchema, statusSchema } from "../src/runtime/protocol.js";
+import { addLocationResponseSchema, errorSchema, statusSchema } from "../src/runtime/protocol.js";
 import {
   allowedHost,
   loopbackOrigin,
@@ -208,6 +208,375 @@ test("HTTP default-port normalization accepts valid loopback forms without broad
     "127.0.0.1:1234",
   ]) {
     assert.equal(allowedHost(host, loopbackOrigin(80)), false);
+  }
+});
+
+test("UI admission from an empty runtime is authenticated, explicit and read-only", async (t) => {
+  const data = await fixture(t);
+  const runtime = await startRuntime(config(), { readers: [syntheticReader] });
+  t.after(() => runtime.close());
+  assert.equal(statusSchema.parse(await (await api(runtime, "/api/status")).json()).sources.length, 0);
+  for (const headers of [
+    { Origin: runtime.origin },
+    { "X-Agent-Insights-Token": runtime.token },
+    { Origin: "https://untrusted.invalid", "X-Agent-Insights-Token": runtime.token },
+  ]) {
+    const response = await fetch(runtime.origin + "/api/locations/add", {
+      method: "POST", headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ path: data.allowed, kind: "directory" }),
+    });
+    assert.ok([401, 403].includes(response.status));
+  }
+  assert.equal(statusSchema.parse(await (await api(runtime, "/api/status")).json()).sources.length, 0);
+  for (const body of [
+    { path: data.allowed, kind: "unknown" },
+    { path: data.allowed, kind: "directory", scan: true },
+    { path: "relative-folder", kind: "directory" },
+  ]) {
+    const rejected = await api(runtime, "/api/locations/add", body);
+    assert.equal(rejected.status, 400);
+    assert.ok(["INVALID_LOCATION"].includes(errorSchema.parse(await rejected.json()).error.code));
+  }
+  const response = await api(runtime, "/api/locations/add", { path: data.allowed, kind: "directory" });
+  assert.equal(response.status, 200);
+  const added = addLocationResponseSchema.parse(await response.json());
+  const status = statusSchema.parse(added.status);
+  assert.equal(added.sourceId, "source-1");
+  assert.equal(status.sources[0]?.available, true);
+  assert.equal(status.hasReadView, false);
+  assert.equal(status.analysis.run, null);
+  const read = await api(runtime, "/api/read", { sourceId: added.sourceId, relativePath: "capture.jsonl", format: "vscode-otel-jsonl" });
+  assert.equal(read.status, 200);
+  assert.equal(await readFile(data.file, "utf8"), "SYNTHETIC_SOURCE_CONTENT");
+  const second = await api(runtime, "/api/locations/add", { path: data.outside, kind: "directory" });
+  assert.equal(second.status, 200);
+  assert.equal(addLocationResponseSchema.parse(await second.json()).status.hasReadView, false);
+  const traversal = await api(runtime, "/api/read", { sourceId: added.sourceId, relativePath: "../allowed-sibling/private.txt", format: "vscode-otel-jsonl" });
+  assert.equal(errorSchema.parse(await traversal.json()).error.code, "SOURCE_SCOPE");
+  const restarted = await SourceAccess.create([]);
+  assert.deepEqual(await restarted.list(), []);
+});
+
+test("authenticated rejected additions invalidate old evidence, but unauthorized attempts do not", async (t) => {
+  const data = await fixture(t);
+  const runtime = await startRuntime(config([data.file]), { readers: [syntheticReader] });
+  t.after(() => runtime.close());
+  const selection = { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" } as const;
+  const old = await runtime.service.read(selection, new AbortController().signal);
+  const unauthorized = await fetch(runtime.origin + "/api/locations/add", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: runtime.origin },
+    body: JSON.stringify({ path: "", kind: "directory" }),
+  });
+  assert.equal(unauthorized.status, 401);
+  assert.equal(runtime.service.view?.id, old.id);
+  for (const location of ["", path.join(data.root, "missing")]) {
+    await runtime.service.read(selection, new AbortController().signal);
+    const rejected = await api(runtime, "/api/locations/add", { path: location, kind: "directory" });
+    assert.equal(rejected.status, location ? 404 : 400);
+    assert.equal(runtime.service.view, null);
+    assert.equal(runtime.service.selection, null);
+    assert.equal(runtime.service.readTiming, null);
+    assert.equal((await api(runtime, "/api/view")).status, 404);
+    const status = statusSchema.parse(await (await api(runtime, "/api/status")).json());
+    assert.equal(status.hasReadView, false);
+    assert.equal(status.sources.length, 1);
+  }
+  await runtime.service.read(selection, new AbortController().signal);
+  await assert.rejects(runtime.service.addLocation({ path: "relative", kind: "directory" }, new AbortController().signal), { code: "INVALID_LOCATION" });
+  assert.equal(runtime.service.view, null);
+});
+
+test("invalid UI locations never register grants and unavailable startup paths can be explicitly re-added", async (t) => {
+  const data = await fixture(t);
+  const absent = path.join(data.root, "later");
+  const access = await SourceAccess.create([absent]);
+  const signal = new AbortController().signal;
+  for (const [selection, code] of [
+    [{ path: "", kind: "directory" }, "INVALID_LOCATION"],
+    [{ path: "relative", kind: "directory" }, "INVALID_LOCATION"],
+    [{ path: absent, kind: "directory" }, "SOURCE_MISSING"],
+    [{ path: data.file, kind: "directory" }, "LOCATION_TYPE"],
+    [{ path: data.allowed, kind: "file" }, "LOCATION_TYPE"],
+  ] as const) {
+    await assert.rejects(access.add(selection, signal), { code });
+    assert.equal((await access.list()).length, 1);
+  }
+  await mkdir(absent);
+  const { id: sourceId } = await access.add({ path: absent, kind: "directory" }, signal);
+  assert.equal(sourceId, "source-2");
+  const locations = await access.list();
+  assert.equal(locations[0]?.available, false);
+  assert.equal(locations[1]?.available, true);
+  const cancelled = new AbortController();
+  cancelled.abort();
+  await assert.rejects(access.add({ path: data.allowed, kind: "directory" }, cancelled.signal), { code: "READ_CANCELLED" });
+  assert.equal((await access.list()).length, 2);
+});
+
+test("concurrent admissions deduplicate canonical roots, retain exact-file scope and enforce the shared ceiling", async (t) => {
+  const data = await fixture(t);
+  const access = await SourceAccess.create([data.allowed]);
+  const signal = new AbortController().signal;
+  const alias = path.join(data.root, "alias");
+  await symlink(data.allowed, alias, "junction");
+  const ids = await Promise.all([data.allowed, alias, data.allowed].map((location) =>
+    access.add({ path: location, kind: "directory" }, signal).then((location) => location.id)));
+  assert.deepEqual(ids, ["source-1", "source-1", "source-1"]);
+  const { id: fileId } = await access.add({ path: data.file, kind: "file" }, signal);
+  await assert.rejects(access.read(fileId, "capture.jsonl", signal), { code: "SOURCE_SCOPE" });
+  await assert.rejects(access.read("source-1", "../allowed-sibling/private.txt", signal), { code: "SOURCE_SCOPE" });
+  const limited = await SourceAccess.create(Array.from({ length: 31 }, (_, index) => path.join(data.root, `missing-${index}`)));
+  const results = await Promise.allSettled([
+    limited.add({ path: data.allowed, kind: "directory" }, signal),
+    limited.add({ path: data.outside, kind: "directory" }, signal),
+  ]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  const failure = results.find((result) => result.status === "rejected");
+  assert.ok(failure?.status === "rejected" && failure.reason instanceof RuntimeError);
+  assert.equal(failure.reason.code, "LOCATION_LIMIT");
+  assert.equal((await limited.list()).length, 32);
+  assert.equal((await limited.add({ path: data.allowed, kind: "directory" }, signal)).id, "source-32");
+});
+
+test("UI admission preserves permission and changed-target failures without leaking raw exceptions", async (t) => {
+  const data = await fixture(t);
+  const access = await SourceAccess.create([]);
+  const originalAccess = fsPromises.access;
+  t.after(() => { fsPromises.access = originalAccess; syncBuiltinESMExports(); });
+  fsPromises.access = async () => { throw Object.assign(new Error("PRIVATE_ERROR"), { code: "EACCES" }); };
+  syncBuiltinESMExports();
+  await assert.rejects(access.add({ path: data.allowed, kind: "directory" }, new AbortController().signal), { code: "SOURCE_DENIED" });
+  assert.equal((await access.list()).length, 0);
+  fsPromises.access = originalAccess;
+  syncBuiltinESMExports();
+  const alias = path.join(data.root, "alias");
+  await symlink(data.allowed, alias, "junction");
+  const { id } = await access.add({ path: alias, kind: "directory" }, new AbortController().signal);
+  await unlink(alias);
+  await symlink(data.outside, alias, "junction");
+  await assert.rejects(access.read(id, "private.txt", new AbortController().signal), { code: "ROOT_CHANGED" });
+  const { id: restored } = await access.add({ path: data.allowed, kind: "directory" }, new AbortController().signal);
+  assert.notEqual(restored, id);
+  assert.equal((await access.list()).find((location) => location.id === restored)?.available, true);
+});
+
+test("unavailable old aliases cannot veto a separately validated canonical path", async (t) => {
+  const data = await fixture(t);
+  const originalRealpath = fsPromises.realpath;
+  for (const [code, expected] of [
+    ["EACCES", "SOURCE_DENIED"], ["ELOOP", "SOURCE_LINK"], ["EIO", "SOURCE_IO"],
+  ]) {
+    const alias = path.join(data.root, `alias-${code}`);
+    await symlink(data.allowed, alias, "junction");
+    const access = await SourceAccess.create([alias]);
+    const mock = t.mock.method(fsPromises, "realpath", async (...args: Parameters<typeof originalRealpath>) => {
+      if (args[0].toString() === alias)
+        throw Object.assign(new Error("PRIVATE_ALIAS_ERROR"), { code });
+      return originalRealpath(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.equal((await access.add({ path: data.allowed, kind: "directory" }, new AbortController().signal)).id, "source-2");
+      await assert.rejects(access.read("source-1", "capture.jsonl", new AbortController().signal), { code: expected });
+      const locations = await access.list();
+      assert.equal(locations[0]?.path, alias);
+      assert.equal(locations[0]?.available, false);
+      assert.equal(locations[1]?.available, true);
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
+});
+
+test("cancelled location checks release their queue slot without bypassing predecessors or admitting late grants", { timeout: 5000 }, async (t) => {
+  const data = await fixture(t);
+  const originalAccess = fsPromises.access;
+  let release: (() => void) | undefined;
+  let started: (() => void) | undefined;
+  let inspected = "";
+  const entered = new Promise<void>((resolve) => { started = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  t.after(() => { release?.(); fsPromises.access = originalAccess; syncBuiltinESMExports(); });
+  fsPromises.access = async (location, mode) => {
+    inspected = location.toString();
+    if (inspected === await realpath(data.allowed)) { started?.(); await blocked; }
+    else await originalAccess(location, mode);
+  };
+  syncBuiltinESMExports();
+  const access = await SourceAccess.create([]);
+  const controller = new AbortController();
+  const selection = { path: data.allowed, kind: "directory" as const };
+  const pending = access.add(selection, controller.signal);
+  selection.path = data.outside;
+  await entered;
+  assert.equal(inspected, await realpath(data.allowed));
+  const queued = new AbortController();
+  const skipped = access.add({ path: data.outside, kind: "directory" }, queued.signal);
+  queued.abort();
+  await assert.rejects(skipped, { code: "READ_CANCELLED" });
+  const healthy = access.add({ path: data.file, kind: "file" }, new AbortController().signal);
+  await delay(20);
+  assert.equal(inspected, await realpath(data.allowed));
+  controller.abort(new RuntimeError("LOCATION_TIMEOUT", "Location check timed out.", 408));
+  await assert.rejects(pending, { code: "LOCATION_TIMEOUT" });
+  assert.equal((await healthy).id, "source-1");
+  release?.();
+  fsPromises.access = originalAccess;
+  syncBuiltinESMExports();
+  assert.equal((await access.add({ path: data.file, kind: "file" }, new AbortController().signal)).id, "source-1");
+  assert.deepEqual((await access.list()).map((location) => location.path), [data.file]);
+});
+
+test("failed or cancelled location preparation preserves grants and observes late failures", async (t) => {
+  const data = await fixture(t);
+  for (const phase of ["cleanup", "status"] as const) {
+    for (const cancelled of [false, true]) {
+      await t.test(`${phase}: ${cancelled ? "cancellation" : "failure"}`, { timeout: 5000 }, async (subtest) => {
+        const access = await SourceAccess.create([data.file]);
+        const service = new RuntimeService(access, config([data.file]));
+        const controller = new AbortController();
+        let enter: (() => void) | undefined;
+        let fail: ((error: Error) => void) | undefined;
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        const blocked = new Promise<never>((_, reject) => { fail = reject; });
+        const mock = subtest.mock.method(service, phase === "cleanup" ? "close" : "status", () => {
+          enter?.();
+          return blocked;
+        });
+        subtest.after(() => { mock.mock.restore(); fail?.(new Error("LATE_PREPARATION_ERROR")); });
+        const pending = service.addLocation({ path: data.allowed, kind: "directory" }, controller.signal);
+        await entered;
+        assert.equal((await access.list()).length, 1);
+        if (cancelled) controller.abort();
+        else fail?.(new RuntimeError("SOURCE_CLEANUP_FAILED", "Synthetic preparation failed.", 500));
+        await assert.rejects(pending, { code: cancelled ? "READ_CANCELLED" : "SOURCE_CLEANUP_FAILED" });
+        assert.equal((await access.add({ path: data.outside, kind: "directory" }, new AbortController().signal)).id, "source-2");
+        fail?.(new Error("LATE_PREPARATION_ERROR"));
+        mock.mock.restore();
+        assert.deepEqual((await access.list()).map((location) => location.path), [data.file, data.outside]);
+        const duplicateFailure = subtest.mock.method(service, "close", () => Promise.reject(new RuntimeError("SOURCE_CLEANUP_FAILED", "Synthetic preparation failed.", 500)));
+        await assert.rejects(service.addLocation({ path: data.file, kind: "file" }, new AbortController().signal), { code: "SOURCE_CLEANUP_FAILED" });
+        duplicateFailure.mock.restore();
+        assert.equal((await access.list())[0]?.id, "source-1");
+        assert.equal((await access.list()).length, 2);
+      });
+    }
+  }
+});
+
+test("location preparation revalidates a supplied alias before committing", async (t) => {
+  const data = await fixture(t);
+  const alias = path.join(data.root, "staged-alias");
+  await symlink(data.allowed, alias, "junction");
+  const access = await SourceAccess.create([]);
+  await assert.rejects(access.add({ path: alias, kind: "directory" }, new AbortController().signal, async () => {
+    await unlink(alias);
+    await symlink(data.outside, alias, "junction");
+  }), { code: "ROOT_CHANGED" });
+  assert.deepEqual(await access.list(), []);
+});
+
+test("aliases lost during preparation admit the valid explicit path with its final ID or enforce the ceiling", async (t) => {
+  const data = await fixture(t);
+  for (const full of [false, true]) {
+    const alias = path.join(data.root, `changing-alias-${full}`);
+    await symlink(data.allowed, alias, "junction");
+    const access = await SourceAccess.create([
+      alias,
+      ...(full ? Array.from({ length: 31 }, (_, index) => path.join(data.root, `missing-${index}`)) : []),
+    ]);
+    const service = new RuntimeService(access, config([alias]));
+    const originalStatus = service.status.bind(service);
+    const mock = t.mock.method(service, "status", async () => {
+      const snapshot = await originalStatus();
+      await unlink(alias);
+      await symlink(data.outside, alias, "junction");
+      return snapshot;
+    });
+    try {
+      const pending = service.addLocation({ path: data.allowed, kind: "directory" }, new AbortController().signal);
+      if (full) {
+        await assert.rejects(pending, { code: "LOCATION_LIMIT" });
+        assert.equal((await access.list()).length, 32);
+      } else {
+        const added = await pending;
+        assert.equal(added.sourceId, "source-2");
+        assert.equal(added.status.sources[0]?.path, alias);
+        assert.equal(added.status.sources[0]?.available, false);
+        assert.match(added.status.sources[0]?.reason ?? "", /changed its target/);
+        assert.equal(added.status.sources[1]?.path, data.allowed);
+        assert.equal(added.status.sources[1]?.available, true);
+        assert.equal((await access.list())[1]?.id, added.sourceId);
+      }
+    } finally {
+      mock.mock.restore();
+    }
+  }
+});
+
+test("admission reuses a surviving duplicate after aliases change during preparation, even at capacity", async (t) => {
+  const data = await fixture(t);
+  for (const full of [false, true]) {
+    const aliases = [0, 1].map((index) => path.join(data.root, `duplicate-alias-${full}-${index}`));
+    await Promise.all(aliases.map((alias) => symlink(data.allowed, alias, "junction")));
+    const locations = [
+      ...aliases,
+      data.allowed,
+      ...(full ? Array.from({ length: 29 }, (_, index) => path.join(data.root, `missing-duplicate-${index}`)) : []),
+    ];
+    const access = await SourceAccess.create(locations);
+    const service = new RuntimeService(access, config(locations));
+    const originalStatus = service.status.bind(service);
+    const mock = t.mock.method(service, "status", async () => {
+      const snapshot = await originalStatus();
+      await Promise.all(aliases.map(async (alias) => {
+        await unlink(alias);
+        await symlink(data.outside, alias, "junction");
+      }));
+      return snapshot;
+    });
+    try {
+      const added = await service.addLocation({ path: data.allowed, kind: "directory" }, new AbortController().signal);
+      assert.equal(added.sourceId, "source-3");
+      assert.equal(added.status.sources.length, locations.length);
+      for (const source of added.status.sources.slice(0, 2)) {
+        assert.equal(source.available, false);
+        assert.match(source.reason ?? "", /changed its target/);
+      }
+      assert.equal(added.status.sources[2]?.path, data.allowed);
+      assert.equal(added.status.sources[2]?.available, true);
+      assert.deepEqual(added.status.sources, await access.list());
+    } finally {
+      mock.mock.restore();
+    }
+  }
+});
+
+test("HTTP location timeout bounds cleanup and status without authorizing a failed addition", async (t) => {
+  const data = await fixture(t);
+  for (const phase of ["close", "status"] as const) {
+    await t.test(phase, { timeout: 5000 }, async (subtest) => {
+      const runtime = await startRuntime(config(), { readTimeoutMs: 100 });
+      let fail: ((error: Error) => void) | undefined;
+      const blocked = new Promise<never>((_, reject) => { fail = reject; });
+      const mock = subtest.mock.method(runtime.service, phase, () => blocked);
+      subtest.after(async () => {
+        mock.mock.restore();
+        fail?.(new Error("LATE_PREPARATION_ERROR"));
+        await runtime.close();
+      });
+      const response = await api(runtime, "/api/locations/add", { path: data.allowed, kind: "directory" });
+      assert.equal(response.status, 408);
+      assert.equal(errorSchema.parse(await response.json()).error.code, "LOCATION_TIMEOUT");
+      mock.mock.restore();
+      fail?.(new Error("LATE_PREPARATION_ERROR"));
+      assert.deepEqual((await runtime.service.status()).sources, []);
+      const retry = await api(runtime, "/api/locations/add", { path: data.file, kind: "file" });
+      assert.equal(retry.status, 200);
+      assert.equal(addLocationResponseSchema.parse(await retry.json()).sourceId, "source-1");
+    });
   }
 });
 

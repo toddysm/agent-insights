@@ -1,4 +1,4 @@
-/** Show one startup grant as information, or an actual choice among multiple grants; never changes authorization. */
+/** Show one configured grant as information, or a choice among grants; admission is a separate explicit action. */
 import type { ReactElement } from "react";
 import type { SourceLocation } from "../runtime/protocol.js";
 import { sourceName } from "./source-names.js";
@@ -58,7 +58,7 @@ export function SourceChoice({
         <p role="alert">
           {selected.reason ?? "This file or folder cannot be accessed."} Restore
           access and choose Check locations in the shared access workspace. If
-          unavailable at startup, correct the path and restart.
+          unavailable at startup or its path changed, use Add a file or folder to add it explicitly.
         </p>
       )}
     </div>

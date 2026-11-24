@@ -1,6 +1,7 @@
 /**
- * Guided source discovery over explicit startup grants. No installation inference,
- * permission changes, startup scan, storage or model call occurs in this wizard.
+ * Guided source discovery over explicitly configured grants, including UI-added
+ * current-run paths. No installation inference, OS permission changes, automatic scan,
+ * storage or model call occurs in this wizard.
  */
 import {
   useEffect,
@@ -19,9 +20,11 @@ import {
   type ReadRequest,
   type ReadSetRequest,
   type RuntimeStatus,
+  type AddLocationRequest,
 } from "../runtime/protocol.js";
 import { SourceChoice } from "./source-choice.js";
 import { sourceName } from "./source-names.js";
+import { SourceLocationAdd } from "./source-location-add.js";
 
 /** Parent navigation returns to this workspace without discarding its configured selections. */
 export interface SourceDiscoveryHandle {
@@ -31,10 +34,10 @@ export interface SourceDiscoveryHandle {
   findAnotherSession(): void;
 }
 
-/** Explicit check validity survives wizard resets; only a successful check clears failure. */
+/** Check/admission validity survives wizard resets; only an explicit successful check or addition clears failure. */
 export type LocationCheckState = "idle" | "checking" | "checked" | "failed";
 
-/** Parent owns authenticated transport, check validity, report handoff, operation locks and read feedback; callbacks do not grant source access. */
+/** Parent owns authenticated transport, explicit admission, check validity, report handoff, operation locks and read feedback. */
 interface DiscoveryProps {
   readonly ref: Ref<SourceDiscoveryHandle>;
   readonly status: RuntimeStatus;
@@ -56,6 +59,8 @@ interface DiscoveryProps {
   readonly onFileTools: (selection: ReadRequest) => void;
   /** Refresh configured availability and invalidate backend evidence; reject failures rather than reporting stale status as success. */
   readonly onCheckLocations: () => Promise<void>;
+  /** Validate/register a current-run location and refresh shared status; reject admission/transport failures. */
+  readonly onAddLocation: (selection: AddLocationRequest) => Promise<string>;
 }
 
 /** Stable entry identity is separate from its source ID, role and current position in the wizard. */
@@ -164,6 +169,7 @@ export function SourceDiscoveryPanel({
   onOpenFile,
   onFileTools,
   onCheckLocations,
+  onAddLocation,
 }: DiscoveryProps): ReactElement {
   const [step, setStep] = useState<Step>("assistant");
   const [assistant, setAssistant] = useState("");
@@ -188,10 +194,14 @@ export function SourceDiscoveryPanel({
   const [fileView, setFileView] = useState<ReadView | null>(null);
   const [selectedSession, setSelectedSession] = useState("");
   const [error, setError] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
   const sequence = useRef(1);
   const generation = useRef(0);
   const body = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const addTrigger = useRef<HTMLButtonElement>(null);
+  const admittedSource = useRef<string | null>(null);
+  const pendingSource = useRef<string | null>(null);
   const firstStep = useRef(true);
   const locationReturn = useRef<Step>("assistant");
   const reader = status.multiSourceReaders.find(
@@ -286,21 +296,24 @@ export function SourceDiscoveryPanel({
     setStep("assistant");
   }
 
-  /** Upstream changes clear dependent setup; Back alone retains the current answers. */
+  /** Upstream changes clear dependent setup but retain the UI-added base location; Back retains current answers. */
   function resetSetup(): void {
     invalidate();
     setLocalChoice("");
     setAdditionalPurpose("");
+    pendingSource.current = null;
+    const sourceId = admittedSource.current ?? status.sources[0]?.id ?? "";
+    const source = status.sources.find((location) => location.id === sourceId);
     setEntries([
       {
         id: ++sequence.current,
-        sourceId: status.sources[0]?.id ?? "",
+        sourceId,
         relativePath: "",
-        layout: status.sources[0]?.kind === "file" ? "catalog" : "settings",
+        layout: source?.kind === "file" ? "catalog" : "settings",
       },
     ]);
     setFile({
-      sourceId: status.sources[0]?.id ?? "",
+      sourceId,
       relativePath: "",
       format: "vscode-otel-jsonl",
     });
@@ -321,6 +334,24 @@ export function SourceDiscoveryPanel({
         );
       }
     }
+  }
+
+  /** Return invalidated results to setup, then select the pending role/base without searching or replacing other entries. */
+  async function addLocation(selection: AddLocationRequest): Promise<void> {
+    invalidate(true, true);
+    if (step === "file-sessions") setStep("file");
+    if (step === "find" || step === "sessions") setStep("access");
+    const sourceId = await onAddLocation(selection);
+    if (step === "purpose" || (step === "locations" && locationReturn.current === "purpose")) {
+      pendingSource.current = sourceId;
+      return;
+    }
+    admittedSource.current = sourceId;
+    setFile((previous) => ({ ...previous, sourceId, relativePath: "" }));
+    setEntries((previous) => previous.map((entry, index) => index === 0 ? {
+      ...entry, sourceId, relativePath: "",
+      layout: purpose(entry) === "settings" ? selection.kind === "file" ? "catalog" : "settings" : entry.layout,
+    } : entry));
   }
 
   /** Search only on explicit submission. Transport/backend errors remain visible and never restore earlier sessions. */
@@ -449,20 +480,23 @@ export function SourceDiscoveryPanel({
       case "purpose":
         if (additionalPurpose) {
           const id = ++sequence.current;
+          const sourceId = pendingSource.current ?? status.sources[0]?.id ?? "";
+          const source = status.sources.find((location) => location.id === sourceId);
           invalidate();
           setEntries((previous) => [
             ...previous,
             {
               id,
-              sourceId: status.sources[0]?.id ?? "",
+              sourceId,
               relativePath: "",
               layout:
                 additionalPurpose === "settings" &&
-                status.sources[0]?.kind === "file"
+                source?.kind === "file"
                   ? "catalog"
                   : additionalPurpose,
             },
           ]);
+          pendingSource.current = null;
           setAdditionalPurpose("");
           setStep("access");
         }
@@ -576,10 +610,11 @@ export function SourceDiscoveryPanel({
   );
   const startupGuidance = (
     <details>
-      <summary>Need access to a different folder?</summary>
+      <summary>Prefer to provide locations when starting the app?</summary>
       <p>
-        Restart with explicit access to that file or folder. The browser cannot
-        grant new access.
+        The terminal command is an optional way to supply initial locations.
+        Replace the example path with your file or folder. Repeat <code>--source</code> for additional locations.
+        Starting without <code>--source</code> is fine: use Add a file or folder here instead, without restarting.
       </p>
       <code>npm start -- --source /path/to/session-data</code>
     </details>
@@ -595,6 +630,9 @@ export function SourceDiscoveryPanel({
       <div className="wizard-header">
         <div className="wizard-heading">
           <h2 id="wizard-heading">Find your sessions</h2>
+          <button ref={addTrigger} type="button" disabled={disabled} aria-expanded={addOpen} aria-controls={addOpen ? "location-add-form" : undefined} onClick={() => setAddOpen(!addOpen)}>
+            Add a file or folder
+          </button>
           <button type="button" disabled={disabled} onClick={restart}>
             Start over
           </button>
@@ -627,6 +665,7 @@ export function SourceDiscoveryPanel({
         <h3 ref={heading} id="wizard-question" tabIndex={-1}>
           {title[step]}
         </h3>
+        <SourceLocationAdd trigger={addTrigger} open={addOpen} disabled={disabled} onOpen={setAddOpen} onAdd={addLocation} />
         {feedback}
         {error && !feedback && (
           <p className="alert" role="alert">
@@ -715,11 +754,10 @@ export function SourceDiscoveryPanel({
           <div role="status">
             <h4>No files or folders configured</h4>
             <p>
-              Restart Agent Insights with the specific session file or folder
-              you want it to access:
+              Use Add a file or folder to provide your session location.
+              No home, VS Code or project folder is selected automatically. No restart is needed.
             </p>
-            <code>npm start -- --source /path/to/session-data</code>
-            <p>The browser cannot grant access to another folder.</p>
+            {startupGuidance}
           </div>
         )}
         {step === "purpose" && (
@@ -736,7 +774,7 @@ export function SourceDiscoveryPanel({
         {step === "locations" && !noSources && (
           <>
             <p>
-              These are the files and folders configured at startup. Checking
+              These are the files and folders you have configured. Checking
               access does not search for sessions or open a report.
             </p>
             <ul className="source-list">
@@ -761,8 +799,8 @@ export function SourceDiscoveryPanel({
         {step === "access" && !noSources && (
           <>
             <p>
-              Choose from startup-configured access. Nothing is searched
-              automatically.
+              Choose from configured locations, or use Add a file or folder above.
+              New locations last for this app run only. Nothing is searched automatically.
             </p>
             <ul className="wizard-searches">
               {entries.map((item) => {
@@ -788,12 +826,13 @@ export function SourceDiscoveryPanel({
                         : "Unavailable"}
                       {item.relativePath && ` / ${item.relativePath}`}
                     </p>
+                    <code>{source?.path}</code>
                     {!source?.available && (
                       <p role="alert">
                         {source?.reason ??
                           "This configured file or folder is unavailable."}{" "}
                         Restore access, then choose Check locations. If its path
-                        changed, restart with the corrected source.
+                        changed or it was unavailable at startup, use Add a file or folder to add it explicitly.
                       </p>
                     )}
                     <details>
@@ -836,7 +875,7 @@ export function SourceDiscoveryPanel({
                       {source?.kind === "directory" && (
                         <>
                           <label htmlFor={`wizard-subfolder-${item.id}`}>
-                            File or folder inside this directory (optional)
+                            File or subfolder (optional)
                           </label>
                           <input
                             id={`wizard-subfolder-${item.id}`}
@@ -850,7 +889,12 @@ export function SourceDiscoveryPanel({
                           />
                           <p>
                             Leave blank to use the selected folder itself. Paths
-                            must stay inside it.
+                            must stay inside it. For another location, use Add a file or folder above.
+                            {purpose(item) === "history"
+                              ? <> For example, <code>session-example/events.jsonl</code> selects one retained events file.</>
+                              : purpose(item) === "settings"
+                                ? <> For example, <code>profiles/example</code> selects a profile folder inside the selected User folder.</>
+                                : <> For example, <code>session-example</code> selects a session folder inside agentSessionData.</>}
                           </p>
                           {purpose(item) === "settings" && (
                             <label className="wizard-check">
@@ -902,6 +946,7 @@ export function SourceDiscoveryPanel({
               disabled={disabled || entries.length >= 16 || noSources}
               onClick={() => {
                 setAdditionalPurpose("");
+                pendingSource.current = null;
                 setStep("purpose");
               }}
             >

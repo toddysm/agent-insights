@@ -84,6 +84,19 @@ export type ReadTiming = NonNullable<RuntimeStatus["readTiming"]>;
 /** Configured source status, not proof of capture-format compatibility. */
 export type SourceLocation = z.infer<typeof locationSchema>;
 
+/** Explicit current-run access request; the runtime verifies absolute paths, existence, kind and readability. */
+export const addLocationRequestSchema = z.strictObject({
+  path: z.string().min(1).max(4096).refine((value) => !value.includes("\0")),
+  kind: z.enum(["file", "directory"]),
+});
+/** User-supplied local path, not uploaded file content or a discovery request. */
+export type AddLocationRequest = z.infer<typeof addLocationRequestSchema>;
+/** Admission returns the selected stable grant ID with the shared refreshed runtime status. */
+export const addLocationResponseSchema = z.strictObject({
+  sourceId: z.string().min(1),
+  status: statusSchema,
+});
+
 /** A read selects a configured grant and a path inside it, never an arbitrary absolute path. */
 export const readRequestSchema = z.strictObject({
   sourceId: z.string().min(1),
@@ -132,7 +145,7 @@ export const readSetRequestSchema = z.strictObject({
 /** Immutable selection for one installed multi-source adapter. */
 export type ReadSetRequest = z.infer<typeof readSetRequestSchema>;
 
-/** A discovery root is relative to a startup grant; its role never grants access to neighbors. */
+/** A discovery root is relative to an explicitly configured grant; its role never grants access to neighbors. */
 const discoveryRootSchema = z.strictObject({
   sourceId: z.string().min(1),
   relativePath: z.string().max(4096).refine((value) => !value.includes("\0")),

@@ -1,4 +1,4 @@
-/** Read-only access to startup-authorized locations; bounded captures/borrowed streams, no writes or byte cache. */
+/** Read-only access to explicitly configured locations; bounded captures/borrowed streams, no writes or byte cache. */
 import { constants } from "node:fs";
 import {
   access,
@@ -11,10 +11,11 @@ import {
 } from "node:fs/promises";
 import type { BigIntStats } from "node:fs";
 import path from "node:path";
-import { RuntimeError, cancelledRead, filesystemError } from "./errors.js";
-import type { SourceLocation } from "./protocol.js";
+import { RuntimeError, abortable, cancelledRead, filesystemError } from "./errors.js";
+import type { AddLocationRequest, SourceLocation } from "./protocol.js";
 
 export const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+const MAX_LOCATIONS = 32;
 const CHUNK_BYTES = 64 * 1024;
 
 /** A grant is bound to the initial canonical location and kind, not a mutable symlink target. */
@@ -185,7 +186,9 @@ export async function pointsToOpenedFile(
 /** Owns source grants only. No raw bytes or normalized evidence are persisted by this class. */
 export class SourceAccess {
   private readonly failedClosures = new Set<() => Promise<void>>();
-  private constructor(private readonly grants: readonly SourceGrant[]) {}
+  private admission: Promise<void> = Promise.resolve();
+  /** Own the initial grant array; subsequent append-only admissions retain every existing grant ID and binding. */
+  private constructor(private readonly grants: SourceGrant[]) {}
 
   /** Own rejected descriptor closes even when admission never returns a lease; never expose raw close errors. */
   private ownClose(handle: FileHandle): () => Promise<void> {
@@ -247,17 +250,17 @@ export class SourceAccess {
     }
   }
 
-  /** Resolve explicitly supplied roots once. Missing startup locations remain unavailable until restart. */
+  /** Resolve startup roots once. Missing locations stay unavailable in their original grant; add() can admit them explicitly without restarting. */
   static async create(locations: readonly string[]): Promise<SourceAccess> {
     if (
-      locations.length > 32 ||
+      locations.length > MAX_LOCATIONS ||
       locations.some(
         (location) => location.length === 0 || location.includes("\0"),
       )
     ) {
       throw new RuntimeError(
         "INVALID_SOURCES",
-        "Supply at most 32 non-empty source paths.",
+        `Supply at most ${MAX_LOCATIONS} non-empty source paths.`,
         400,
       );
     }
@@ -288,15 +291,126 @@ export class SourceAccess {
         }
       }),
     );
-    return new SourceAccess(Object.freeze(grants));
+    return new SourceAccess(grants);
+  }
+
+  /**
+   * Admit an explicit absolute file/folder path for this runtime only, without reading bytes.
+   * Serialize validation/commit so duplicate canonical roots and the 32-location ceiling
+   * remain correct under concurrent requests. Existing grants are never rebound.
+   * Optional preparation runs before commit; its failure/cancellation leaves grants unchanged.
+   * Revalidate the supplied path after preparation. Cancelled work releases its queue
+   * slot after its predecessor, but remains observed and cannot register a late grant.
+   * Return detached metadata for the final grant and any alias rejected after preparation.
+   */
+  async add(
+    selection: AddLocationRequest,
+    signal: AbortSignal,
+    prepare?: () => Promise<void>,
+  ): Promise<SourceLocation & { readonly rejectedAliases: readonly SourceLocation[] }> {
+    const request = Object.freeze({ ...selection });
+    const predecessor = this.admission;
+    const admit = predecessor.then(async () => {
+      if (signal.aborted) throw cancelledRead(signal);
+      if (
+        !path.isAbsolute(request.path) ||
+        request.path.length > 4096 ||
+        request.path.includes("\0")
+      )
+        throw new RuntimeError(
+          "INVALID_LOCATION",
+          "Enter the full path to an existing file or folder on this computer.",
+          400,
+        );
+      const requested = path.resolve(request.path);
+      let canonical: string;
+      let identity: BigIntStats;
+      try {
+        canonical = await realpath(requested);
+        const before = await stat(canonical, { bigint: true });
+        identity = before;
+        if (
+          (request.kind === "file" && !before.isFile()) ||
+          (request.kind === "directory" && !before.isDirectory())
+        )
+          throw new RuntimeError(
+            "LOCATION_TYPE",
+            "The path does not match the selected file or folder type. Correct the path or type.",
+            400,
+          );
+        await access(canonical, constants.R_OK | (request.kind === "directory" ? constants.X_OK : 0));
+        const after = await stat(canonical, { bigint: true });
+        if ((await realpath(requested)) !== canonical || before.dev !== after.dev || before.ino !== after.ino)
+          throw new RuntimeError("ROOT_CHANGED", "The location changed while checking access. Check the path and add it again.", 409);
+      } catch (error) {
+        filesystemError(error);
+      }
+      if (signal.aborted) throw cancelledRead(signal);
+      let reusable: SourceGrant | undefined;
+      const matching = this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind);
+      for (const existing of matching) {
+        if ((await this.reuseFailure(existing)) === null) {
+          reusable = existing;
+          break;
+        }
+      }
+      if (signal.aborted) throw cancelledRead(signal);
+      if (!reusable) this.ensureLocationCapacity();
+      await prepare?.();
+      if (signal.aborted) throw cancelledRead(signal);
+      const rejectedAliases: SourceLocation[] = [];
+      try {
+        await this.inspect({ requested, canonical, kind: request.kind });
+        reusable = undefined;
+        for (const existing of matching) {
+          const failure = await this.reuseFailure(existing);
+          if (!failure) {
+            reusable = existing;
+            break;
+          }
+          rejectedAliases.push({ id: existing.id, path: existing.requested, kind: existing.kind, available: false, reason: failure.message });
+        }
+        const current = await stat(canonical, { bigint: true });
+        if (current.dev !== identity.dev || current.ino !== identity.ino)
+          throw new RuntimeError("ROOT_CHANGED", "The location changed while checking access. Check the path and add it again.", 409);
+      } catch (error) {
+        filesystemError(error);
+      }
+      if (signal.aborted) throw cancelledRead(signal);
+      if (!reusable) this.ensureLocationCapacity();
+      const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
+      if (!reusable) this.grants.push(grant);
+      return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null, rejectedAliases };
+    });
+    const result = abortable(admit, signal);
+    // Preserve earlier admissions even if this request is cancelled while still queued.
+    this.admission = Promise.allSettled([predecessor, result]).then(() => undefined);
+    return result;
+  }
+
+  /** Reject a new grant when the shared startup/UI ceiling is reached; reusable grants need no capacity. */
+  private ensureLocationCapacity(): void {
+    if (this.grants.length >= MAX_LOCATIONS)
+      throw new RuntimeError("LOCATION_LIMIT", `At most ${MAX_LOCATIONS} file or folder locations can be configured for this app run.`, 400);
+  }
+
+  /** Return the controlled alias failure, or null when reusable; unexpected inspection errors propagate. */
+  private async reuseFailure(grant: SourceGrant): Promise<RuntimeError | null> {
+    try {
+      await this.inspect(grant);
+      return null;
+    } catch (error) {
+      if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING", "SOURCE_DENIED", "SOURCE_LINK", "SOURCE_IO"].includes(error.code)) throw error;
+      return error;
+    }
   }
 
   /** Recheck a grant without silently authorizing a replacement symlink or a changed root kind. */
-  private async inspect(grant: SourceGrant): Promise<void> {
+  private async inspect(grant: Omit<SourceGrant, "id">): Promise<void> {
     if (grant.kind === "unknown") {
       throw new RuntimeError(
         "SOURCE_UNAVAILABLE",
-        "Unavailable at startup. Correct the location and restart to authorize it.",
+        "Unavailable at startup. Correct the path or restore access, then use Add a file or folder to add it explicitly.",
         404,
       );
     }
@@ -304,7 +418,7 @@ export class SourceAccess {
       if ((await realpath(grant.requested)) !== grant.canonical) {
         throw new RuntimeError(
           "ROOT_CHANGED",
-          "The configured root changed its target. Restart to authorize the new location.",
+          "The configured location changed its target. Use Add a file or folder to select the new location explicitly.",
           409,
         );
       }
@@ -315,7 +429,7 @@ export class SourceAccess {
       ) {
         throw new RuntimeError(
           "ROOT_CHANGED",
-          "The configured root changed its type. Restart to authorize it.",
+          "The configured location changed its type. Use Add a file or folder to select it explicitly.",
           409,
         );
       }

@@ -27,11 +27,13 @@ import {
 } from "../analysis/contracts.js";
 import {
   errorSchema,
+  addLocationResponseSchema,
   readRequestSchema,
   statusSchema,
   type RuntimeStatus,
   type ReadRequest,
   type ReadSetRequest,
+  type AddLocationRequest,
 } from "../runtime/protocol.js";
 import "./styles.css";
 import { StreamingScanPanel } from "./streaming-scan.js";
@@ -305,6 +307,32 @@ function App(): ReactElement {
         throw new Error("The location check was superseded. Check locations again.");
       adoptStatus(result);
       setLocationCheck("checked");
+    } catch (failure) {
+      if (current === generation.current) setLocationCheck("failed");
+      throw failure;
+    } finally {
+      if (current === generation.current) setBusy(false);
+    }
+  }
+
+  /** Add current-run access without reading; failures reach the inline form and invalidate checks until an explicit check/add succeeds. */
+  async function addLocation(selection: AddLocationRequest): Promise<string> {
+    const current = ++generation.current;
+    setBusy(true);
+    setLocationCheck("checking");
+    setError("");
+    setReadNotice("");
+    clearView();
+    try {
+      const result = await request("/api/locations/add", addLocationResponseSchema, selection);
+      if (current !== generation.current)
+        throw new Error("The location response was superseded. Check locations before continuing.");
+      adoptStatus(result.status);
+      setSourceId(result.sourceId);
+      setRelativePath("");
+      setLocationCheck("checked");
+      setReadNotice("Location selected for this app run. Nothing was searched.");
+      return result.sourceId;
     } catch (failure) {
       if (current === generation.current) setLocationCheck("failed");
       throw failure;
@@ -683,6 +711,7 @@ function App(): ReactElement {
               onOpenFile={openWizardFile}
               onFileTools={showFileTools}
               onCheckLocations={checkLocations}
+              onAddLocation={addLocation}
             />}
             {(view || scannedReport) && <button type="button" disabled={busy || analysisLocked} onClick={() => { pendingWizardFocus.current = true; generation.current++; clearView(); wizard.current?.findAnotherSession(); }}>Find another session</button>}
             <section
@@ -695,7 +724,7 @@ function App(): ReactElement {
               <div className="section-heading">
                 <div>
                   <h2 id="sources-heading">Open a file directly</h2>
-                  <p>Use the same startup-configured access. Supplemental formats are not Agent Host substitutes.</p>
+                  <p>Use the same explicitly configured access. Supplemental formats are not Agent Host substitutes.</p>
                 </div>
                 <button
                   type="button"
@@ -714,7 +743,7 @@ function App(): ReactElement {
                 <>
                   {status.sources.length === 0 ? (
                     <div className="empty">
-                      <p>No files or folders configured. Review configured access for restart instructions.</p>
+                      <p>No files or folders configured. Use Review configured access to add a file or folder from the UI.</p>
                     </div>
                   ) : null}
                   {status.sources.length > 0 && (

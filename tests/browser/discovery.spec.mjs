@@ -15,8 +15,8 @@ import {
   syntheticReader,
 } from "../../.build/tests/fixtures/analysis.js";
 
-/** Own all test grants and teardown; no private source or external model is used. */
-async function withWizard(page, run, multiple = false) {
+/** Own synthetic grants and teardown; empty/unavailable starts exercise explicit UI admission and recovery. */
+async function withWizard(page, run, multiple = false, emptyStart = false, unavailableStart = false) {
   const directory = await mkdtemp(
     path.join(tmpdir(), "agent-insights-wizard-"),
   );
@@ -26,7 +26,7 @@ async function withWizard(page, run, multiple = false) {
   await writeFile(file, "SYNTHETIC_CAPTURE");
   const runtime = await startRuntime(
     {
-      sources: multiple ? [directory, second] : [directory],
+      sources: emptyStart ? [] : unavailableStart ? [path.join(directory, "missing-startup")] : multiple ? [directory, second] : [directory],
       port: 0,
       harness: "copilot",
       model: null,
@@ -101,6 +101,129 @@ async function locationOptions(wizard, index = 0) {
     await details.locator("summary").click();
   return location;
 }
+
+test("UI location entry works without startup sources and remains available alongside existing locations", async ({ page }) => {
+  await withWizard(page, async ({ wizard, runtime, directory, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    await expect(wizard.getByText("No files or folders configured", { exact: true })).toBeVisible();
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    const input = wizard.getByLabel("Full file or folder path");
+    await expect(input).toBeFocused();
+    await input.fill(path.join(directory, "missing"));
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.locator("#location-add-error")).toContainText("missing");
+    await expect(input).toHaveValue(path.join(directory, "missing"));
+    await input.fill(directory);
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByText("No files or folders configured", { exact: true })).toHaveCount(0);
+    await expect(wizard.getByText(directory, { exact: true }).first()).toBeVisible();
+    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeEnabled();
+    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeFocused();
+    await expect(wizard.getByRole("status").filter({ hasText: "Nothing was searched" }).first()).toBeVisible();
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Location type").selectOption("file");
+    await input.fill(path.join(directory, "synthetic.jsonl"));
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByRole("form", { name: "Add a location" })).toHaveCount(0);
+    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeFocused();
+    const status = await (await fetch(runtime.origin + "/api/status", { headers: { "X-Agent-Insights-Token": runtime.token } })).json();
+    expect(status.sources).toHaveLength(2);
+    expect(status.hasReadView).toBe(false);
+    expect(status.analysis.run).toBeNull();
+    expect(requests.some((url) => /\/api\/(discover|read|read-set|scan|analysis\/start)$/.test(url))).toBe(false);
+    await wizard.getByRole("checkbox", { name: /I've reviewed these locations/ }).check();
+    await wizard.getByRole("button", { name: "Continue", exact: true }).click();
+    await wizard.getByRole("button", { name: "Review locations", exact: true }).click();
+    const location = await locationOptions(wizard);
+    await expect(location.getByLabel("File or subfolder (optional)")).toHaveCount(0);
+    await wizard.getByRole("button", { name: "Continue", exact: true }).click();
+    await expect(wizard.getByRole("button", { name: "Find sessions", exact: true })).toBeDisabled();
+    await page.setViewportSize({ width: 390, height: 844 });
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await expect.poll(() => page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+  }, false, true);
+});
+
+test("UI-added Local file is selected but read only after explicit Find sessions", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Local/);
+    await choose(wizard, /^I have a recorded file/);
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Location type").selectOption("file");
+    await wizard.getByLabel("Full file or folder path").fill(path.join(directory, "synthetic.jsonl"));
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByText(path.join(directory, "synthetic.jsonl"), { exact: true })).toBeVisible();
+    expect(requests.some((url) => /\/api\/(read|read-set|discover|scan)$/.test(url))).toBe(false);
+    await wizard.getByRole("button", { name: "Find sessions", exact: true }).click();
+    await expect(wizard.getByRole("radio", { name: /^native-session/ })).toBeVisible();
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Full file or folder path").fill(path.join(directory, "missing"));
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.locator("#location-add-error")).toContainText("missing");
+    await expect(wizard.getByRole("heading", { name: "Find sessions in your recorded file" })).toBeVisible();
+    await expect(wizard.getByRole("radio", { name: /^native-session/ })).toHaveCount(0);
+    await wizard.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(wizard.getByRole("button", { name: "Find sessions", exact: true })).toBeDisabled();
+    await wizard.getByRole("button", { name: "Check locations", exact: true }).click();
+    await expect(wizard.getByRole("button", { name: "Find sessions", exact: true })).toBeEnabled();
+    expect(requests.filter((url) => /\/api\/read$/.test(url))).toHaveLength(1);
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Location type").selectOption("directory");
+    await wizard.getByLabel("Full file or folder path").fill(directory);
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByRole("radio", { name: /^native-session/ })).toHaveCount(0);
+  }, false, true);
+});
+
+test("a location added before branch choices remains selected instead of an unavailable startup source", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    const file = path.join(directory, "synthetic.jsonl");
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Location type").selectOption("file");
+    await wizard.getByLabel("Full file or folder path").fill(file);
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByRole("form", { name: "Add a location" })).toHaveCount(0);
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    await expect(wizard.getByText(file, { exact: true }).first()).toBeVisible();
+    const location = await locationOptions(wizard);
+    await expect(location.getByRole("combobox", { name: "VS Code session information", exact: true })).toHaveValue("source-2");
+    await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    await choose(wizard, /^Local/);
+    await choose(wizard, /^I have a recorded file/);
+    await expect(wizard.getByText(file, { exact: true })).toBeVisible();
+    await expect(wizard.getByRole("button", { name: "Find sessions", exact: true })).toBeEnabled();
+    expect(requests.some((url) => /\/api\/(read|read-set|discover|scan|analysis\/start)$/.test(url))).toBe(false);
+    await wizard.getByRole("button", { name: "Find sessions", exact: true }).click();
+    await expect(wizard.getByRole("radio", { name: /^native-session/ })).toBeVisible();
+  }, false, false, true);
+});
+
+test("adding a location for an additional purpose preserves the primary selection and assigns the pending role", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    const settings = await locationOptions(wizard);
+    await settings.getByLabel("File or subfolder (optional)").fill("profiles/example");
+    await wizard.getByRole("button", { name: "Add saved session folder", exact: true }).click();
+    await wizard.getByRole("radio", { name: /^Copilot saved session history/ }).check();
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Full file or folder path").fill(path.join(directory, "other", "User"));
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByRole("form", { name: "Add a location" })).toHaveCount(0);
+    await wizard.getByRole("button", { name: "Next", exact: true }).click();
+    const primary = await locationOptions(wizard);
+    await expect(primary.getByRole("combobox", { name: "VS Code session information", exact: true })).toHaveValue("source-1");
+    await expect(primary.getByLabel("File or subfolder (optional)")).toHaveValue("profiles/example");
+    const history = await locationOptions(wizard, 1);
+    await expect(history.getByRole("combobox", { name: "Copilot saved session history", exact: true })).toHaveValue("source-2");
+    await expect(history.getByText(path.join(directory, "other", "User"), { exact: true }).first()).toBeVisible();
+    expect(requests.some((url) => /\/api\/(read|read-set|discover|scan|analysis\/start)$/.test(url))).toBe(false);
+  });
+});
 
 test("decisions stay separate from Next; unsupported branches and the real Agent Host gate do not read", async ({
   page,
@@ -250,7 +373,7 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
     await choose(wizard, /^Agent Host/);
     const settings = await locationOptions(wizard);
     await settings
-      .getByLabel("File or folder inside this directory")
+      .getByLabel("File or subfolder (optional)")
       .fill("profiles/example/globalStorage/agent-host.db");
     await settings.getByRole("checkbox").check();
     await wizard
@@ -263,7 +386,7 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
     await choose(wizard, /^Copilot saved session history/);
     const history = await locationOptions(wizard, 2);
     await history
-      .getByLabel("File or folder inside this directory")
+      .getByLabel("File or subfolder (optional)")
       .fill("native");
     await wizard
       .getByRole("button", { name: /^Remove.*VS Code saved session details/ })
@@ -333,7 +456,7 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
     await wizard.getByRole("button", { name: "Back", exact: true }).click();
     const retainedHistory = await locationOptions(wizard, 1);
     await retainedHistory
-      .getByLabel("File or folder inside this directory")
+      .getByLabel("File or subfolder (optional)")
       .fill("changed");
     await expect(
       wizard.getByRole("button", { name: "Continue", exact: true }),
@@ -658,7 +781,7 @@ test("location checks preserve selections but clear results and consent; failed 
       const location = await locationOptions(wizard);
       await location.getByRole("combobox").selectOption("source-2");
       await location
-        .getByLabel("File or folder inside this directory")
+        .getByLabel("File or subfolder (optional)")
         .fill("custom");
       const review = wizard.getByRole("checkbox", {
         name: /I've reviewed these locations/,
@@ -673,7 +796,7 @@ test("location checks preserve selections but clear results and consent; failed 
       await expect(review).not.toBeChecked();
       await expect(location.getByRole("combobox")).toHaveValue("source-2");
       await expect(
-        location.getByLabel("File or folder inside this directory"),
+        location.getByLabel("File or subfolder (optional)"),
       ).toHaveValue("custom");
       expect(searches).toHaveLength(0);
       await review.check();
@@ -717,7 +840,7 @@ test("location checks preserve selections but clear results and consent; failed 
       await locationOptions(wizard);
       await expect(location.getByRole("combobox")).toHaveValue("source-2");
       await expect(
-        location.getByLabel("File or folder inside this directory"),
+        location.getByLabel("File or subfolder (optional)"),
       ).toHaveValue("custom");
       await review.check();
       await wizard
@@ -1243,7 +1366,7 @@ test("multiple grants are readable choices; unavailable paths stay visible and s
       await choose(wizard, /^Agent Host/);
       const location = await locationOptions(wizard);
       await location
-        .getByLabel("File or folder inside this directory")
+        .getByLabel("File or subfolder (optional)")
         .fill("custom");
       const sources = location.getByRole("combobox");
       await expect(sources.locator("option")).not.toContainText([
@@ -1259,7 +1382,7 @@ test("multiple grants are readable choices; unavailable paths stay visible and s
       ).toBeDisabled();
       await sources.selectOption("source-1");
       await expect(
-        location.getByLabel("File or folder inside this directory"),
+        location.getByLabel("File or subfolder (optional)"),
       ).toHaveValue("");
       await wizard.getByRole("button", { name: "Back", exact: true }).click();
       await choose(wizard, /^Local/);

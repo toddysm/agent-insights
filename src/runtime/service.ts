@@ -28,6 +28,7 @@ import type {
   RuntimeStatus,
   DiscoveryRequest,
   DiscoveryResult,
+  AddLocationRequest,
 } from "./protocol.js";
 import { SourceDiscovery } from "./discovery.js";
 import { SourceAccess, byteChunks, type StreamedSource } from "./sources.js";
@@ -172,7 +173,7 @@ export class RuntimeService {
 
   /**
    * Register trusted readers against pre-approved source grants without reading content.
-   * @param sources - SourceAccess instance owning startup-approved file/directory locations.
+   * @param sources - SourceAccess instance owning explicitly configured file/directory locations.
    * @param config - Stable launch/model preferences returned in status, not captured session evidence.
    * @param readers - Application-owned format adapters; defaults to none and rejects ambiguous registrations.
    * @param timeoutMs - Positive safe-integer read budget in milliseconds; defaults to 30,000.
@@ -305,6 +306,27 @@ export class RuntimeService {
     this.currentSelection = null;
     this.currentTiming = null;
     this.scanCatalog.invalidate();
+  }
+
+  /**
+   * Prepare cleanup/status before committing explicit current-run access; no read/search/model run starts.
+   * Invalidate previous evidence immediately, including when path validation rejects the addition.
+   * Cancellation rejects promptly without adding a grant; unfinished cleanup remains runtime-owned.
+   */
+  async addLocation(selection: AddLocationRequest, signal: AbortSignal): Promise<{ sourceId: string; status: RuntimeStatus }> {
+    this.invalidate();
+    let status: RuntimeStatus | undefined;
+    const { rejectedAliases, ...location } = await this.sources.add(selection, signal, async () => {
+      await abortable(this.close(), signal);
+      status = await abortable(this.status(), signal);
+    });
+    if (!status) throw new Error("Location preparation did not complete.");
+    const sources = status.sources.map((source) =>
+      rejectedAliases.find((alias) => source.id === alias.id) ?? source);
+    const index = sources.findIndex((source) => source.id === location.id);
+    if (index < 0) sources.push(location);
+    else sources[index] = location;
+    return { sourceId: location.id, status: { ...status, sources } };
   }
 
   /**

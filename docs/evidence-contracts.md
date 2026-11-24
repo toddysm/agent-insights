@@ -188,7 +188,30 @@ producer-generated verification; optional telemetry is not a native prerequisite
 
 Manual [source discovery](local-runtime.md#discover-agent-host-sessions) produces
 a transient list, not a `ReadView`, persisted session catalog or analysis result.
-Only explicitly selected startup grants/layouts are inspected. The bounded
+Only explicitly selected configured grants/layouts are inspected. Initial
+`--source` locations and explicitly UI-added current-run locations share the same
+read-only containment, identity, resource and qualified-reader boundaries.
+Authenticated `POST /api/locations/add` accepts `{ path, kind }`, with `kind`
+`file` or `directory`, and requires the same literal-loopback Origin and launch
+credential as existing controls. It validates an existing absolute local path
+and returns `{ sourceId, status }`; no file bytes, uploads, SQL, home-directory
+inference or persisted location catalog are involved. Canonical admissions are
+serialized and deduplicated under the shared 32-location ceiling. Admission
+attempts invalidate prior runtime evidence after authentication and Origin
+checks, even when body or path validation rejects the addition, matching the
+UI's cleared results and consent. Unauthenticated attempts do not invalidate
+evidence. Admission
+stages cleanup and status inspection before committing a new grant, then
+revalidates its path/identity. Cancellation governs the entire operation:
+unfinished cleanup remains runtime-owned, but a rejected addition does not
+authorize a new location. Unavailable old aliases cannot veto admission of a
+separately validated path or be silently rebound. Final revalidation checks
+matching grants for a surviving reusable binding before allocating another
+slot, including at capacity. The response carries all
+alias availability failures observed during final revalidation, rather than
+reusing its earlier availability snapshot. Search and reading still require
+separate actions.
+The bounded
 `discovery_chats` projection uses the same schema-22 definition and ownership
 resolver as native reading; paths and shared SDK branding do not establish
 runtime identity.
