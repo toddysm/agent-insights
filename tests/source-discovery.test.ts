@@ -597,6 +597,54 @@ test("exact native files are recognized by headers regardless of filename withou
   assert.deepEqual(result.sessions, []);
 });
 
+test("exact-file recognition accumulates short chunks before routing a SQLite signature", async (t) => {
+  const root = await temporary(t);
+  await writeFile(path.join(root, "database"), "SQLite format 3\0");
+  const access = await SourceAccess.create([path.join(root, "database")]);
+  const stream = access.withStream.bind(access);
+  t.mock.method(access, "withStream", <T>(
+    sourceId: string, relativePath: string, signal: AbortSignal, borrow: (source: StreamedSource) => Promise<T>,
+  ) => stream(sourceId, relativePath, signal, (source) => borrow({
+    ...source,
+    /** Preserve the real descriptor and verification while simulating seven-byte filesystem reads. */
+    async *chunks() {
+      for await (const chunk of source.chunks()) {
+        for (let index = 0; index < chunk.length; index += 7) yield chunk.subarray(index, index + 7);
+      }
+    },
+  })));
+  t.mock.method(access, "database", async () => {
+    throw new RuntimeError("SQLITE_LIMIT", "Synthetic database admission limit.", 413);
+  });
+  const discovery = new SourceDiscovery(access, testNativeHelper, "short-signature", signal);
+  t.after(() => discovery.dispose());
+  await assert.rejects(discovery.run({
+    roots: [{ sourceId: "source-1", relativePath: "", layout: "agent-host" }],
+  }), { code: "SQLITE_LIMIT" });
+});
+
+test("harness recognition reports files where known settings/profile directories are expected", async (t) => {
+  const root = await temporary(t);
+  const first = path.join(root, "first");
+  const second = path.join(root, "second");
+  await mkdir(first);
+  await mkdir(path.join(second, "profiles", "custom"), { recursive: true });
+  for (const directory of [first, second]) {
+    await writeFile(path.join(directory, "events.jsonl"), JSON.stringify(records()[0]) + "\n");
+  }
+  await writeFile(path.join(first, "profiles"), "not a directory");
+  await writeFile(path.join(first, "globalStorage"), "not a directory");
+  await writeFile(path.join(second, "profiles", "custom", "globalStorage"), "not a directory");
+  const discovery = new SourceDiscovery(await SourceAccess.create([first, second]), testNativeHelper, "invalid-settings", signal);
+  t.after(() => discovery.dispose());
+  const result = await discovery.run({
+    roots: [1, 2].map((id) => ({ sourceId: `source-${id}`, relativePath: "", layout: "agent-host" })),
+  });
+  assert.deepEqual(result.issues.filter((issue) => issue.code === "NOT_A_DIRECTORY").map((issue) => issue.relativePath).sort(), [
+    "globalStorage", "profiles", path.join("profiles", "custom", "globalStorage"),
+  ].sort());
+});
+
 test("harness recognition admits 64 candidate histories and rejects candidate 65 before publishing", async (t) => {
   const root = await temporary(t);
   const header = JSON.stringify(records()[0]) + "\n";

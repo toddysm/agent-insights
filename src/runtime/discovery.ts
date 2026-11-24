@@ -246,11 +246,15 @@ export class SourceDiscovery {
     const database = await this.access.withStream(
       location.sourceId, location.relativePath, this.signal,
       async (source) => {
-        let sqlite = false;
+        const signature = Buffer.alloc(16);
+        let length = 0;
         for await (const chunk of source.chunks()) {
-          sqlite = Buffer.from(chunk.subarray(0, 16)).equals(Buffer.from("SQLite format 3\0"));
-          break;
+          const count = Math.min(signature.length - length, chunk.length);
+          signature.set(chunk.subarray(0, count), length);
+          length += count;
+          if (length === signature.length) break;
         }
+        const sqlite = length === signature.length && signature.equals(Buffer.from("SQLite format 3\0"));
         if ((await source.verify()).changed)
           throw new RuntimeError("SOURCE_CHANGED", "The selected file changed during format recognition. Find sessions again.", 409);
         return sqlite;
@@ -319,6 +323,20 @@ export class SourceDiscovery {
         message: "Linked discovery children are excluded; select an alias explicitly.",
       });
     };
+    /** Resolve a fixed optional settings folder; malformed/link paths become issues and fatal failures still reject. */
+    const settingsDirectory = async (relativePath: string): Promise<boolean> => {
+      const candidate = { sourceId: location.sourceId, relativePath };
+      try {
+        await this.access.verifyDiscoveryPath(location.sourceId, location.relativePath, relativePath, this.signal);
+        if (await this.access.kind(location.sourceId, relativePath, this.signal) !== "directory")
+          throw new RuntimeError("NOT_A_DIRECTORY", "An expected Agent Host settings/profile location is not a directory.", 400);
+        return true;
+      } catch (error) {
+        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !this.signal.aborted) return false;
+        this.problem(candidate, error);
+        return false;
+      }
+    };
     const entries = await this.access.entries(location.sourceId, location.relativePath, this.signal);
     for (const entry of entries) {
       if (this.signal.aborted) throw cancelledRead(this.signal);
@@ -326,7 +344,9 @@ export class SourceDiscovery {
       if (entry.kind === "link") {
         linked(child);
       } else if (entry.kind === "file") {
-        if (entry.name === "agent-host.db") await probe("catalog", child);
+        if (entry.name === "profiles" || entry.name === "globalStorage")
+          await settingsDirectory(child);
+        else if (entry.name === "agent-host.db") await probe("catalog", child);
         else if (entry.name === "events.jsonl") await probe("history", child);
         else if (entry.name === "session.db") await probe("overlay", child);
       } else if (entry.kind === "directory") {
@@ -343,7 +363,9 @@ export class SourceDiscovery {
               if (profile.kind === "link") linked(profilePath);
               else if (profile.kind === "directory") {
                 countDirectory();
-                await probe("catalog", path.join(profilePath, "globalStorage", "agent-host.db"));
+                const storage = path.join(profilePath, "globalStorage");
+                if (await settingsDirectory(storage))
+                  await probe("catalog", path.join(storage, "agent-host.db"));
               }
             }
           } catch (error) {

@@ -249,6 +249,27 @@ test("source choices and default-location guidance follow the chosen harness wit
   }, true);
 });
 
+test("admission at the search-location cap keeps its selection notice visible alongside successful access feedback", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    for (let index = 0; index < 15; index++) {
+      await wizard.getByRole("button", { name: "Add another search location", exact: true }).click();
+    }
+    await expect(wizard.locator(".wizard-searches > li")).toHaveCount(16);
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Full file or folder path").fill(path.join(directory, "other", "User"));
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    const notice = wizard.getByRole("alert").filter({ hasText: "A search can use up to 16 locations" });
+    await expect(notice).toBeVisible();
+    await expect(wizard.getByRole("status").filter({ hasText: /this app run.*Nothing was searched/ })).toBeVisible();
+    await expect(wizard.locator(".wizard-searches > li")).toHaveCount(16);
+    await wizard.getByRole("combobox", { name: "Source 16", exact: true }).selectOption("source-2");
+    await expect(notice).toHaveCount(0);
+    expect(requests.some((url) => /\/api\/(discover|read|read-set|scan|analysis\/start)$/.test(url))).toBe(false);
+  });
+});
+
 test("decisions stay separate from Next; unsupported branches and the real Agent Host gate do not read", async ({
   page,
 }) => {

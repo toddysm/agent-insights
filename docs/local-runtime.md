@@ -578,7 +578,11 @@ Host sources** shows configured sources, accessibility and read-only review.
 Source choices stay visible; **Add another search location** selects another
 configured source without assigning it a storage role. **Add a file or folder**
 admits and selects an additional current-run location without replacing existing
-search locations. The app recognizes supported data for the chosen harness;
+search locations when the search has capacity. At the 16-location search limit,
+the added location remains available in the source choices and a visible notice
+explains how to use it: remove a search location or change an existing **Source**
+choice. Successful access admission does not hide that notice or expand the search.
+The app recognizes supported data for the chosen harness;
 there is no saved-file-purpose or source-role question.
 Each location's **Location and custom options**
 preserves custom/profile paths and exact-file selection and shows its full
@@ -629,6 +633,9 @@ Explicit roots use their admitted file/directory kind, not a filename extension;
 extensionless files and directories ending in `.jsonl` or `.db` remain usable.
 An absent `profiles` directory means no custom profiles, not a missing selected
 settings home. Invalid selected roots and inaccessible existing children remain explicit issues.
+Files where the known `profiles` or `globalStorage` folders are expected, including
+inside a custom profile, produce `NOT_A_DIRECTORY` issues rather than disappearing
+when another selected location supplies usable sessions.
 
 After reviewing access, **Find sessions** directly requests the session list
 and sends an authenticated `POST /api/discover` with

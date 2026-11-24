@@ -165,6 +165,7 @@ export function SourceDiscoveryPanel({
   const [fileView, setFileView] = useState<ReadView | null>(null);
   const [selectedSession, setSelectedSession] = useState("");
   const [error, setError] = useState("");
+  const [selectionNotice, setSelectionNotice] = useState("");
   const [addOpen, setAddOpen] = useState(false);
   const sequence = useRef(1);
   const generation = useRef(0);
@@ -243,6 +244,7 @@ export function SourceDiscoveryPanel({
     setFileView(null);
     setSelectedSession("");
     setError("");
+    setSelectionNotice("");
     if (resetAccess) setAcknowledged(false);
     onStart(resetScan);
   }
@@ -302,7 +304,7 @@ export function SourceDiscoveryPanel({
     }
   }
 
-  /** Select explicit additions without replacing reviewed Host locations; admission never starts discovery. */
+  /** Append explicit Host additions when capacity allows; otherwise show a selection notice without starting discovery. */
   async function addLocation(selection: AddLocationRequest): Promise<void> {
     invalidate(true, true);
     if (step === "file-sessions") setStep("file");
@@ -319,7 +321,7 @@ export function SourceDiscoveryPanel({
         const id = ++sequence.current;
         setEntries((previous) => [...previous, { id, sourceId, relativePath: "" }]);
       } else {
-        setError("The location was added to configured access. A search can use up to 16 locations; remove a search location or change its Source choice to use the added location.");
+        setSelectionNotice("The location was added to configured access. A search can use up to 16 locations; remove a search location or change its Source choice to use the added location.");
       }
     } else {
       setEntries([{ id: ++sequence.current, sourceId, relativePath: "" }]);
@@ -615,6 +617,9 @@ export function SourceDiscoveryPanel({
               : "/path/to/session-data"}
         />
         {feedback}
+        {selectionNotice && (
+          <p className="alert" role="alert">{selectionNotice}</p>
+        )}
         {error && !feedback && (
           <p className="alert" role="alert">
             {error}

@@ -331,7 +331,7 @@ function App(): ReactElement {
       setSourceId(result.sourceId);
       setRelativePath("");
       setLocationCheck("checked");
-      setReadNotice("Location selected for this app run. Nothing was searched.");
+      setReadNotice("Location added to configured access for this app run. Nothing was searched.");
       return result.sourceId;
     } catch (failure) {
       if (current === generation.current) setLocationCheck("failed");
