@@ -645,6 +645,36 @@ test("harness recognition reports files where known settings/profile directories
   ].sort());
 });
 
+test("harness recognition reports observed paths that disappear while absent optional filenames remain harmless", async (t) => {
+  const root = await temporary(t);
+  await mkdir(path.join(root, "removed"));
+  await mkdir(path.join(root, "survivor"));
+  for (const relativePath of ["events.jsonl", path.join("removed", "events.jsonl"), path.join("survivor", "events.jsonl")]) {
+    await writeFile(path.join(root, relativePath), JSON.stringify(records()[0]) + "\n");
+  }
+  const access = await SourceAccess.create([root]);
+  const entries = access.entries.bind(access);
+  // Remove fixtures after the snapshot's own postflight, not while entries is iterating.
+  t.mock.method(access, "entries", async (...args: Parameters<SourceAccess["entries"]>) => {
+    const snapshot = await entries(...args);
+    if (!args[1]) {
+      await rm(path.join(root, "events.jsonl"));
+      await rm(path.join(root, "removed"), { recursive: true });
+    }
+    return snapshot;
+  });
+  const discovery = new SourceDiscovery(access, testNativeHelper, "disappeared-paths", signal);
+  t.after(() => discovery.dispose());
+  const result = await discovery.run({
+    roots: [{ sourceId: "source-1", relativePath: "", layout: "agent-host" }],
+  });
+  assert.deepEqual(result.issues.filter((issue) => issue.code === "SOURCE_MISSING").map((issue) => issue.relativePath).sort(), [
+    "events.jsonl", "removed",
+  ]);
+  assert.ok(result.issues.some((issue) => issue.code === "UNASSIGNED_HISTORY" &&
+    issue.relativePath === path.join("survivor", "events.jsonl")));
+});
+
 test("harness recognition admits 64 candidate histories and rejects candidate 65 before publishing", async (t) => {
   const root = await temporary(t);
   const header = JSON.stringify(records()[0]) + "\n";

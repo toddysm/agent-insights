@@ -297,8 +297,8 @@ export class SourceDiscovery {
     add: (kind: "catalog" | "history" | "overlay", candidate: Location, implicitRoot: string) => void,
   ): Promise<void> {
     let found = false;
-    /** Probe a fixed child without following links or enumerating arbitrary descendants. */
-    const probe = async (kind: "catalog" | "history" | "overlay", relativePath: string): Promise<void> => {
+    /** Probe a fixed child without links; observed files retain disappearance diagnostics rather than optional absence. */
+    const probe = async (kind: "catalog" | "history" | "overlay", relativePath: string, observed = false): Promise<void> => {
       const candidate = { sourceId: location.sourceId, relativePath };
       try {
         await this.access.verifyDiscoveryPath(location.sourceId, location.relativePath, relativePath, this.signal);
@@ -307,7 +307,7 @@ export class SourceDiscovery {
         add(kind, candidate, location.relativePath);
         found = true;
       } catch (error) {
-        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !this.signal.aborted) return;
+        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !observed && !this.signal.aborted) return;
         this.problem(candidate, error);
       }
     };
@@ -323,16 +323,16 @@ export class SourceDiscovery {
         message: "Linked discovery children are excluded; select an alias explicitly.",
       });
     };
-    /** Resolve a fixed optional settings folder; malformed/link paths become issues and fatal failures still reject. */
-    const settingsDirectory = async (relativePath: string): Promise<boolean> => {
+    /** Resolve a source folder; only unobserved optional absence is harmless, while fatal failures still reject. */
+    const sourceDirectory = async (relativePath: string, observed = false): Promise<boolean> => {
       const candidate = { sourceId: location.sourceId, relativePath };
       try {
         await this.access.verifyDiscoveryPath(location.sourceId, location.relativePath, relativePath, this.signal);
         if (await this.access.kind(location.sourceId, relativePath, this.signal) !== "directory")
-          throw new RuntimeError("NOT_A_DIRECTORY", "An expected Agent Host settings/profile location is not a directory.", 400);
+          throw new RuntimeError("NOT_A_DIRECTORY", "An expected Agent Host source folder is not a directory.", 400);
         return true;
       } catch (error) {
-        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !this.signal.aborted) return false;
+        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !observed && !this.signal.aborted) return false;
         this.problem(candidate, error);
         return false;
       }
@@ -345,12 +345,13 @@ export class SourceDiscovery {
         linked(child);
       } else if (entry.kind === "file") {
         if (entry.name === "profiles" || entry.name === "globalStorage")
-          await settingsDirectory(child);
-        else if (entry.name === "agent-host.db") await probe("catalog", child);
-        else if (entry.name === "events.jsonl") await probe("history", child);
-        else if (entry.name === "session.db") await probe("overlay", child);
+          await sourceDirectory(child, true);
+        else if (entry.name === "agent-host.db") await probe("catalog", child, true);
+        else if (entry.name === "events.jsonl") await probe("history", child, true);
+        else if (entry.name === "session.db") await probe("overlay", child, true);
       } else if (entry.kind === "directory") {
         if (entry.name !== "globalStorage" && entry.name !== "profiles") countDirectory();
+        if (!await sourceDirectory(child, true)) continue;
         await probe("history", path.join(child, "events.jsonl"));
         await probe("overlay", path.join(child, "session.db"));
         if (entry.name === "globalStorage") {
@@ -363,8 +364,9 @@ export class SourceDiscovery {
               if (profile.kind === "link") linked(profilePath);
               else if (profile.kind === "directory") {
                 countDirectory();
+                if (!await sourceDirectory(profilePath, true)) continue;
                 const storage = path.join(profilePath, "globalStorage");
-                if (await settingsDirectory(storage))
+                if (await sourceDirectory(storage))
                   await probe("catalog", path.join(storage, "agent-host.db"));
               }
             }

@@ -636,6 +636,9 @@ settings home. Invalid selected roots and inaccessible existing children remain 
 Files where the known `profiles` or `globalStorage` folders are expected, including
 inside a custom profile, produce `NOT_A_DIRECTORY` issues rather than disappearing
 when another selected location supplies usable sessions.
+An observed file or folder that disappears before its discovery probe produces a
+`SOURCE_MISSING` issue; another usable candidate does not hide it. Unobserved
+optional filenames may be absent without producing missing-source errors.
 
 After reviewing access, **Find sessions** directly requests the session list
 and sends an authenticated `POST /api/discover` with
