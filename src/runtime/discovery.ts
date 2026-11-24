@@ -237,8 +237,9 @@ export class SourceDiscovery {
   /**
    * A bounded signature routes exact files to disjoint guarded schemas or the
    * native header parser; only those validators qualify the format. Large native
-   * histories never acquire SQLite size limits. Only schema mismatch permits a
-   * second database declaration; all operational failures remain explicit.
+   * histories never acquire SQLite size limits. An oversized recognition header
+   * is an unsupported source; cancellation and operational-error handling stay intact.
+   * Only schema mismatch permits a second database declaration.
    */
   private async recognizeFile(
     location: Location,
@@ -261,8 +262,20 @@ export class SourceDiscovery {
       },
     );
     if (!database) {
-      const header = await this.header(location, await this.physical(location, false));
-      return header ? "history" : null;
+      const identity = await this.physical(location, false);
+      try {
+        const header = await this.header(location, identity);
+        return header ? "history" : null;
+      } catch (error) {
+        if (!(error instanceof RuntimeError) || error.code !== "READ_LIMIT" || this.signal.aborted)
+          throw error;
+        this.issues.push({
+          ...location,
+          code: "UNSUPPORTED_SOURCE",
+          message: "This file exceeds the 256 KiB native header recognition limit. Choose the files used by the selected harness.",
+        });
+        return null;
+      }
     }
     const identity = await this.physical(location, true);
     for (const role of ["catalog", "overlay"] as const) {

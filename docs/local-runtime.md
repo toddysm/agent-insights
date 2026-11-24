@@ -619,7 +619,11 @@ inspect arbitrary descendants or read unrelated files. Exact files, including
 renamed/extensionless files, are routed by a bounded signature and must pass the
 qualified native header or disjoint guarded database schemas. Filenames alone
 never establish format, harness ownership or session identity. Unsupported
-files/folder layouts are explicit issues. Up to 16 selected roots, 64 candidate
+files/folder layouts are explicit issues. A non-SQLite exact file whose first
+line exceeds the 256 KiB native header recognition limit is reported as
+`UNSUPPORTED_SOURCE`; other selected locations still produce their results.
+This does not relax legacy history, read, cancellation or operational-error
+limits. Up to 16 selected roots, 64 candidate
 files and 64 session/profile folder probes are allowed; existing directory-entry,
 read, helper, cancellation and reopen limits still apply.
 

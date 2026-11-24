@@ -597,6 +597,36 @@ test("exact native files are recognized by headers regardless of filename withou
   assert.deepEqual(result.sessions, []);
 });
 
+test("exact-file header limits report unsupported sources without aborting other locations or changing legacy limits", async (t) => {
+  const root = await temporary(t);
+  const sizes = [256 * 1024, 256 * 1024 + 1, 300 * 1024];
+  const files = sizes.map((size) => path.join(root, `header-${size}`));
+  for (const [index, file] of files.entries()) {
+    await writeFile(file, Buffer.alloc(sizes[index]!, 97));
+  }
+  const history = path.join(root, "history");
+  await writeFile(history, JSON.stringify(records()[0]) + "\n");
+  const access = await SourceAccess.create([...files, history]);
+  const discovery = new SourceDiscovery(access, testNativeHelper, "header-limits", signal);
+  t.after(() => discovery.dispose());
+  const result = await discovery.run({
+    roots: [1, 2, 3, 4].map((id) => ({ sourceId: `source-${id}`, relativePath: "", layout: "agent-host" })),
+  });
+  assert.deepEqual(
+    result.issues.filter((issue) => issue.code === "UNSUPPORTED_SOURCE").map((issue) => [issue.sourceId, issue.relativePath]),
+    [["source-2", ""], ["source-3", ""]],
+  );
+  assert.ok(result.issues.some((issue) => issue.sourceId === "source-1" && issue.code === "UNQUALIFIED_HISTORY"));
+  assert.ok(result.issues.some((issue) => issue.sourceId === "source-4" && issue.code === "UNASSIGNED_HISTORY"));
+  assert.ok(result.locators.some((locator) => locator.sourceId === "source-4"));
+
+  const legacy = new SourceDiscovery(access, testNativeHelper, "legacy-header-limit", signal);
+  t.after(() => legacy.dispose());
+  await assert.rejects(legacy.run({
+    roots: [{ sourceId: "source-3", relativePath: "", layout: "history" }],
+  }), { code: "READ_LIMIT" });
+});
+
 test("exact-file recognition accumulates short chunks before routing a SQLite signature", async (t) => {
   const root = await temporary(t);
   await writeFile(path.join(root, "database"), "SQLite format 3\0");
@@ -889,7 +919,7 @@ test("role-free native discovery recognizes settings/profiles, histories and ove
   assert.equal(profile.sessions[0]?.state, "ready");
 });
 
-test("role-free exact-file grants recognize renamed databases and preserve unsupported-schema failures", native, async (t) => {
+test("role-free exact-file grants preserve ready sessions alongside unsupported schemas and oversized headers", native, async (t) => {
   const data = await fixture(t);
   const catalog = path.join(data.root, "custom-information");
   const overlay = path.join(data.root, "custom-details");
@@ -903,17 +933,20 @@ test("role-free exact-file grants recognize renamed databases and preserve unsup
   const database = new DatabaseSync(wrong);
   database.exec("PRAGMA user_version=999; CREATE TABLE unsupported(id TEXT PRIMARY KEY NOT NULL);");
   database.close();
+  const oversized = path.join(data.root, "oversized-header");
+  await writeFile(oversized, Buffer.alloc(300 * 1024, 97));
   const discovery = new SourceDiscovery(
-    await SourceAccess.create([catalog, data.historyPath, overlay, wrong]), testNativeHelper, "exact-native", signal,
+    await SourceAccess.create([catalog, data.historyPath, overlay, wrong, oversized]), testNativeHelper, "exact-native", signal,
   );
   try {
     const result = await discovery.run({
-      roots: [1, 2, 3, 4].map((id) => ({ sourceId: `source-${id}`, relativePath: "", layout: "agent-host" })),
+      roots: [1, 2, 3, 4, 5].map((id) => ({ sourceId: `source-${id}`, relativePath: "", layout: "agent-host" })),
     });
     assert.equal(result.sessions.length, 1, JSON.stringify(result.issues));
     assert.equal(result.sessions[0]?.state, "ready");
     assert.equal(result.sessions[0]?.selection?.sources.length, 3);
     assert.ok(result.issues.some((issue) => issue.sourceId === "source-4" && issue.code === "UNSUPPORTED_SOURCE"));
+    assert.ok(result.issues.some((issue) => issue.sourceId === "source-5" && issue.relativePath === "" && issue.code === "UNSUPPORTED_SOURCE"));
   } finally {
     await discovery.dispose();
   }
