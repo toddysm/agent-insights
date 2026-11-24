@@ -297,11 +297,18 @@ export class SourceAccess {
    * Admit an explicit absolute file/folder path for this runtime only, without reading bytes.
    * Serialize validation/commit so duplicate canonical roots and the 32-location ceiling
    * remain correct under concurrent requests. Existing grants are never rebound.
-   * Cancellation or validation failure rejects without registering a grant.
+   * Optional preparation runs before commit; its failure/cancellation leaves grants unchanged.
+   * Revalidate the supplied path after preparation. Cancelled work releases its queue
+   * slot after its predecessor, but remains observed and cannot register a late grant.
    */
-  async add(selection: AddLocationRequest, signal: AbortSignal): Promise<string> {
+  async add(
+    selection: AddLocationRequest,
+    signal: AbortSignal,
+    prepare?: (location: SourceLocation) => Promise<void>,
+  ): Promise<string> {
     const request = Object.freeze({ ...selection });
-    const admit = this.admission.then(async () => {
+    const predecessor = this.admission;
+    const admit = predecessor.then(async () => {
       if (signal.aborted) throw cancelledRead(signal);
       if (
         !path.isAbsolute(request.path) ||
@@ -315,9 +322,11 @@ export class SourceAccess {
         );
       const requested = path.resolve(request.path);
       let canonical: string;
+      let identity: BigIntStats;
       try {
         canonical = await realpath(requested);
         const before = await stat(canonical, { bigint: true });
+        identity = before;
         if (
           (request.kind === "file" && !before.isFile()) ||
           (request.kind === "directory" && !before.isDirectory())
@@ -335,26 +344,41 @@ export class SourceAccess {
         filesystemError(error);
       }
       if (signal.aborted) throw cancelledRead(signal);
+      let reusable: SourceGrant | undefined;
       for (const existing of this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind)) {
         try {
           await this.inspect(existing);
           if (signal.aborted) throw cancelledRead(signal);
-          return existing.id;
+          reusable = existing;
+          break;
         } catch (error) {
           // A stale alias is not reusable; explicit admission of a valid path must not rebind it.
-          if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING"].includes(error.code)) throw error;
+          if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING", "SOURCE_DENIED", "SOURCE_LINK", "SOURCE_IO"].includes(error.code)) throw error;
         }
       }
       if (signal.aborted) throw cancelledRead(signal);
-      if (this.grants.length >= 32)
+      if (!reusable && this.grants.length >= 32)
         throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
-      const id = `source-${this.grants.length + 1}`;
-      this.grants.push({ id, requested, canonical, kind: request.kind });
-      return id;
+      const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
+      await prepare?.({ id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null });
+      if (signal.aborted) throw cancelledRead(signal);
+      try {
+        await this.inspect({ ...grant, requested });
+        if (reusable) await this.inspect(reusable);
+        const current = await stat(canonical, { bigint: true });
+        if (current.dev !== identity.dev || current.ino !== identity.ino)
+          throw new RuntimeError("ROOT_CHANGED", "The location changed while checking access. Check the path and add it again.", 409);
+      } catch (error) {
+        filesystemError(error);
+      }
+      if (signal.aborted) throw cancelledRead(signal);
+      if (!reusable) this.grants.push(grant);
+      return grant.id;
     });
-    // Keep the queue usable after rejection; the admitting caller still receives that failure.
-    this.admission = admit.then(() => undefined, () => undefined);
-    return abortable(admit, signal);
+    const result = abortable(admit, signal);
+    // Preserve earlier admissions even if this request is cancelled while still queued.
+    this.admission = Promise.allSettled([predecessor, result]).then(() => undefined);
+    return result;
   }
 
   /** Recheck a grant without silently authorizing a replacement symlink or a changed root kind. */

@@ -331,7 +331,36 @@ test("UI admission preserves permission and changed-target failures without leak
   assert.equal((await access.list()).find((location) => location.id === restored)?.available, true);
 });
 
-test("cancelled or timed-out location checks cannot admit a late grant or use mutated input", async (t) => {
+test("unavailable old aliases cannot veto a separately validated canonical path", async (t) => {
+  const data = await fixture(t);
+  const originalRealpath = fsPromises.realpath;
+  for (const [code, expected] of [
+    ["EACCES", "SOURCE_DENIED"], ["ELOOP", "SOURCE_LINK"], ["EIO", "SOURCE_IO"],
+  ]) {
+    const alias = path.join(data.root, `alias-${code}`);
+    await symlink(data.allowed, alias, "junction");
+    const access = await SourceAccess.create([alias]);
+    const mock = t.mock.method(fsPromises, "realpath", async (...args: Parameters<typeof originalRealpath>) => {
+      if (args[0].toString() === alias)
+        throw Object.assign(new Error("PRIVATE_ALIAS_ERROR"), { code });
+      return originalRealpath(...args);
+    });
+    syncBuiltinESMExports();
+    try {
+      assert.equal(await access.add({ path: data.allowed, kind: "directory" }, new AbortController().signal), "source-2");
+      await assert.rejects(access.read("source-1", "capture.jsonl", new AbortController().signal), { code: expected });
+      const locations = await access.list();
+      assert.equal(locations[0]?.path, alias);
+      assert.equal(locations[0]?.available, false);
+      assert.equal(locations[1]?.available, true);
+    } finally {
+      mock.mock.restore();
+      syncBuiltinESMExports();
+    }
+  }
+});
+
+test("cancelled location checks release their queue slot without bypassing predecessors or admitting late grants", { timeout: 5000 }, async (t) => {
   const data = await fixture(t);
   const originalAccess = fsPromises.access;
   let release: (() => void) | undefined;
@@ -340,7 +369,11 @@ test("cancelled or timed-out location checks cannot admit a late grant or use mu
   const entered = new Promise<void>((resolve) => { started = resolve; });
   const blocked = new Promise<void>((resolve) => { release = resolve; });
   t.after(() => { release?.(); fsPromises.access = originalAccess; syncBuiltinESMExports(); });
-  fsPromises.access = async (location) => { inspected = location.toString(); started?.(); await blocked; };
+  fsPromises.access = async (location, mode) => {
+    inspected = location.toString();
+    if (inspected === await realpath(data.allowed)) { started?.(); await blocked; }
+    else await originalAccess(location, mode);
+  };
   syncBuiltinESMExports();
   const access = await SourceAccess.create([]);
   const controller = new AbortController();
@@ -349,13 +382,96 @@ test("cancelled or timed-out location checks cannot admit a late grant or use mu
   selection.path = data.outside;
   await entered;
   assert.equal(inspected, await realpath(data.allowed));
+  const queued = new AbortController();
+  const skipped = access.add({ path: data.outside, kind: "directory" }, queued.signal);
+  queued.abort();
+  await assert.rejects(skipped, { code: "READ_CANCELLED" });
+  const healthy = access.add({ path: data.file, kind: "file" }, new AbortController().signal);
+  await delay(20);
+  assert.equal(inspected, await realpath(data.allowed));
   controller.abort(new RuntimeError("LOCATION_TIMEOUT", "Location check timed out.", 408));
   await assert.rejects(pending, { code: "LOCATION_TIMEOUT" });
+  assert.equal(await healthy, "source-1");
   release?.();
   fsPromises.access = originalAccess;
   syncBuiltinESMExports();
   assert.equal(await access.add({ path: data.file, kind: "file" }, new AbortController().signal), "source-1");
   assert.deepEqual((await access.list()).map((location) => location.path), [data.file]);
+});
+
+test("failed or cancelled location preparation preserves grants and observes late failures", async (t) => {
+  const data = await fixture(t);
+  for (const phase of ["cleanup", "status"] as const) {
+    for (const cancelled of [false, true]) {
+      await t.test(`${phase}: ${cancelled ? "cancellation" : "failure"}`, { timeout: 5000 }, async (subtest) => {
+        const access = await SourceAccess.create([data.file]);
+        const service = new RuntimeService(access, config([data.file]));
+        const controller = new AbortController();
+        let enter: (() => void) | undefined;
+        let fail: ((error: Error) => void) | undefined;
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        const blocked = new Promise<never>((_, reject) => { fail = reject; });
+        const mock = subtest.mock.method(service, phase === "cleanup" ? "close" : "status", () => {
+          enter?.();
+          return blocked;
+        });
+        subtest.after(() => { mock.mock.restore(); fail?.(new Error("LATE_PREPARATION_ERROR")); });
+        const pending = service.addLocation({ path: data.allowed, kind: "directory" }, controller.signal);
+        await entered;
+        assert.equal((await access.list()).length, 1);
+        if (cancelled) controller.abort();
+        else fail?.(new RuntimeError("SOURCE_CLEANUP_FAILED", "Synthetic preparation failed.", 500));
+        await assert.rejects(pending, { code: cancelled ? "READ_CANCELLED" : "SOURCE_CLEANUP_FAILED" });
+        assert.equal(await access.add({ path: data.outside, kind: "directory" }, new AbortController().signal), "source-2");
+        fail?.(new Error("LATE_PREPARATION_ERROR"));
+        mock.mock.restore();
+        assert.deepEqual((await access.list()).map((location) => location.path), [data.file, data.outside]);
+        const duplicateFailure = subtest.mock.method(service, "close", () => Promise.reject(new RuntimeError("SOURCE_CLEANUP_FAILED", "Synthetic preparation failed.", 500)));
+        await assert.rejects(service.addLocation({ path: data.file, kind: "file" }, new AbortController().signal), { code: "SOURCE_CLEANUP_FAILED" });
+        duplicateFailure.mock.restore();
+        assert.equal((await access.list())[0]?.id, "source-1");
+        assert.equal((await access.list()).length, 2);
+      });
+    }
+  }
+});
+
+test("location preparation revalidates a supplied alias before committing", async (t) => {
+  const data = await fixture(t);
+  const alias = path.join(data.root, "staged-alias");
+  await symlink(data.allowed, alias, "junction");
+  const access = await SourceAccess.create([]);
+  await assert.rejects(access.add({ path: alias, kind: "directory" }, new AbortController().signal, async () => {
+    await unlink(alias);
+    await symlink(data.outside, alias, "junction");
+  }), { code: "ROOT_CHANGED" });
+  assert.deepEqual(await access.list(), []);
+});
+
+test("HTTP location timeout bounds cleanup and status without authorizing a failed addition", async (t) => {
+  const data = await fixture(t);
+  for (const phase of ["close", "status"] as const) {
+    await t.test(phase, { timeout: 5000 }, async (subtest) => {
+      const runtime = await startRuntime(config(), { readTimeoutMs: 100 });
+      let fail: ((error: Error) => void) | undefined;
+      const blocked = new Promise<never>((_, reject) => { fail = reject; });
+      const mock = subtest.mock.method(runtime.service, phase, () => blocked);
+      subtest.after(async () => {
+        mock.mock.restore();
+        fail?.(new Error("LATE_PREPARATION_ERROR"));
+        await runtime.close();
+      });
+      const response = await api(runtime, "/api/locations/add", { path: data.allowed, kind: "directory" });
+      assert.equal(response.status, 408);
+      assert.equal(errorSchema.parse(await response.json()).error.code, "LOCATION_TIMEOUT");
+      mock.mock.restore();
+      fail?.(new Error("LATE_PREPARATION_ERROR"));
+      assert.deepEqual((await runtime.service.status()).sources, []);
+      const retry = await api(runtime, "/api/locations/add", { path: data.file, kind: "file" });
+      assert.equal(retry.status, 200);
+      assert.equal(addLocationResponseSchema.parse(await retry.json()).sourceId, "source-1");
+    });
+  }
 });
 
 test("source grants reject traversal, prefix siblings, absolute paths and unknown grants", async (t) => {

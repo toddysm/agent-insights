@@ -308,11 +308,23 @@ export class RuntimeService {
     this.scanCatalog.invalidate();
   }
 
-  /** Admit explicit current-run access, then cancel/clean prior evidence as for Check locations; no read/search/model run starts. */
+  /**
+   * Prepare cleanup/status before committing explicit current-run access; no read/search/model run starts.
+   * Cancellation rejects promptly without adding a grant; unfinished cleanup remains runtime-owned.
+   */
   async addLocation(selection: AddLocationRequest, signal: AbortSignal): Promise<{ sourceId: string; status: RuntimeStatus }> {
-    const sourceId = await this.sources.add(selection, signal);
-    await this.close();
-    return { sourceId, status: await this.status() };
+    let result: { sourceId: string; status: RuntimeStatus } | undefined;
+    await this.sources.add(selection, signal, async (location) => {
+      await abortable(this.close(), signal);
+      const status = await abortable(this.status(), signal);
+      const sources = [...status.sources];
+      const index = sources.findIndex((source) => source.id === location.id);
+      if (index < 0) sources.push(location);
+      else sources[index] = location;
+      result = { sourceId: location.id, status: { ...status, sources } };
+    });
+    if (!result) throw new Error("Location preparation did not complete.");
+    return result;
   }
 
   /**

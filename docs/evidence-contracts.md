@@ -197,7 +197,12 @@ credential as existing controls. It validates an existing absolute local path
 and returns `{ sourceId, status }`; no file bytes, uploads, SQL, home-directory
 inference or persisted location catalog are involved. Canonical admissions are
 serialized and deduplicated under the shared 32-location ceiling. Admission
-refreshes transient authority; search and reading still require separate actions.
+stages cleanup and status inspection before committing a new grant, then
+revalidates its path/identity. Cancellation governs the entire operation:
+unfinished cleanup remains runtime-owned, but a rejected addition does not
+authorize a new location. Unavailable old aliases cannot veto admission of a
+separately validated path or be silently rebound. Search and reading still
+require separate actions.
 The bounded
 `discovery_chats` projection uses the same schema-22 definition and ownership
 resolver as native reading; paths and shared SDK branding do not establish
