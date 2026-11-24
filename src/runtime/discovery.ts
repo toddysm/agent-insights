@@ -307,7 +307,10 @@ export class SourceDiscovery {
         add(kind, candidate, location.relativePath);
         found = true;
       } catch (error) {
-        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !observed && !this.signal.aborted) return;
+        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !observed && !this.signal.aborted) {
+          await sourceDirectory(path.dirname(relativePath), true);
+          return;
+        }
         this.problem(candidate, error);
       }
     };
@@ -323,7 +326,7 @@ export class SourceDiscovery {
         message: "Linked discovery children are excluded; select an alias explicitly.",
       });
     };
-    /** Resolve a source folder; only unobserved optional absence is harmless, while fatal failures still reject. */
+    /** Resolve a source folder; optional absence requires a revalidated observed parent, and fatal failures still reject. */
     const sourceDirectory = async (relativePath: string, observed = false): Promise<boolean> => {
       const candidate = { sourceId: location.sourceId, relativePath };
       try {
@@ -332,7 +335,10 @@ export class SourceDiscovery {
           throw new RuntimeError("NOT_A_DIRECTORY", "An expected Agent Host source folder is not a directory.", 400);
         return true;
       } catch (error) {
-        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !observed && !this.signal.aborted) return false;
+        if (error instanceof RuntimeError && error.code === "SOURCE_MISSING" && !observed && !this.signal.aborted) {
+          await sourceDirectory(path.dirname(relativePath), true);
+          return false;
+        }
         this.problem(candidate, error);
         return false;
       }

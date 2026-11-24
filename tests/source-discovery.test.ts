@@ -675,6 +675,32 @@ test("harness recognition reports observed paths that disappear while absent opt
     issue.relativePath === path.join("survivor", "events.jsonl")));
 });
 
+test("optional-child absence revalidates session and profile parents after their initial directory checks", async (t) => {
+  const root = await temporary(t);
+  await mkdir(path.join(root, "late-session"));
+  await mkdir(path.join(root, "profiles", "custom"), { recursive: true });
+  await mkdir(path.join(root, "survivor"));
+  await writeFile(path.join(root, "survivor", "events.jsonl"), JSON.stringify(records()[0]) + "\n");
+  const access = await SourceAccess.create([root]);
+  const kind = access.kind.bind(access);
+  const removed = ["late-session", path.join("profiles", "custom")];
+  // Return the observed type, then remove the parent before its optional child is probed.
+  t.mock.method(access, "kind", async (...args: Parameters<SourceAccess["kind"]>) => {
+    const result = await kind(...args);
+    if (result === "directory" && removed.includes(args[1])) await rm(path.join(root, args[1]), { recursive: true });
+    return result;
+  });
+  const discovery = new SourceDiscovery(access, testNativeHelper, "late-parent-loss", signal);
+  t.after(() => discovery.dispose());
+  const result = await discovery.run({
+    roots: [{ sourceId: "source-1", relativePath: "", layout: "agent-host" }],
+  });
+  assert.deepEqual([...new Set(result.issues.filter((issue) => issue.code === "SOURCE_MISSING")
+    .map((issue) => issue.relativePath))].sort(), removed.sort());
+  assert.ok(result.issues.some((issue) => issue.code === "UNASSIGNED_HISTORY" &&
+    issue.relativePath === path.join("survivor", "events.jsonl")));
+});
+
 test("harness recognition admits 64 candidate histories and rejects candidate 65 before publishing", async (t) => {
   const root = await temporary(t);
   const header = JSON.stringify(records()[0]) + "\n";
