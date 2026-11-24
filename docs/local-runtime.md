@@ -577,7 +577,10 @@ then **Agent Host**, confirming each choice with **Next**. **Review your search
 locations** combines **VS Code session information**, accessibility, selection
 and read-only review. **Add saved session folder**
 adds **Copilot saved session history**, **VS Code saved session details**, or
-another session-information selection. Each location's **Location and custom options**
+another session-information selection. On that purpose screen, use **Add a file
+or folder** to provide a new location, then **Next** to review it for the selected
+purpose without replacing existing search locations.
+Each location's **Location and custom options**
 preserves custom/profile paths and exact-file selection and shows its full
 configured path. One configured file or folder is shown as
 information, not a redundant dropdown; multiple choices use distinguishing path
@@ -946,6 +949,9 @@ individual interpretation definitions remain separate work.
   or restore operating-system access, then retry **Add location**. Use a full
   local path rather than a relative path or literal `~`. A location outside the
   selected folder must be added separately, not entered as a confined subfolder.
+  If you cancel after a rejection, use **Check locations** before searching or reading
+  again. Invalidated session results return to setup rather than an empty results
+  screen.
 - **No reader installed:** the capture format is not implemented in this build;
   no example data or zero-valued report replaces it.
 - **Read cancelled / timed out:** retry through the interface. A stale result is

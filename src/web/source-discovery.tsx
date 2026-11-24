@@ -34,10 +34,10 @@ export interface SourceDiscoveryHandle {
   findAnotherSession(): void;
 }
 
-/** Explicit check validity survives wizard resets; only a successful check clears failure. */
+/** Check/admission validity survives wizard resets; only an explicit successful check or addition clears failure. */
 export type LocationCheckState = "idle" | "checking" | "checked" | "failed";
 
-/** Parent owns authenticated transport, check validity, report handoff, operation locks and read feedback; callbacks do not grant source access. */
+/** Parent owns authenticated transport, explicit admission, check validity, report handoff, operation locks and read feedback. */
 interface DiscoveryProps {
   readonly ref: Ref<SourceDiscoveryHandle>;
   readonly status: RuntimeStatus;
@@ -201,6 +201,7 @@ export function SourceDiscoveryPanel({
   const heading = useRef<HTMLHeadingElement>(null);
   const addTrigger = useRef<HTMLButtonElement>(null);
   const admittedSource = useRef<string | null>(null);
+  const pendingSource = useRef<string | null>(null);
   const firstStep = useRef(true);
   const locationReturn = useRef<Step>("assistant");
   const reader = status.multiSourceReaders.find(
@@ -295,11 +296,12 @@ export function SourceDiscoveryPanel({
     setStep("assistant");
   }
 
-  /** Upstream changes clear dependent setup but retain the last UI-added location; Back retains current answers. */
+  /** Upstream changes clear dependent setup but retain the UI-added base location; Back retains current answers. */
   function resetSetup(): void {
     invalidate();
     setLocalChoice("");
     setAdditionalPurpose("");
+    pendingSource.current = null;
     const sourceId = admittedSource.current ?? status.sources[0]?.id ?? "";
     const source = status.sources.find((location) => location.id === sourceId);
     setEntries([
@@ -334,18 +336,22 @@ export function SourceDiscoveryPanel({
     }
   }
 
-  /** Select and retain the admitted location as the setup default without searching or replacing other entries. */
+  /** Return invalidated results to setup, then select the pending role/base without searching or replacing other entries. */
   async function addLocation(selection: AddLocationRequest): Promise<void> {
     invalidate(true, true);
+    if (step === "file-sessions") setStep("file");
+    if (step === "find" || step === "sessions") setStep("access");
     const sourceId = await onAddLocation(selection);
+    if (step === "purpose" || (step === "locations" && locationReturn.current === "purpose")) {
+      pendingSource.current = sourceId;
+      return;
+    }
     admittedSource.current = sourceId;
     setFile((previous) => ({ ...previous, sourceId, relativePath: "" }));
     setEntries((previous) => previous.map((entry, index) => index === 0 ? {
       ...entry, sourceId, relativePath: "",
       layout: purpose(entry) === "settings" ? selection.kind === "file" ? "catalog" : "settings" : entry.layout,
     } : entry));
-    if (step === "file-sessions") setStep("file");
-    if (step === "find" || step === "sessions") setStep("access");
   }
 
   /** Search only on explicit submission. Transport/backend errors remain visible and never restore earlier sessions. */
@@ -474,20 +480,23 @@ export function SourceDiscoveryPanel({
       case "purpose":
         if (additionalPurpose) {
           const id = ++sequence.current;
+          const sourceId = pendingSource.current ?? status.sources[0]?.id ?? "";
+          const source = status.sources.find((location) => location.id === sourceId);
           invalidate();
           setEntries((previous) => [
             ...previous,
             {
               id,
-              sourceId: status.sources[0]?.id ?? "",
+              sourceId,
               relativePath: "",
               layout:
                 additionalPurpose === "settings" &&
-                status.sources[0]?.kind === "file"
+                source?.kind === "file"
                   ? "catalog"
                   : additionalPurpose,
             },
           ]);
+          pendingSource.current = null;
           setAdditionalPurpose("");
           setStep("access");
         }
@@ -937,6 +946,7 @@ export function SourceDiscoveryPanel({
               disabled={disabled || entries.length >= 16 || noSources}
               onClick={() => {
                 setAdditionalPurpose("");
+                pendingSource.current = null;
                 setStep("purpose");
               }}
             >

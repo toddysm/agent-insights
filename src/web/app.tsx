@@ -315,10 +315,13 @@ function App(): ReactElement {
     }
   }
 
-  /** Add a current-run grant and refresh the shared workspace; no search/read is submitted and failures reject to the inline form. */
+  /** Add current-run access without reading; failures reach the inline form and invalidate checks until an explicit check/add succeeds. */
   async function addLocation(selection: AddLocationRequest): Promise<string> {
     const current = ++generation.current;
     setBusy(true);
+    setLocationCheck("checking");
+    setError("");
+    setReadNotice("");
     clearView();
     try {
       const result = await request("/api/locations/add", addLocationResponseSchema, selection);
@@ -330,6 +333,9 @@ function App(): ReactElement {
       setLocationCheck("checked");
       setReadNotice("Location selected for this app run. Nothing was searched.");
       return result.sourceId;
+    } catch (failure) {
+      if (current === generation.current) setLocationCheck("failed");
+      throw failure;
     } finally {
       if (current === generation.current) setBusy(false);
     }
