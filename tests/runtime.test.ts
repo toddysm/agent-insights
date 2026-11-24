@@ -486,6 +486,44 @@ test("aliases lost during preparation admit the valid explicit path with its fin
   }
 });
 
+test("admission reuses a surviving duplicate after aliases change during preparation, even at capacity", async (t) => {
+  const data = await fixture(t);
+  for (const full of [false, true]) {
+    const aliases = [0, 1].map((index) => path.join(data.root, `duplicate-alias-${full}-${index}`));
+    await Promise.all(aliases.map((alias) => symlink(data.allowed, alias, "junction")));
+    const locations = [
+      ...aliases,
+      data.allowed,
+      ...(full ? Array.from({ length: 29 }, (_, index) => path.join(data.root, `missing-duplicate-${index}`)) : []),
+    ];
+    const access = await SourceAccess.create(locations);
+    const service = new RuntimeService(access, config(locations));
+    const originalStatus = service.status.bind(service);
+    const mock = t.mock.method(service, "status", async () => {
+      const snapshot = await originalStatus();
+      await Promise.all(aliases.map(async (alias) => {
+        await unlink(alias);
+        await symlink(data.outside, alias, "junction");
+      }));
+      return snapshot;
+    });
+    try {
+      const added = await service.addLocation({ path: data.allowed, kind: "directory" }, new AbortController().signal);
+      assert.equal(added.sourceId, "source-3");
+      assert.equal(added.status.sources.length, locations.length);
+      for (const source of added.status.sources.slice(0, 2)) {
+        assert.equal(source.available, false);
+        assert.match(source.reason ?? "", /changed its target/);
+      }
+      assert.equal(added.status.sources[2]?.path, data.allowed);
+      assert.equal(added.status.sources[2]?.available, true);
+      assert.deepEqual(added.status.sources, await access.list());
+    } finally {
+      mock.mock.restore();
+    }
+  }
+});
+
 test("HTTP location timeout bounds cleanup and status without authorizing a failed addition", async (t) => {
   const data = await fixture(t);
   for (const phase of ["close", "status"] as const) {

@@ -307,7 +307,7 @@ export class SourceAccess {
     selection: AddLocationRequest,
     signal: AbortSignal,
     prepare?: () => Promise<void>,
-  ): Promise<SourceLocation & { readonly rejectedAlias: SourceLocation | null }> {
+  ): Promise<SourceLocation & { readonly rejectedAliases: readonly SourceLocation[] }> {
     const request = Object.freeze({ ...selection });
     const predecessor = this.admission;
     const admit = predecessor.then(async () => {
@@ -347,7 +347,8 @@ export class SourceAccess {
       }
       if (signal.aborted) throw cancelledRead(signal);
       let reusable: SourceGrant | undefined;
-      for (const existing of this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind)) {
+      const matching = this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind);
+      for (const existing of matching) {
         if ((await this.reuseFailure(existing)) === null) {
           reusable = existing;
           break;
@@ -357,15 +358,17 @@ export class SourceAccess {
       if (!reusable) this.ensureLocationCapacity();
       await prepare?.();
       if (signal.aborted) throw cancelledRead(signal);
-      let rejectedAlias: SourceLocation | null = null;
+      const rejectedAliases: SourceLocation[] = [];
       try {
         await this.inspect({ requested, canonical, kind: request.kind });
-        if (reusable) {
-          const failure = await this.reuseFailure(reusable);
-          if (failure) {
-            rejectedAlias = { id: reusable.id, path: reusable.requested, kind: reusable.kind, available: false, reason: failure.message };
-            reusable = undefined;
+        reusable = undefined;
+        for (const existing of matching) {
+          const failure = await this.reuseFailure(existing);
+          if (!failure) {
+            reusable = existing;
+            break;
           }
+          rejectedAliases.push({ id: existing.id, path: existing.requested, kind: existing.kind, available: false, reason: failure.message });
         }
         const current = await stat(canonical, { bigint: true });
         if (current.dev !== identity.dev || current.ino !== identity.ino)
@@ -377,7 +380,7 @@ export class SourceAccess {
       if (!reusable) this.ensureLocationCapacity();
       const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
       if (!reusable) this.grants.push(grant);
-      return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null, rejectedAlias };
+      return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null, rejectedAliases };
     });
     const result = abortable(admit, signal);
     // Preserve earlier admissions even if this request is cancelled while still queued.

@@ -314,13 +314,13 @@ export class RuntimeService {
    */
   async addLocation(selection: AddLocationRequest, signal: AbortSignal): Promise<{ sourceId: string; status: RuntimeStatus }> {
     let status: RuntimeStatus | undefined;
-    const { rejectedAlias, ...location } = await this.sources.add(selection, signal, async () => {
+    const { rejectedAliases, ...location } = await this.sources.add(selection, signal, async () => {
       await abortable(this.close(), signal);
       status = await abortable(this.status(), signal);
     });
     if (!status) throw new Error("Location preparation did not complete.");
     const sources = status.sources.map((source) =>
-      rejectedAlias && source.id === rejectedAlias.id ? rejectedAlias : source);
+      rejectedAliases.find((alias) => source.id === alias.id) ?? source);
     const index = sources.findIndex((source) => source.id === location.id);
     if (index < 0) sources.push(location);
     else sources[index] = location;
