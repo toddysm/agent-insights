@@ -458,11 +458,12 @@ test("aliases lost during preparation admit the valid explicit path with its fin
       ...(full ? Array.from({ length: 31 }, (_, index) => path.join(data.root, `missing-${index}`)) : []),
     ]);
     const service = new RuntimeService(access, config([alias]));
-    const originalClose = service.close.bind(service);
-    const mock = t.mock.method(service, "close", async () => {
-      await originalClose();
+    const originalStatus = service.status.bind(service);
+    const mock = t.mock.method(service, "status", async () => {
+      const snapshot = await originalStatus();
       await unlink(alias);
       await symlink(data.outside, alias, "junction");
+      return snapshot;
     });
     try {
       const pending = service.addLocation({ path: data.allowed, kind: "directory" }, new AbortController().signal);
@@ -474,6 +475,7 @@ test("aliases lost during preparation admit the valid explicit path with its fin
         assert.equal(added.sourceId, "source-2");
         assert.equal(added.status.sources[0]?.path, alias);
         assert.equal(added.status.sources[0]?.available, false);
+        assert.match(added.status.sources[0]?.reason ?? "", /changed its target/);
         assert.equal(added.status.sources[1]?.path, data.allowed);
         assert.equal(added.status.sources[1]?.available, true);
         assert.equal((await access.list())[1]?.id, added.sourceId);

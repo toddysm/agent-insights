@@ -119,12 +119,14 @@ test("UI location entry works without startup sources and remains available alon
     await expect(wizard.getByText("No files or folders configured", { exact: true })).toHaveCount(0);
     await expect(wizard.getByText(directory, { exact: true }).first()).toBeVisible();
     await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeEnabled();
+    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeFocused();
     await expect(wizard.getByRole("status").filter({ hasText: "Nothing was searched" }).first()).toBeVisible();
     await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
     await wizard.getByLabel("Location type").selectOption("file");
     await input.fill(path.join(directory, "synthetic.jsonl"));
     await wizard.getByRole("button", { name: "Add location", exact: true }).click();
     await expect(wizard.getByRole("form", { name: "Add a location" })).toHaveCount(0);
+    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeFocused();
     const status = await (await fetch(runtime.origin + "/api/status", { headers: { "X-Agent-Insights-Token": runtime.token } })).json();
     expect(status.sources).toHaveLength(2);
     expect(status.hasReadView).toBe(false);

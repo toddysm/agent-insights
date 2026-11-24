@@ -300,13 +300,13 @@ export class SourceAccess {
    * Optional preparation runs before commit; its failure/cancellation leaves grants unchanged.
    * Revalidate the supplied path after preparation. Cancelled work releases its queue
    * slot after its predecessor, but remains observed and cannot register a late grant.
-   * Return detached metadata for the final grant, not the pre-preparation reuse candidate.
+   * Return detached metadata for the final grant and any alias rejected after preparation.
    */
   async add(
     selection: AddLocationRequest,
     signal: AbortSignal,
     prepare?: () => Promise<void>,
-  ): Promise<SourceLocation> {
+  ): Promise<SourceLocation & { readonly rejectedAlias: SourceLocation | null }> {
     const request = Object.freeze({ ...selection });
     const predecessor = this.admission;
     const admit = predecessor.then(async () => {
@@ -347,7 +347,7 @@ export class SourceAccess {
       if (signal.aborted) throw cancelledRead(signal);
       let reusable: SourceGrant | undefined;
       for (const existing of this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind)) {
-        if (await this.canReuse(existing)) {
+        if ((await this.reuseFailure(existing)) === null) {
           reusable = existing;
           break;
         }
@@ -357,9 +357,16 @@ export class SourceAccess {
         throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
       await prepare?.();
       if (signal.aborted) throw cancelledRead(signal);
+      let rejectedAlias: SourceLocation | null = null;
       try {
         await this.inspect({ requested, canonical, kind: request.kind });
-        if (reusable && !(await this.canReuse(reusable))) reusable = undefined;
+        if (reusable) {
+          const failure = await this.reuseFailure(reusable);
+          if (failure) {
+            rejectedAlias = { id: reusable.id, path: reusable.requested, kind: reusable.kind, available: false, reason: failure.message };
+            reusable = undefined;
+          }
+        }
         const current = await stat(canonical, { bigint: true });
         if (current.dev !== identity.dev || current.ino !== identity.ino)
           throw new RuntimeError("ROOT_CHANGED", "The location changed while checking access. Check the path and add it again.", 409);
@@ -371,7 +378,7 @@ export class SourceAccess {
         throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
       const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
       if (!reusable) this.grants.push(grant);
-      return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null };
+      return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null, rejectedAlias };
     });
     const result = abortable(admit, signal);
     // Preserve earlier admissions even if this request is cancelled while still queued.
@@ -379,14 +386,14 @@ export class SourceAccess {
     return result;
   }
 
-  /** Unavailable aliases are non-reusable, not vetoes of another validated path; unexpected inspection errors propagate. */
-  private async canReuse(grant: SourceGrant): Promise<boolean> {
+  /** Return the controlled alias failure, or null when reusable; unexpected inspection errors propagate. */
+  private async reuseFailure(grant: SourceGrant): Promise<RuntimeError | null> {
     try {
       await this.inspect(grant);
-      return true;
+      return null;
     } catch (error) {
       if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING", "SOURCE_DENIED", "SOURCE_LINK", "SOURCE_IO"].includes(error.code)) throw error;
-      return false;
+      return error;
     }
   }
 

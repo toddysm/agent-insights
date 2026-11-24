@@ -29,9 +29,16 @@ export function SourceLocationAdd({
   const [kind, setKind] = useState<AddLocationRequest["kind"]>("directory");
   const [error, setError] = useState("");
   const input = useRef<HTMLInputElement>(null);
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (open && !disabled) input.current?.focus();
-  }, [open, disabled, error]);
+    if (open) {
+      wasOpen.current = true;
+      if (!disabled) input.current?.focus();
+    } else if (wasOpen.current && !disabled) {
+      wasOpen.current = false;
+      trigger.current?.focus();
+    }
+  }, [open, disabled, error, trigger]);
 
   /** Submit only on explicit confirmation; parent validates the path, and rejection leaves the form and input intact. */
   async function add(): Promise<void> {
@@ -40,14 +47,12 @@ export function SourceLocationAdd({
       await onAdd({ path, kind });
       setPath("");
       onOpen(false);
-      trigger.current?.focus();
     } catch (failure) {
       setError(
         failure instanceof Error
           ? failure.message
           : "The location could not be added. Check its path and access, then try again.",
       );
-      input.current?.focus();
     }
   }
 
@@ -120,7 +125,6 @@ export function SourceLocationAdd({
             disabled={disabled}
             onClick={() => {
               onOpen(false);
-              trigger.current?.focus();
             }}
           >
             Cancel
