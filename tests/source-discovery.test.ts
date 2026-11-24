@@ -768,9 +768,15 @@ test("role-free native discovery recognizes settings/profiles, histories and ove
   assert.ok(view.events.some((event) => event.kind === "message" && event.text === "Fictional request"));
   assert.ok(view.sources.some((source) => source.format === "vscode-agenthost-session-sqlite"));
   data.catalog.exec("PRAGMA wal_checkpoint(TRUNCATE)");
-  await copyFile(data.catalogPath, path.join(data.root, "User", "profiles", "example", "globalStorage", "agent-host.db"));
+  const profilePath = path.join(data.root, "User", "profiles", "example", "globalStorage", "agent-host.db");
+  await copyFile(data.catalogPath, profilePath);
+  const unavailableProfile = await data.service.discover(selection, signal);
+  assert.ok(unavailableProfile.issues.some((issue) => issue.code === "SQLITE_SIDECARS"));
+  const profileWriter = new DatabaseSync(profilePath);
+  data.writers.push(profileWriter);
+  profileWriter.exec("PRAGMA journal_mode=WAL; UPDATE chats_v2 SET archived=archived");
   const ambiguous = await data.service.discover(selection, signal);
-  assert.equal(ambiguous.sessions.length, 2);
+  assert.equal(ambiguous.sessions.length, 2, JSON.stringify(ambiguous.issues));
   assert.ok(ambiguous.sessions.every((session) => session.state === "ambiguous" && !session.selection));
   const profile = await data.service.discover({
     roots: selection.roots.map((root, index) => index === 0 ? { ...root, relativePath: "User/profiles/example" } : root),
@@ -781,11 +787,14 @@ test("role-free native discovery recognizes settings/profiles, histories and ove
 
 test("role-free exact-file grants recognize renamed databases and preserve unsupported-schema failures", native, async (t) => {
   const data = await fixture(t);
-  for (const writer of data.writers.splice(0)) writer.close();
   const catalog = path.join(data.root, "custom-information");
   const overlay = path.join(data.root, "custom-details");
-  await rename(data.catalogPath, catalog);
-  await rename(path.join(data.root, "agentSessionData", "unrelated-storage-key", "session.db"), overlay);
+  for (const [original, alias] of [
+    [data.catalogPath, catalog],
+    [path.join(data.root, "agentSessionData", "unrelated-storage-key", "session.db"), overlay],
+  ]) {
+    for (const suffix of ["", "-wal", "-shm"]) await link(original + suffix, alias + suffix);
+  }
   const wrong = path.join(data.root, "unsupported");
   const database = new DatabaseSync(wrong);
   database.exec("PRAGMA user_version=999; CREATE TABLE unsupported(id TEXT PRIMARY KEY NOT NULL);");
@@ -797,7 +806,7 @@ test("role-free exact-file grants recognize renamed databases and preserve unsup
     const result = await discovery.run({
       roots: [1, 2, 3, 4].map((id) => ({ sourceId: `source-${id}`, relativePath: "", layout: "agent-host" })),
     });
-    assert.equal(result.sessions.length, 1);
+    assert.equal(result.sessions.length, 1, JSON.stringify(result.issues));
     assert.equal(result.sessions[0]?.state, "ready");
     assert.equal(result.sessions[0]?.selection?.sources.length, 3);
     assert.ok(result.issues.some((issue) => issue.sourceId === "source-4" && issue.code === "UNSUPPORTED_SOURCE"));
