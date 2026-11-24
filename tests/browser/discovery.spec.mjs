@@ -15,8 +15,8 @@ import {
   syntheticReader,
 } from "../../.build/tests/fixtures/analysis.js";
 
-/** Own all test grants and teardown; emptyStart exercises explicit UI admission without startup grants. */
-async function withWizard(page, run, multiple = false, emptyStart = false) {
+/** Own synthetic grants and teardown; empty/unavailable starts exercise explicit UI admission and recovery. */
+async function withWizard(page, run, multiple = false, emptyStart = false, unavailableStart = false) {
   const directory = await mkdtemp(
     path.join(tmpdir(), "agent-insights-wizard-"),
   );
@@ -26,7 +26,7 @@ async function withWizard(page, run, multiple = false, emptyStart = false) {
   await writeFile(file, "SYNTHETIC_CAPTURE");
   const runtime = await startRuntime(
     {
-      sources: emptyStart ? [] : multiple ? [directory, second] : [directory],
+      sources: emptyStart ? [] : unavailableStart ? [path.join(directory, "missing-startup")] : multiple ? [directory, second] : [directory],
       port: 0,
       harness: "copilot",
       model: null,
@@ -163,6 +163,30 @@ test("UI-added Local file is selected but read only after explicit Find sessions
     await wizard.getByRole("button", { name: "Add location", exact: true }).click();
     await expect(wizard.getByRole("radio", { name: /^native-session/ })).toHaveCount(0);
   }, false, true);
+});
+
+test("a location added before branch choices remains selected instead of an unavailable startup source", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    const file = path.join(directory, "synthetic.jsonl");
+    await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
+    await wizard.getByLabel("Location type").selectOption("file");
+    await wizard.getByLabel("Full file or folder path").fill(file);
+    await wizard.getByRole("button", { name: "Add location", exact: true }).click();
+    await expect(wizard.getByRole("form", { name: "Add a location" })).toHaveCount(0);
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    await expect(wizard.getByText(file, { exact: true }).first()).toBeVisible();
+    const location = await locationOptions(wizard);
+    await expect(location.getByRole("combobox", { name: "VS Code session information", exact: true })).toHaveValue("source-2");
+    await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    await choose(wizard, /^Local/);
+    await choose(wizard, /^I have a recorded file/);
+    await expect(wizard.getByText(file, { exact: true })).toBeVisible();
+    await expect(wizard.getByRole("button", { name: "Find sessions", exact: true })).toBeEnabled();
+    expect(requests.some((url) => /\/api\/(read|read-set|discover|scan|analysis\/start)$/.test(url))).toBe(false);
+    await wizard.getByRole("button", { name: "Find sessions", exact: true }).click();
+    await expect(wizard.getByRole("radio", { name: /^native-session/ })).toBeVisible();
+  }, false, false, true);
 });
 
 test("decisions stay separate from Next; unsupported branches and the real Agent Host gate do not read", async ({

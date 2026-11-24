@@ -300,12 +300,13 @@ export class SourceAccess {
    * Optional preparation runs before commit; its failure/cancellation leaves grants unchanged.
    * Revalidate the supplied path after preparation. Cancelled work releases its queue
    * slot after its predecessor, but remains observed and cannot register a late grant.
+   * Return detached metadata for the final grant, not the pre-preparation reuse candidate.
    */
   async add(
     selection: AddLocationRequest,
     signal: AbortSignal,
-    prepare?: (location: SourceLocation) => Promise<void>,
-  ): Promise<string> {
+    prepare?: () => Promise<void>,
+  ): Promise<SourceLocation> {
     const request = Object.freeze({ ...selection });
     const predecessor = this.admission;
     const admit = predecessor.then(async () => {
@@ -346,25 +347,19 @@ export class SourceAccess {
       if (signal.aborted) throw cancelledRead(signal);
       let reusable: SourceGrant | undefined;
       for (const existing of this.grants.filter((grant) => grant.canonical === canonical && grant.kind === request.kind)) {
-        try {
-          await this.inspect(existing);
-          if (signal.aborted) throw cancelledRead(signal);
+        if (await this.canReuse(existing)) {
           reusable = existing;
           break;
-        } catch (error) {
-          // A stale alias is not reusable; explicit admission of a valid path must not rebind it.
-          if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING", "SOURCE_DENIED", "SOURCE_LINK", "SOURCE_IO"].includes(error.code)) throw error;
         }
       }
       if (signal.aborted) throw cancelledRead(signal);
       if (!reusable && this.grants.length >= 32)
         throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
-      const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
-      await prepare?.({ id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null });
+      await prepare?.();
       if (signal.aborted) throw cancelledRead(signal);
       try {
-        await this.inspect({ ...grant, requested });
-        if (reusable) await this.inspect(reusable);
+        await this.inspect({ requested, canonical, kind: request.kind });
+        if (reusable && !(await this.canReuse(reusable))) reusable = undefined;
         const current = await stat(canonical, { bigint: true });
         if (current.dev !== identity.dev || current.ino !== identity.ino)
           throw new RuntimeError("ROOT_CHANGED", "The location changed while checking access. Check the path and add it again.", 409);
@@ -372,8 +367,11 @@ export class SourceAccess {
         filesystemError(error);
       }
       if (signal.aborted) throw cancelledRead(signal);
+      if (!reusable && this.grants.length >= 32)
+        throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
+      const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
       if (!reusable) this.grants.push(grant);
-      return grant.id;
+      return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null };
     });
     const result = abortable(admit, signal);
     // Preserve earlier admissions even if this request is cancelled while still queued.
@@ -381,8 +379,19 @@ export class SourceAccess {
     return result;
   }
 
+  /** Unavailable aliases are non-reusable, not vetoes of another validated path; unexpected inspection errors propagate. */
+  private async canReuse(grant: SourceGrant): Promise<boolean> {
+    try {
+      await this.inspect(grant);
+      return true;
+    } catch (error) {
+      if (!(error instanceof RuntimeError) || !["ROOT_CHANGED", "SOURCE_MISSING", "SOURCE_DENIED", "SOURCE_LINK", "SOURCE_IO"].includes(error.code)) throw error;
+      return false;
+    }
+  }
+
   /** Recheck a grant without silently authorizing a replacement symlink or a changed root kind. */
-  private async inspect(grant: SourceGrant): Promise<void> {
+  private async inspect(grant: Omit<SourceGrant, "id">): Promise<void> {
     if (grant.kind === "unknown") {
       throw new RuntimeError(
         "SOURCE_UNAVAILABLE",

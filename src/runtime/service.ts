@@ -313,18 +313,17 @@ export class RuntimeService {
    * Cancellation rejects promptly without adding a grant; unfinished cleanup remains runtime-owned.
    */
   async addLocation(selection: AddLocationRequest, signal: AbortSignal): Promise<{ sourceId: string; status: RuntimeStatus }> {
-    let result: { sourceId: string; status: RuntimeStatus } | undefined;
-    await this.sources.add(selection, signal, async (location) => {
+    let status: RuntimeStatus | undefined;
+    const location = await this.sources.add(selection, signal, async () => {
       await abortable(this.close(), signal);
-      const status = await abortable(this.status(), signal);
-      const sources = [...status.sources];
-      const index = sources.findIndex((source) => source.id === location.id);
-      if (index < 0) sources.push(location);
-      else sources[index] = location;
-      result = { sourceId: location.id, status: { ...status, sources } };
+      status = await abortable(this.status(), signal);
     });
-    if (!result) throw new Error("Location preparation did not complete.");
-    return result;
+    if (!status) throw new Error("Location preparation did not complete.");
+    const sources = [...status.sources];
+    const index = sources.findIndex((source) => source.id === location.id);
+    if (index < 0) sources.push(location);
+    else sources[index] = location;
+    return { sourceId: location.id, status: { ...status, sources } };
   }
 
   /**

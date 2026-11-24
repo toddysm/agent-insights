@@ -200,6 +200,7 @@ export function SourceDiscoveryPanel({
   const body = useRef<HTMLDivElement>(null);
   const heading = useRef<HTMLHeadingElement>(null);
   const addTrigger = useRef<HTMLButtonElement>(null);
+  const admittedSource = useRef<string | null>(null);
   const firstStep = useRef(true);
   const locationReturn = useRef<Step>("assistant");
   const reader = status.multiSourceReaders.find(
@@ -294,21 +295,23 @@ export function SourceDiscoveryPanel({
     setStep("assistant");
   }
 
-  /** Upstream changes clear dependent setup; Back alone retains the current answers. */
+  /** Upstream changes clear dependent setup but retain the last UI-added location; Back retains current answers. */
   function resetSetup(): void {
     invalidate();
     setLocalChoice("");
     setAdditionalPurpose("");
+    const sourceId = admittedSource.current ?? status.sources[0]?.id ?? "";
+    const source = status.sources.find((location) => location.id === sourceId);
     setEntries([
       {
         id: ++sequence.current,
-        sourceId: status.sources[0]?.id ?? "",
+        sourceId,
         relativePath: "",
-        layout: status.sources[0]?.kind === "file" ? "catalog" : "settings",
+        layout: source?.kind === "file" ? "catalog" : "settings",
       },
     ]);
     setFile({
-      sourceId: status.sources[0]?.id ?? "",
+      sourceId,
       relativePath: "",
       format: "vscode-otel-jsonl",
     });
@@ -331,10 +334,11 @@ export function SourceDiscoveryPanel({
     }
   }
 
-  /** Select the admitted location for the current branch without searching, preserving other configured search entries. */
+  /** Select and retain the admitted location as the setup default without searching or replacing other entries. */
   async function addLocation(selection: AddLocationRequest): Promise<void> {
     invalidate(true, true);
     const sourceId = await onAddLocation(selection);
+    admittedSource.current = sourceId;
     setFile((previous) => ({ ...previous, sourceId, relativePath: "" }));
     setEntries((previous) => previous.map((entry, index) => index === 0 ? {
       ...entry, sourceId, relativePath: "",
