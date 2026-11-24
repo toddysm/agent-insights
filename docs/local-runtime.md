@@ -573,33 +573,59 @@ a separate format, not a substitute for Agent Host evidence.
 
 Provide locations using **Add a file or folder** in the wizard, or optionally
 `--source` at launch. Choose **Copilot**,
-then **Agent Host**, confirming each choice with **Next**. **Review your search
-locations** combines **VS Code session information**, accessibility, selection
-and read-only review. **Add saved session folder**
-adds **Copilot saved session history**, **VS Code saved session details**, or
-another session-information selection. On that purpose screen, use **Add a file
-or folder** to provide a new location, then **Next** to review it for the selected
-purpose without replacing existing search locations.
+then **Agent Host**, confirming each choice with **Next**. **Choose your Agent
+Host sources** shows configured sources, accessibility and read-only review.
+Source choices stay visible; **Add another search location** selects another
+configured source without assigning it a storage role. **Add a file or folder**
+admits and selects an additional current-run location without replacing existing
+search locations when the search has capacity. At the 16-location search limit,
+the added location remains available in the source choices and a visible notice
+explains how to use it: remove a search location or change an existing **Source**
+choice. Successful access admission does not hide that notice or expand the search.
+The app recognizes supported data for the chosen harness;
+there is no saved-file-purpose or source-role question.
 Each location's **Location and custom options**
 preserves custom/profile paths and exact-file selection and shows its full
 configured path. One configured file or folder is shown as
 information, not a redundant dropdown; multiple choices use distinguishing path
 names, with unavailable choices and recovery guidance kept visible.
 
-The browser does not detect VS Code installations, change operating-system
-permissions, scan the home directory or guess an operating-system default.
+**Where Agent Host saves sessions** explains the standard VS Code `User` folder,
+Copilot's `~/.copilot/session-state` default (or the producer's `COPILOT_HOME`
+override) and VS Code's `agentSessionData` folder. Standard VS Code User defaults
+are `~/Library/Application Support/Code/User` on macOS, `%APPDATA%\Code\User` on
+Windows and `~/.config/Code/User` on Linux. Editions, remote setups and custom
+user-data directories can differ. These are examples, not automatic selections.
+The browser does not detect installations, change operating-system permissions,
+scan the home directory or search an unselected default.
 These choices use explicitly configured access, including UI-added locations.
 **File or subfolder (optional)** stays under custom options: leave it blank to
 use the selected folder itself, or enter a path inside that folder. The example
-depends on the source role; an exact-file location has no subfolder control.
+shows profile and exact-history examples; an exact-file location has no subfolder control.
 Each selection confines its relative path:
 
-| Role | Inspected locations |
+| Supported data | Inspected locations |
 | --- | --- |
 | App settings home | `globalStorage/agent-host.db` and `profiles/<profile>/globalStorage/agent-host.db` under the selected app settings home (normally `User`); no unrelated profile content |
 | Exact catalog | One explicitly selected catalog file, including a custom/profile catalog |
 | Native history | `events.jsonl` at the selected directory and one child-directory level, or an exact JSONL file |
 | Host overlay | `session.db` at the selected directory and one child-directory level, or an exact database |
+
+Harness-aware folder recognition checks the known filenames `agent-host.db`,
+`events.jsonl` and `session.db` at the root, `globalStorage/agent-host.db`,
+`profiles/<profile>/globalStorage/agent-host.db`, and the existing one-level
+`<session>/events.jsonl` / `<session>/session.db` locations. It does not recursively
+inspect arbitrary descendants or read unrelated files. Exact files, including
+renamed/extensionless files, are routed by a bounded signature and must pass the
+qualified native header or disjoint guarded database schemas. Filenames alone
+never establish format, harness ownership or session identity. Unsupported
+files/folder layouts are explicit issues. A non-SQLite exact file whose first
+line exceeds the 256 KiB native header recognition limit is reported as
+`UNSUPPORTED_SOURCE`; other selected locations still produce their results.
+This does not relax legacy history, read, cancellation or operational-error
+limits. Up to 16 selected roots, 64 candidate
+files and 64 session/profile folder probes are allowed; existing directory-entry,
+read, helper, cancellation and reopen limits still apply.
 
 Use the corresponding per-user/custom roots from the harness configuration;
 the analyzer does not derive them from a working directory, SDK branding or
@@ -611,14 +637,23 @@ Explicit roots use their admitted file/directory kind, not a filename extension;
 extensionless files and directories ending in `.jsonl` or `.db` remain usable.
 An absent `profiles` directory means no custom profiles, not a missing selected
 settings home. Invalid selected roots and inaccessible existing children remain explicit issues.
+Files where the known `profiles` or `globalStorage` folders are expected, including
+inside a custom profile, produce `NOT_A_DIRECTORY` issues rather than disappearing
+when another selected location supplies usable sessions.
+An observed file or folder that disappears before its discovery probe produces a
+`SOURCE_MISSING` issue; another usable candidate does not hide it. Unobserved
+optional filenames may be absent without producing missing-source errors.
+That absence is accepted only after revalidating the parent folder, so a parent
+removed after its initial check is not mistaken for an absent optional child.
 
-After reviewing access, **Continue** reaches the explicit search step.
-**Find sessions** sends an authenticated `POST /api/discover` with
-`{ roots: [{ sourceId, relativePath, layout }] }`. Layout is `settings`,
-`catalog`, `history` or `overlay`. **Find sessions again** repeats that
+After reviewing access, **Find sessions** directly requests the session list
+and sends an authenticated `POST /api/discover` with
+`{ roots: [{ sourceId, relativePath, layout: "agent-host" }] }`. Legacy explicit
+`settings`, `catalog`, `history` and `overlay` API layouts remain supported.
+**Find sessions again** repeats that
 explicit request, replacing the list and invalidating prior read/analysis.
 **Check locations** only checks the accessibility of explicitly configured locations.
-It preserves selected locations, layouts and confined paths, but drops prior
+It preserves selected locations and confined paths, but drops prior
 discovery results, source reads, bounded scans, reports and access/analysis
 acknowledgements before the request. A failed check displays its error, explicitly
 labels the previous availability as stale, and blocks finding sessions until a
