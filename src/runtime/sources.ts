@@ -15,6 +15,7 @@ import { RuntimeError, abortable, cancelledRead, filesystemError } from "./error
 import type { AddLocationRequest, SourceLocation } from "./protocol.js";
 
 export const MAX_SOURCE_BYTES = 64 * 1024 * 1024;
+const MAX_LOCATIONS = 32;
 const CHUNK_BYTES = 64 * 1024;
 
 /** A grant is bound to the initial canonical location and kind, not a mutable symlink target. */
@@ -249,17 +250,17 @@ export class SourceAccess {
     }
   }
 
-  /** Resolve explicitly supplied roots once. Missing startup locations remain unavailable until restart. */
+  /** Resolve startup roots once. Missing locations stay unavailable in their original grant; add() can admit them explicitly without restarting. */
   static async create(locations: readonly string[]): Promise<SourceAccess> {
     if (
-      locations.length > 32 ||
+      locations.length > MAX_LOCATIONS ||
       locations.some(
         (location) => location.length === 0 || location.includes("\0"),
       )
     ) {
       throw new RuntimeError(
         "INVALID_SOURCES",
-        "Supply at most 32 non-empty source paths.",
+        `Supply at most ${MAX_LOCATIONS} non-empty source paths.`,
         400,
       );
     }
@@ -353,8 +354,7 @@ export class SourceAccess {
         }
       }
       if (signal.aborted) throw cancelledRead(signal);
-      if (!reusable && this.grants.length >= 32)
-        throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
+      if (!reusable) this.ensureLocationCapacity();
       await prepare?.();
       if (signal.aborted) throw cancelledRead(signal);
       let rejectedAlias: SourceLocation | null = null;
@@ -374,8 +374,7 @@ export class SourceAccess {
         filesystemError(error);
       }
       if (signal.aborted) throw cancelledRead(signal);
-      if (!reusable && this.grants.length >= 32)
-        throw new RuntimeError("LOCATION_LIMIT", "At most 32 file or folder locations can be configured for this app run.", 400);
+      if (!reusable) this.ensureLocationCapacity();
       const grant = reusable ?? { id: `source-${this.grants.length + 1}`, requested, canonical, kind: request.kind };
       if (!reusable) this.grants.push(grant);
       return { id: grant.id, path: grant.requested, kind: grant.kind, available: true, reason: null, rejectedAlias };
@@ -384,6 +383,12 @@ export class SourceAccess {
     // Preserve earlier admissions even if this request is cancelled while still queued.
     this.admission = Promise.allSettled([predecessor, result]).then(() => undefined);
     return result;
+  }
+
+  /** Reject a new grant when the shared startup/UI ceiling is reached; reusable grants need no capacity. */
+  private ensureLocationCapacity(): void {
+    if (this.grants.length >= MAX_LOCATIONS)
+      throw new RuntimeError("LOCATION_LIMIT", `At most ${MAX_LOCATIONS} file or folder locations can be configured for this app run.`, 400);
   }
 
   /** Return the controlled alias failure, or null when reusable; unexpected inspection errors propagate. */
