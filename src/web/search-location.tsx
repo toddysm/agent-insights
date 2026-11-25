@@ -4,14 +4,27 @@ import type { SourceLocation } from "../runtime/protocol.js";
 import { SourceChoice } from "./source-choice.js";
 import { sourceName } from "./source-names.js";
 
-/** Return correction guidance, or null for a syntactically confined path; runtime filesystem/link containment remains authoritative. */
-export function searchLocationError(relativePath: string): string | null {
+/**
+ * Return immediate correction guidance using the configured absolute source's
+ * server-native path syntax, not the browser OS. Filesystem/link containment and
+ * Windows drive-relative resolution remain authoritative runtime checks.
+ */
+export function searchLocationError(
+  relativePath: string,
+  sourcePath: string,
+): string | null {
   if (relativePath.length > 4096 || relativePath.includes("\0"))
     return "Use a path of at most 4096 characters without null characters.";
-  if (/^[\\/]|^[a-z]:/i.test(relativePath))
+  const windows = /^[a-z]:[\\/]|^\\\\/i.test(sourcePath);
+  if (
+    windows
+      ? /^[\\/]|^[a-z]:[\\/]/i.test(relativePath)
+      : relativePath.startsWith("/")
+  )
     return "Use a relative file or subfolder inside the selected folder, not a full path.";
+  if (windows && /^[a-z]:/i.test(relativePath)) return null;
   let depth = 0;
-  for (const part of relativePath.split(/[\\/]/)) {
+  for (const part of relativePath.split(windows ? /[\\/]/ : /\//)) {
     if (part === "..") {
       if (depth === 0)
         return "Keep the file or subfolder inside the selected folder; this path goes outside it.";
@@ -30,7 +43,7 @@ interface SearchLocationProps {
   readonly expanded: boolean;
   readonly sources: readonly SourceLocation[];
   readonly disabled: boolean;
-  readonly last: boolean;
+  readonly sole: boolean;
   readonly onToggle: () => void;
   readonly onChange: (selection: {
     sourceId?: string;
@@ -48,7 +61,7 @@ export function SearchLocation({
   expanded,
   sources,
   disabled,
-  last,
+  sole,
   onToggle,
   onChange,
   onRemove,
@@ -56,7 +69,9 @@ export function SearchLocation({
   const source = sources.find((item) => item.id === sourceId);
   const name = source ? sourceName(source, sources) : "No location selected";
   const pathError =
-    source?.kind === "directory" ? searchLocationError(relativePath) : null;
+    source?.kind === "directory"
+      ? searchLocationError(relativePath, source.path)
+      : null;
   return (
     <li
       className={`wizard-search-location${pathError || !source?.available ? " has-problem" : ""}`}
@@ -101,8 +116,8 @@ export function SearchLocation({
         <button
           className="wizard-location-remove"
           type="button"
-          disabled={disabled || last}
-          aria-describedby={last ? "wizard-search-limit" : undefined}
+          disabled={disabled || sole}
+          aria-describedby={sole ? "wizard-search-limit" : undefined}
           onClick={onRemove}
         >
           Remove

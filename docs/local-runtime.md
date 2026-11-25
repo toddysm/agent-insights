@@ -597,11 +597,15 @@ information, not a redundant dropdown; multiple choices use distinguishing path
 names, with unavailable choices and recovery guidance kept visible.
 **Remove** on a card removes only that search entry, not configured access or
 files. Other entries keep their values; focus moves to the next card header,
-or the previous one when removing the final row. The last remaining entry cannot
+or the previous one when removing the bottom card. The sole remaining entry cannot
 be removed, but its source can be changed. The count and 16-entry limit stay
 visible. Unavailable locations and obvious invalid relative selections show a
 warning even when collapsed; expand to recover. Filesystem existence, links and
-containment are still checked by the runtime. Selection edits and removal clear
+containment are still checked by the runtime. Input guidance follows the server's
+path syntax from the configured absolute location, not the browser OS: colons
+and backslashes remain literal filename characters on macOS/Linux. Windows
+drive-relative paths are left to the runtime's resolution and containment checks.
+Selection edits, additions and removal clear
 previous results and access acknowledgement; disclosure alone does neither.
 
 **Where Agent Host saves sessions** explains the standard VS Code `User` folder,

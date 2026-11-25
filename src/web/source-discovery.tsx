@@ -190,11 +190,11 @@ export function SourceDiscoveryPanel({
     (item) =>
       !status.sources.find((source) => source.id === item.sourceId)?.available,
   );
-  const invalidSelection = entries.some(
-    (item) =>
-      status.sources.find((source) => source.id === item.sourceId)?.kind === "directory" &&
-      searchLocationError(item.relativePath) !== null,
-  );
+  const invalidSelection = entries.some((item) => {
+    const source = status.sources.find((source) => source.id === item.sourceId);
+    return source?.kind === "directory" &&
+      searchLocationError(item.relativePath, source.path) !== null;
+  });
   const stage =
     step === "assistant" || (step === "unsupported" && assistant !== "Copilot")
       ? 0
@@ -880,7 +880,7 @@ export function SourceDiscoveryPanel({
                   index={index}
                   sources={status.sources}
                   disabled={disabled}
-                  last={entries.length === 1}
+                  sole={entries.length === 1}
                   onToggle={() => toggleEntry(item.id)}
                   onChange={(patch) => updateEntry(item.id, patch)}
                   onRemove={() => removeEntry(item.id)}

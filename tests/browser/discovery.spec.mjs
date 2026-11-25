@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { productionMultiSourceReaders } from "../../.build/src/evidence/readers/index.js";
+import { SourceAccess } from "../../.build/src/runtime/sources.js";
 import {
   syntheticOperation,
   syntheticProvider,
@@ -146,6 +147,60 @@ test("compact location cards preserve disclosure, selection identity and keyboar
     await expect(wizard.locator("#wizard-search-limit")).toContainText("Keep at least one");
     expect(requests.some((url) => /\/api\/(discover|read|read-set|scan|analysis\/start)$/.test(url))).toBe(false);
   }, true);
+});
+
+test("server-native path names stay editable and do not block manual discovery", async ({ page }) => {
+  await withWizard(page, async ({ wizard, runtime, directory }) => {
+    await page.route("**/api/status", async (route) => {
+      const status = await (await route.fetch()).json();
+      await route.fulfill({
+        json: {
+          ...status,
+          multiSourceReaders: status.multiSourceReaders.map((reader) =>
+            reader.id === "agent-host-sessions"
+              ? { ...reader, available: true, reason: null }
+              : reader,
+          ),
+        },
+      });
+    });
+    const searches = [];
+    await page.route("**/api/discover", async (route) => {
+      searches.push(route.request().postDataJSON());
+      await route.fulfill({
+        json: {
+          id: "synthetic-native-path",
+          startedAtMs: 1,
+          finishedAtMs: 2,
+          issues: [],
+          observations: [],
+          locators: [],
+          sessions: [],
+        },
+      });
+    });
+    await page.goto(runtime.launchUrl);
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    const access = await SourceAccess.create([directory]);
+    for (const selection of process.platform === "win32" ? ["a\\..\\b"] : ["C:notes", "a\\..\\..\\b"]) {
+      await mkdir(path.resolve(directory, selection), { recursive: true });
+      expect(await access.kind("source-1", selection, new AbortController().signal)).toBe("directory");
+      const location = await locationOptions(wizard);
+      const input = location.getByLabel("File or subfolder (optional)");
+      await input.fill(selection);
+      await expect(input).not.toHaveAttribute("aria-invalid", "true");
+      await location.getByRole("button", { name: /^Done/ }).click();
+      await expect(location.getByText("Accessible", { exact: true })).toBeVisible();
+      await wizard.getByRole("checkbox", { name: /I've reviewed these locations/ }).check();
+      const find = wizard.getByRole("button", { name: "Find sessions", exact: true });
+      await expect(find).toBeEnabled();
+      await find.click();
+      await expect(wizard.getByText(/No qualified retained sessions/)).toBeVisible();
+      expect(searches.at(-1).roots[0].relativePath).toBe(selection);
+      await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    }
+  });
 });
 
 test("collapsed location warnings retain invalid input and unavailable context at narrow widths", async ({ page }) => {
