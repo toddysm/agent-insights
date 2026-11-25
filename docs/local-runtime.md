@@ -575,8 +575,14 @@ Provide locations using **Add a file or folder** in the wizard, or optionally
 `--source` at launch. Choose **Copilot**,
 then **Agent Host**, confirming each choice with **Next**. **Choose your Agent
 Host sources** shows configured sources, accessibility and read-only review.
-Source choices stay visible; **Add another search location** selects another
-configured source without assigning it a storage role. **Add a file or folder**
+Each search location is a collapsible card: its distinguishing name, full path,
+whole-folder/exact-file or selected subpath scope, and availability stay visible
+when closed. The initial single card starts open; returning from session results
+to multiple search locations shows them compactly. Use a card's header to expand or
+collapse it, or **Done** to close its controls; this does not change selections,
+access review or results. **Add another search location** selects another
+configured source without assigning it a storage role, opens the new card and
+focuses its controls without changing other cards. **Add a file or folder**
 admits and selects an additional current-run location without replacing existing
 search locations when the search has capacity. At the 16-location search limit,
 the added location remains available in the source choices and a visible notice
@@ -584,11 +590,19 @@ explains how to use it: remove a search location or change an existing **Source*
 choice. Successful access admission does not hide that notice or expand the search.
 The app recognizes supported data for the chosen harness;
 there is no saved-file-purpose or source-role question.
-Each location's **Location and custom options**
-preserves custom/profile paths and exact-file selection and shows its full
-configured path. One configured file or folder is shown as
+Expand a card to change its source or optional **File or subfolder** selection,
+including custom/profile paths and exact-file selections inside a folder.
+One configured file or folder is shown as
 information, not a redundant dropdown; multiple choices use distinguishing path
 names, with unavailable choices and recovery guidance kept visible.
+**Remove** on a card removes only that search entry, not configured access or
+files. Other entries keep their values; focus moves to the next card header,
+or the previous one when removing the final row. The last remaining entry cannot
+be removed, but its source can be changed. The count and 16-entry limit stay
+visible. Unavailable locations and obvious invalid relative selections show a
+warning even when collapsed; expand to recover. Filesystem existence, links and
+containment are still checked by the runtime. Selection edits and removal clear
+previous results and access acknowledgement; disclosure alone does neither.
 
 **Where Agent Host saves sessions** explains the standard VS Code `User` folder,
 Copilot's `~/.copilot/session-state` default (or the producer's `COPILOT_HOME`

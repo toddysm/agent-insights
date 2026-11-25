@@ -545,16 +545,27 @@ summary { cursor: pointer; }
 }
 .wizard-footer button.primary { margin: 0; }
 .wizard-footer span { color: var(--muted); font-size: 12px; }
-.wizard-searches { list-style: none; padding: 0; margin: 0; }
-.wizard-searches li { padding: 12px 0; border-bottom: 1px solid var(--line); }
-.wizard-searches strong, .wizard-searches code { display: block; }
-.wizard-searches button { margin: 4px 8px 0 0; font-size: 12px; }
+.wizard-searches { list-style: none; display: grid; gap: 10px; padding: 0; margin: 16px 0; }
+.wizard-search-location { min-width: 0; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+.wizard-search-location.has-problem { border-inline-start: 3px solid var(--amber); }
+.wizard-search-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 4px; padding: 4px; }
+.wizard-location-toggle { display: flex; gap: 10px; min-width: 0; width: 100%; padding: 10px 8px; border: 0; text-align: left; }
+.wizard-location-chevron { flex: none; width: 12px; color: var(--muted); }
+.wizard-location-summary { min-width: 0; flex: 1; }
+.wizard-location-title { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.wizard-location-title strong { font-size: 14px; }
+.wizard-location-summary code { display: block; font-size: 11px; margin-top: 6px; overflow-wrap: anywhere; }
+.wizard-location-name { display: block; font-size: 12px; color: var(--muted); margin: 4px 0; }
+.wizard-location-remove { border: 0; font-size: 12px; min-height: 44px; padding: 8px; }
+.wizard-location-editor { padding: 16px; border-top: 1px solid var(--line); background: var(--paper); }
+.wizard-location-editor p { font-size: 12px; }
+.wizard-location-editor input, .wizard-location-editor select { width: 100%; min-width: 0; }
+.wizard-location-editor > button { display: block; margin-inline-start: auto; font-size: 12px; }
 .location-check, .wizard-location-heading { display: flex; justify-content: space-between; align-items: start; gap: 12px; }
 .location-check { margin: 12px 0; align-items: center; }
 .location-check button { flex: none; font-size: 12px; }
 .wizard-location-heading h4 { margin: 0; font-size: 15px; }
-.wizard-location-heading p, .wizard-location-name { font-size: 12px; color: var(--muted); margin: 4px 0; }
-.wizard-searches details { margin: 8px 0; padding: 8px 12px; }
+.wizard-location-heading p { font-size: 12px; color: var(--muted); margin: 4px 0; }
 .source-choice code { display: block; margin: 4px 0; }
 .source-choice select { display: block; }
 .location-add { margin: 12px 0 20px; }
