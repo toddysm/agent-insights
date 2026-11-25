@@ -617,6 +617,10 @@ first page as well as later pages, including a recovery load. A genuinely lost
 transport response remains uncertain and can be recovered from validated
 status and catalog responses. A lost later-page response reopens the validated
 first page without scanning the source again.
+Malformed JSON received in a successful catalog response is a typed
+`LOCAL_INVALID_JSON` diagnostic and latches catalog rejection like schema/count
+failure. An interrupted transport read remains uncertain rather than being
+misclassified as received invalid catalog data.
 
 Physical execution accounting is independently retained per candidate identity:
 `executionRecords = trustedExecutionRecords + excludedExecutionRecords`, and

@@ -283,7 +283,7 @@ for (const mismatch of ["catalog-generation", "catalog-position-schema", "report
   });
 }
 
-for (const mismatch of ["direct-overcount", "direct-undercount", "association-undercount"]) {
+for (const mismatch of ["direct-overcount", "direct-undercount", "association-undercount", "malformed-json"]) {
   test(`cumulative catalog ${mismatch} clears coverage and permits an explicit rescan`, async ({ page }) => {
     const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
     const rows = Array.from({ length: 21 }, (_, index) => ({
@@ -296,6 +296,10 @@ for (const mismatch of ["direct-overcount", "direct-undercount", "association-un
     await page.route("**/api/scan/catalog", async (route) => {
       const response = await route.fetch();
       const body = await response.json();
+      if (mismatch === "malformed-json" && body.offset > 0) {
+        await route.fulfill({ response, body: "{" });
+        return;
+      }
       if (mismatch === "association-undercount") {
         const associated = body.sessions.find((entry) => entry.associatedExecutions > 0);
         if (associated) associated.associatedExecutions--;
@@ -312,7 +316,8 @@ for (const mismatch of ["direct-overcount", "direct-undercount", "association-un
       await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
       await expect(panel.getByRole("region", { name: "Report coverage" })).toContainText("Parent-session associations: 20");
       await panel.getByRole("button", { name: "Next session page" }).click();
-      await expect(panel.getByRole("alert")).toContainText("Reconciliation unavailable");
+      await expect(panel.getByRole("alert")).toContainText(
+        mismatch === "malformed-json" ? "The local service returned an unreadable response." : "Reconciliation unavailable");
       await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
       await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
       await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
@@ -328,14 +333,14 @@ for (const mismatch of ["direct-overcount", "direct-undercount", "association-un
   });
 }
 
-for (const invalid of ["schema", "counts", "recovery-counts"]) {
+for (const invalid of ["schema", "counts", "json", "recovery-counts", "recovery-json"]) {
   test(`one received first-page ${invalid} failure requires an explicit rescan instead of automatic restoration`, async ({ page }) => {
     const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
     const { root, runtime } = await fixture(JSON.stringify(raw) + "\n");
     let catalogReads = 0;
     let releaseRecovery;
     const heldRecovery = new Promise((resolve) => { releaseRecovery = resolve; });
-    if (invalid === "recovery-counts") {
+    if (invalid.startsWith("recovery-")) {
       await page.route("**/api/scan", async (route) => {
         await route.fetch();
         await route.abort("failed");
@@ -345,9 +350,13 @@ for (const invalid of ["schema", "counts", "recovery-counts"]) {
       const response = await route.fetch();
       const body = await response.json();
       if (++catalogReads === 1) {
+        if (invalid.endsWith("json")) {
+          await route.fulfill({ response, body: "{" });
+          return;
+        }
         if (invalid === "schema") body.offset = 1;
         else body.sessions[0].executions = 0;
-      } else if (invalid === "recovery-counts") await heldRecovery;
+      } else if (invalid.startsWith("recovery-")) await heldRecovery;
       await route.fulfill({ response, json: body });
     });
     try {
@@ -356,11 +365,12 @@ for (const invalid of ["schema", "counts", "recovery-counts"]) {
       const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
       await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
       await expect(panel.getByRole("alert")).toContainText(
-        invalid === "schema" ? "The local service returned an invalid response." : "Reconciliation unavailable");
+        invalid.endsWith("json") ? "The local service returned an unreadable response." :
+          invalid === "schema" ? "The local service returned an invalid response." : "Reconciliation unavailable");
       await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
       await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
       await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
-      if (invalid === "recovery-counts") {
+      if (invalid.startsWith("recovery-")) {
         releaseRecovery();
         await page.unrouteAll({ behavior: "wait" });
         await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
@@ -368,7 +378,7 @@ for (const invalid of ["schema", "counts", "recovery-counts"]) {
       } else expect(catalogReads).toBe(1);
       await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
       await expect(panel.getByRole("heading", { name: "Sessions found 1" })).toBeVisible();
-      if (invalid !== "recovery-counts") expect(catalogReads).toBe(2);
+      if (!invalid.startsWith("recovery-")) expect(catalogReads).toBe(2);
     } finally {
       releaseRecovery();
       try { await page.unrouteAll({ behavior: "wait" }); }

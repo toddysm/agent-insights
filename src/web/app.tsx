@@ -43,6 +43,7 @@ import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
 import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
 import type { ScanReportSelection } from "../metrics/report.js";
+import { RequestError } from "./request-error.js";
 
 /**
  * Read bootstrap access from the initial URL fragment and remove that fragment from history.
@@ -59,14 +60,6 @@ function launchAccess(): string {
 
 const token = launchAccess();
 
-/** Retain a validated backend diagnostic so recovery never depends on matching display text. */
-class RequestError extends Error {
-  /** Carry only the public code/message; no response body or captured content is retained. */
-  constructor(readonly code: string, message: string) {
-    super(message);
-  }
-}
-
 /**
  * Send one local control/status request and validate its successful response.
  * @typeParam T - Result shape produced by the supplied Zod schema.
@@ -74,7 +67,9 @@ class RequestError extends Error {
  * @param schema - Validator for the expected successful response body.
  * @param body - Undefined selects GET; any supplied value is JSON-encoded for POST.
  * @returns Validated data, or rejects with a displayable Error for transport,
- * decoding, server-reported or schema failures. No successful empty fallback is returned.
+ * decoding, server-reported or schema failures. Received invalid JSON in a successful
+ * response carries LOCAL_INVALID_JSON, distinct from interrupted transport reads.
+ * No successful empty fallback is returned.
  * The launch credential is attached in memory; raw response bodies are not logged.
  */
 async function request<T>(
@@ -98,10 +93,18 @@ async function request<T>(
       "Cannot reach the local service. Check that it is still running.",
     );
   }
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    throw new Error("The local service returned an unreadable response.");
+  }
   let data: unknown;
   try {
-    data = await response.json();
+    data = JSON.parse(text);
   } catch {
+    if (response.ok)
+      throw new RequestError("LOCAL_INVALID_JSON", "The local service returned an unreadable response.");
     throw new Error("The local service returned an unreadable response.");
   }
   if (!response.ok) {

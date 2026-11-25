@@ -7,6 +7,7 @@ import {
 } from "../evidence/streaming.js";
 import { statusSchema } from "../runtime/protocol.js";
 import type { ScanReportSelection } from "../metrics/report.js";
+import { RequestError } from "./request-error.js";
 
 /** Reuse the authenticated, schema-validating transport and parent selection/operation lock. */
 interface ScanPanelProps {
@@ -24,7 +25,14 @@ class CatalogReconciliationError extends Error {}
 
 /** Validate received catalog data explicitly so schema rejection stays distinguishable from a lost authenticated response. */
 async function readCatalog(send: ScanPanelProps["send"], id: string, cursor: string | null): Promise<z.infer<typeof catalogPageSchema>> {
-  const response = await send("/api/scan/catalog", z.unknown(), { id, cursor });
+  let response: unknown;
+  try {
+    response = await send("/api/scan/catalog", z.unknown(), { id, cursor });
+  } catch (failure) {
+    if (failure instanceof RequestError && failure.code === "LOCAL_INVALID_JSON")
+      throw new CatalogReconciliationError(failure.message);
+    throw failure;
+  }
   const parsed = catalogPageSchema.safeParse(response);
   if (!parsed.success) throw new CatalogReconciliationError("The local service returned an invalid response.");
   return parsed.data;
