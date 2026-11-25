@@ -328,6 +328,60 @@ for (const mismatch of ["direct-overcount", "direct-undercount", "association-un
   });
 }
 
+test("delayed status after a rejected catalog page cannot restore session controls while cleanup polling continues", async ({ page }) => {
+  const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+  const rows = Array.from({ length: 21 }, (_, index) => ({
+    ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+    attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}` },
+  }));
+  const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  let paging = false, rejected = false, statusReads = 0, catalogReads = 0;
+  let allowPage, releaseStatus;
+  const progressObserved = new Promise((resolve) => { allowPage = resolve; });
+  const heldStatus = new Promise((resolve) => { releaseStatus = resolve; });
+  await page.route("**/api/scan/catalog", async (route) => {
+    catalogReads++;
+    const response = await route.fetch();
+    const body = await response.json();
+    if (body.offset > 0) {
+      paging = true;
+      await progressObserved;
+      body.sessions[0].executions = 2;
+      rejected = true;
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/scan/status", async (route) => {
+    const response = await route.fetch();
+    if (rejected && ++statusReads === 1) await heldStatus;
+    await route.fulfill({ response });
+    if (paging && !rejected) allowPage();
+  });
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+    await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    await panel.getByRole("button", { name: "Next session page" }).click();
+    await expect.poll(() => statusReads).toBeGreaterThan(1);
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+    await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
+    expect(catalogReads).toBe(2);
+    releaseStatus();
+    await page.unrouteAll({ behavior: "wait" });
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+  } finally {
+    releaseStatus();
+    try { await page.unrouteAll({ behavior: "wait" }); }
+    finally { await runtime.close(); await rm(root, { recursive: true }); }
+  }
+});
+
 test("cancel acknowledges a running bounded-record scan within one second and never publishes stale evidence", async ({ page }) => {
   test.setTimeout(60_000);
   const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);

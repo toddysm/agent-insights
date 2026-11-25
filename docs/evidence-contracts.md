@@ -610,6 +610,9 @@ counts must equal the scan totals. A new first page resets this reconciliation.
 Rejected catalog counts or schemas clear cached coverage; confirmed cleanup
 completion permits an explicit new scan, while an unavailable cleanup status
 keeps controls locked.
+Status polling never restores a rejected catalog before an explicit rescan,
+even when cleanup responses arrive out of order; non-success lifecycle
+diagnostics remain visible.
 
 Physical execution accounting is independently retained per candidate identity:
 `executionRecords = trustedExecutionRecords + excludedExecutionRecords`, and

@@ -64,6 +64,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const generation = useRef(0);
   const requestIdentity = useRef<string | null>(null);
   const catalogProgress = useRef<CatalogProgress | null>(null);
+  const catalogRejected = useRef(false);
   const needsCatalog = catalog === null;
   const locked = disabled || working || reconciling || scan?.cleanupPending === true;
   const selectedSession = catalog?.sessions.find((entry) => entry.id === session);
@@ -79,8 +80,9 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       if (current !== generation.current) return;
       observedCleanupPending = result.scan?.cleanupPending === true;
       const snapshot = result.scan?.requestId === requestIdentity.current ? result.scan : null;
-      const publishable = snapshot !== null && ["complete", "partial"].includes(snapshot.phase);
-      setScan(snapshot);
+      const completed = snapshot !== null && ["complete", "partial"].includes(snapshot.phase);
+      const publishable = completed && !catalogRejected.current;
+      setScan(completed && catalogRejected.current ? null : snapshot);
       if (!publishable) {
         catalogProgress.current = null;
         setCatalog(null); setDetails(null); setSession("");
@@ -91,7 +93,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       }
       if (restoreCatalog && snapshot && publishable) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: snapshot.id, cursor: null });
-        if (current !== generation.current) return;
+        if (current !== generation.current || catalogRejected.current) return;
         catalogProgress.current = checkedCatalog(page, snapshot, 0, catalogProgress.current);
         setCatalog(page);
       }
@@ -138,6 +140,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     const requestId = crypto.randomUUID();
     requestIdentity.current = requestId;
     catalogProgress.current = null;
+    catalogRejected.current = false;
     let catalogLoaded = false;
     onStart();
     setWorking(true); onBusy(true); setError(""); setScan(null); setCatalog(null); setDetails(null); setSession("");
@@ -181,32 +184,29 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     }
   }
 
-  /** Replace the catalog page and selection; reconcile authority after success or failure. */
+  /** Replace the page; rejected catalogs stay unavailable until an explicit rescan, while cleanup status remains observable. */
   async function nextCatalog(): Promise<void> {
     if (!scan || !catalog?.next) return;
-    const current = ++generation.current;
-    let catalogLoaded = false;
+    let current = ++generation.current;
     setWorking(true); onBusy(true); setError("");
     try {
       const page = await send("/api/scan/catalog", catalogPageSchema, { id: scan.id, cursor: catalog.next });
       if (current !== generation.current) return;
       catalogProgress.current = checkedCatalog(page, scan, catalog.offset + catalog.sessions.length, catalogProgress.current);
-      setCatalog(page); setSession(""); setDetails(null); catalogLoaded = true;
+      setCatalog(page); setSession(""); setDetails(null);
       onReport(null);
     } catch (failure) {
       if (current === generation.current) {
-        setCatalog(null); setSession(""); setDetails(null); onReport(null);
+        catalogRejected.current = true;
+        current = ++generation.current;
+        catalogProgress.current = null;
+        setScan(null); setCatalog(null); setSession(""); setDetails(null); onReport(null);
         setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
       }
     } finally {
       if (current === generation.current) {
         setWorking(false); setReconciling(true);
         await reconcile(current, false);
-        if (!catalogLoaded && current === generation.current) {
-          generation.current++;
-          catalogProgress.current = null;
-          setScan((snapshot) => snapshot && ["complete", "partial"].includes(snapshot.phase) ? null : snapshot);
-        }
       }
     }
   }
