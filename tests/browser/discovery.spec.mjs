@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { startRuntime } from "../../.build/src/runtime/server.js";
 import { productionMultiSourceReaders } from "../../.build/src/evidence/readers/index.js";
+import { SourceAccess } from "../../.build/src/runtime/sources.js";
 import {
   syntheticOperation,
   syntheticProvider,
@@ -92,14 +93,179 @@ async function reviewHost(wizard) {
     .check();
 }
 
-/** Expand one stable location's existing source/custom controls without changing its selection. */
+/** Reveal one stable entry's controls without changing its source, consent or discovery state. */
 async function locationOptions(wizard, index = 0) {
   const location = wizard.locator(".wizard-searches > li").nth(index);
-  const details = location.locator("details");
-  if (await details.count() && !(await details.evaluate((element) => element.open)))
-    await details.locator("summary").click();
+  const toggle = location.getByRole("button", { name: /Search location/, expanded: false }).first();
+  if (await toggle.count()) await toggle.click();
   return location;
 }
+
+test("compact location cards preserve disclosure, selection identity and keyboard focus through add/remove", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    const cards = wizard.locator(".wizard-searches > li");
+    const first = cards.nth(0);
+    const firstToggle = first.locator(".wizard-location-toggle");
+    await expect(firstToggle).toHaveAttribute("aria-expanded", "true");
+    await first.getByLabel("File or subfolder (optional)").fill("profiles/work");
+    await firstToggle.focus();
+    await page.keyboard.press("Space");
+    await expect(firstToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(firstToggle.getByText(directory, { exact: true })).toBeVisible();
+    await expect(first.getByText("Selection within folder: profiles/work", { exact: true })).toBeVisible();
+    await expect(first.getByText("Accessible", { exact: true })).toBeVisible();
+    const review = wizard.getByRole("checkbox", { name: /I've reviewed these locations/ });
+    await review.check();
+    await firstToggle.focus();
+    await page.keyboard.press("Enter");
+    await expect(review).toBeChecked();
+    await first.getByRole("button", { name: /^Done/ }).click();
+    await expect(firstToggle).toBeFocused();
+    await expect(review).toBeChecked();
+    await wizard.getByRole("button", { name: "Add another search location", exact: true }).click();
+    const second = cards.nth(1);
+    await expect(second.getByRole("combobox")).toBeFocused();
+    await expect(second.getByRole("combobox")).toHaveValue("source-2");
+    await expect(firstToggle).toHaveAttribute("aria-expanded", "false");
+    await expect(review).not.toBeChecked();
+    await second.getByLabel("File or subfolder (optional)").fill("second-entry");
+    await wizard.getByRole("button", { name: "Add another search location", exact: true }).click();
+    const third = cards.nth(2);
+    await third.getByLabel("File or subfolder (optional)").fill("third-entry");
+    const thirdToggleId = await third.locator(".wizard-location-toggle").getAttribute("id");
+    await second.getByRole("button", { name: /^Remove/ }).click();
+    await expect(cards).toHaveCount(2);
+    await expect(wizard.locator(`#${thirdToggleId}`)).toBeFocused();
+    await expect(cards.nth(1).getByLabel("File or subfolder (optional)")).toHaveValue("third-entry");
+    await locationOptions(wizard);
+    await expect(first.getByLabel("File or subfolder (optional)")).toHaveValue("profiles/work");
+    await cards.nth(1).getByRole("button", { name: /^Remove/ }).click();
+    await expect(firstToggle).toBeFocused();
+    await expect(first.getByRole("button", { name: /^Remove/ })).toBeDisabled();
+    await expect(wizard.locator("#wizard-search-limit")).toContainText("Keep at least one");
+    expect(requests.some((url) => /\/api\/(discover|read|read-set|scan|analysis\/start)$/.test(url))).toBe(false);
+  }, true);
+});
+
+test("server-native path names stay editable and do not block manual discovery", async ({ page }) => {
+  await withWizard(page, async ({ wizard, runtime, directory }) => {
+    await page.route("**/api/status", async (route) => {
+      const status = await (await route.fetch()).json();
+      await route.fulfill({
+        json: {
+          ...status,
+          multiSourceReaders: status.multiSourceReaders.map((reader) =>
+            reader.id === "agent-host-sessions"
+              ? { ...reader, available: true, reason: null }
+              : reader,
+          ),
+        },
+      });
+    });
+    const searches = [];
+    await page.route("**/api/discover", async (route) => {
+      searches.push(route.request().postDataJSON());
+      await route.fulfill({
+        json: {
+          id: "synthetic-native-path",
+          startedAtMs: 1,
+          finishedAtMs: 2,
+          issues: [],
+          observations: [],
+          locators: [],
+          sessions: [],
+        },
+      });
+    });
+    await page.goto(runtime.launchUrl);
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    const access = await SourceAccess.create([directory]);
+    for (const selection of process.platform === "win32" ? ["a\\..\\b"] : ["C:notes", "a\\..\\..\\b"]) {
+      await mkdir(path.resolve(directory, selection), { recursive: true });
+      expect(await access.kind("source-1", selection, new AbortController().signal)).toBe("directory");
+      const location = await locationOptions(wizard);
+      const input = location.getByLabel("File or subfolder (optional)");
+      await input.fill(selection);
+      await expect(input).not.toHaveAttribute("aria-invalid", "true");
+      await location.getByRole("button", { name: /^Done/ }).click();
+      await expect(location.getByText("Accessible", { exact: true })).toBeVisible();
+      await wizard.getByRole("checkbox", { name: /I've reviewed these locations/ }).check();
+      const find = wizard.getByRole("button", { name: "Find sessions", exact: true });
+      await expect(find).toBeEnabled();
+      await find.click();
+      await expect(wizard.getByText(/No qualified retained sessions/)).toBeVisible();
+      expect(searches.at(-1).roots[0].relativePath).toBe(selection);
+      await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    }
+  });
+});
+
+test("collapsed location warnings retain invalid input and unavailable context at narrow widths", async ({ page }) => {
+  await withWizard(page, async ({ wizard, directory, requests }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    const location = await locationOptions(wizard);
+    const input = location.getByLabel("File or subfolder (optional)");
+    await input.fill("../outside");
+    await expect(input).toHaveAttribute("aria-invalid", "true");
+    await expect(location.getByRole("alert")).toContainText("inside the selected folder");
+    await location.getByRole("button", { name: /^Done/ }).click();
+    await expect(location.getByText("Selection needs attention", { exact: true })).toBeVisible();
+    await expect(location.getByText("Selection within folder: ../outside", { exact: true })).toBeVisible();
+    await locationOptions(wizard);
+    await expect(input).toHaveValue("../outside");
+    await input.fill("profiles/work");
+    await expect(input).not.toHaveAttribute("aria-invalid", "true");
+    await expect(location.getByRole("alert")).toHaveCount(0);
+    await location.getByRole("combobox").selectOption("source-2");
+    await rm(path.join(directory, "other", "User"), { recursive: true });
+    await wizard.getByRole("button", { name: "Check locations", exact: true }).click();
+    await expect(location.getByText("Unavailable", { exact: true })).toBeVisible();
+    await location.getByRole("button", { name: /^Done/ }).click();
+    await expect(location.locator(".wizard-location-toggle").getByText(path.join(directory, "other", "User"), { exact: true })).toBeVisible();
+    for (const width of [390, 320]) {
+      await page.setViewportSize({ width, height: 844 });
+      await expect(location.getByText("Unavailable", { exact: true })).toBeVisible();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await locationOptions(wizard);
+      await expect(location.getByRole("alert")).toContainText("Restore access");
+      expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+      await location.getByRole("button", { name: /^Done/ }).click();
+    }
+    expect(requests.some((url) => /\/api\/(discover|read|read-set|scan|analysis\/start)$/.test(url))).toBe(false);
+  }, true);
+});
+
+test("a pending location check locks disclosure, editing and removal without losing entry state", async ({ page }) => {
+  await withWizard(page, async ({ wizard }) => {
+    await choose(wizard, /^Copilot Choose/);
+    await choose(wizard, /^Agent Host/);
+    await wizard.getByRole("button", { name: "Add another search location", exact: true }).click();
+    const location = wizard.locator(".wizard-searches > li").nth(1);
+    await location.getByLabel("File or subfolder (optional)").fill("profiles/work");
+    const pending = Promise.withResolvers();
+    await page.route("**/api/refresh", async (route) => {
+      await pending.promise;
+      await route.continue();
+    });
+    try {
+      await wizard.getByRole("button", { name: "Check locations", exact: true }).click();
+      await expect(location.locator(".wizard-location-toggle")).toBeDisabled();
+      await expect(location.getByRole("button", { name: /^Remove/ })).toBeDisabled();
+      await expect(location.getByRole("combobox")).toBeDisabled();
+      await expect(location.getByLabel("File or subfolder (optional)")).toBeDisabled();
+      await expect(wizard.getByRole("button", { name: "Add another search location", exact: true })).toBeDisabled();
+      await expect(wizard.getByRole("button", { name: "Find sessions", exact: true })).toBeDisabled();
+    } finally {
+      pending.resolve();
+    }
+    await expect(location.locator(".wizard-location-toggle")).toBeEnabled();
+    await expect(location.getByLabel("File or subfolder (optional)")).toHaveValue("profiles/work");
+  }, true);
+});
 
 test("UI location entry works without startup sources and remains available alongside existing locations", async ({ page }) => {
   await withWizard(page, async ({ wizard, runtime, directory, requests }) => {
@@ -118,14 +284,14 @@ test("UI location entry works without startup sources and remains available alon
     await expect(wizard.getByText("No files or folders configured", { exact: true })).toHaveCount(0);
     await expect(wizard.getByText(directory, { exact: true }).first()).toBeVisible();
     await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeEnabled();
-    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeFocused();
+    await expect(wizard.getByLabel("File or subfolder (optional)")).toBeFocused();
     await expect(wizard.getByRole("status").filter({ hasText: "Nothing was searched" }).first()).toBeVisible();
     await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
     await wizard.getByLabel("Location type").selectOption("file");
     await input.fill(path.join(directory, "synthetic.jsonl"));
     await wizard.getByRole("button", { name: "Add location", exact: true }).click();
     await expect(wizard.getByRole("form", { name: "Add a location" })).toHaveCount(0);
-    await expect(wizard.getByRole("button", { name: "Add a file or folder", exact: true })).toBeFocused();
+    await expect(wizard.getByRole("combobox", { name: "Source 2", exact: true })).toBeFocused();
     const status = await (await fetch(runtime.origin + "/api/status", { headers: { "X-Agent-Insights-Token": runtime.token } })).json();
     expect(status.sources).toHaveLength(2);
     expect(status.hasReadView).toBe(false);
@@ -257,6 +423,8 @@ test("admission at the search-location cap keeps its selection notice visible al
       await wizard.getByRole("button", { name: "Add another search location", exact: true }).click();
     }
     await expect(wizard.locator(".wizard-searches > li")).toHaveCount(16);
+    await expect(wizard.getByRole("button", { name: "Add another search location", exact: true })).toBeDisabled();
+    await expect(wizard.locator("#wizard-search-limit")).toContainText("Limit reached");
     await wizard.getByRole("button", { name: "Add a file or folder", exact: true }).click();
     await wizard.getByLabel("Full file or folder path").fill(path.join(directory, "other", "User"));
     await wizard.getByRole("button", { name: "Add location", exact: true }).click();
@@ -490,6 +658,8 @@ test("explicit custom/profile roots retain stable identity; refresh and edits di
         );
     }
     await wizard.getByRole("button", { name: "Back", exact: true }).click();
+    await expect(wizard.locator(".wizard-location-toggle[aria-expanded=true]")).toHaveCount(0);
+    await expect(wizard.locator(".wizard-location-name").filter({ hasText: "native" })).toBeVisible();
     await expect(
       wizard.getByRole("button", { name: "Find sessions", exact: true }),
     ).toBeEnabled();

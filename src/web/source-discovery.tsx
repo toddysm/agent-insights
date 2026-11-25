@@ -25,6 +25,7 @@ import {
 import { SourceChoice } from "./source-choice.js";
 import { sourceName } from "./source-names.js";
 import { SourceLocationAdd } from "./source-location-add.js";
+import { SearchLocation, searchLocationError } from "./search-location.js";
 
 /** Parent navigation returns to this workspace without discarding its configured selections. */
 export interface SourceDiscoveryHandle {
@@ -63,11 +64,12 @@ interface DiscoveryProps {
   readonly onAddLocation: (selection: AddLocationRequest) => Promise<string>;
 }
 
-/** Stable entry identity is separate from its grant and confined path; the runtime recognizes Agent Host layouts. */
+/** Stable identity and disclosure survive neighboring edits/removals; presentation-only changes never invalidate discovery. */
 interface SearchEntry {
   readonly id: number;
   readonly sourceId: string;
   readonly relativePath: string;
+  readonly expanded: boolean;
 }
 
 /** Branch stages are UI state, never producer identity or proof that a capture is supported. */
@@ -152,6 +154,7 @@ export function SourceDiscoveryPanel({
       id: 1,
       sourceId: status.sources[0]?.id ?? "",
       relativePath: "",
+      expanded: true,
     },
   ]);
   const [acknowledged, setAcknowledged] = useState(false);
@@ -173,6 +176,7 @@ export function SourceDiscoveryPanel({
   const heading = useRef<HTMLHeadingElement>(null);
   const addTrigger = useRef<HTMLButtonElement>(null);
   const admittedSource = useRef<string | null>(null);
+  const entryFocus = useRef<{ id: number; edit: boolean } | null>(null);
   const firstStep = useRef(true);
   const locationReturn = useRef<Step>("assistant");
   const reader = status.multiSourceReaders.find(
@@ -186,6 +190,11 @@ export function SourceDiscoveryPanel({
     (item) =>
       !status.sources.find((source) => source.id === item.sourceId)?.available,
   );
+  const invalidSelection = entries.some((item) => {
+    const source = status.sources.find((source) => source.id === item.sourceId);
+    return source?.kind === "directory" &&
+      searchLocationError(item.relativePath, source.path) !== null;
+  });
   const stage =
     step === "assistant" || (step === "unsupported" && assistant !== "Copilot")
       ? 0
@@ -210,6 +219,21 @@ export function SourceDiscoveryPanel({
     },
     [],
   );
+  useEffect(() => {
+    const pending = entryFocus.current;
+    if (!pending || disabled || hidden || addOpen || step !== "access") return;
+    const target =
+      (pending.edit
+        ? body.current?.querySelector<HTMLElement>(
+            `#wizard-folder-${pending.id}, #wizard-subfolder-${pending.id}`,
+          )
+        : null) ??
+      body.current?.querySelector<HTMLElement>(`#wizard-location-${pending.id}`);
+    if (target) {
+      target.focus();
+      entryFocus.current = null;
+    }
+  }, [entries, status.sources, disabled, hidden, addOpen, step]);
 
   useImperativeHandle(ref, () => ({
     reviewLocations() {
@@ -227,6 +251,7 @@ export function SourceDiscoveryPanel({
     },
     findAnotherSession() {
       invalidate();
+      compactEntriesForReview();
       setStep(
         sessionType === "Agent Host"
           ? "access"
@@ -252,12 +277,53 @@ export function SourceDiscoveryPanel({
   /** Edit one stable entry without renumbering or replacing the remaining entries. */
   function updateEntry(
     id: number,
-    patch: Partial<Omit<SearchEntry, "id">>,
+    patch: Partial<Pick<SearchEntry, "sourceId" | "relativePath">>,
   ): void {
     invalidate();
     setEntries((previous) =>
       previous.map((item) => (item.id === id ? { ...item, ...patch } : item)),
     );
+  }
+
+  /** Disclosure is presentation-only; keep consent/results and return focus from Done to its header. */
+  function toggleEntry(id: number): void {
+    setEntries((previous) =>
+      previous.map((entry) =>
+        entry.id === id ? { ...entry, expanded: !entry.expanded } : entry,
+      ),
+    );
+    entryFocus.current = { id, edit: false };
+  }
+
+  /** Re-enter a multi-location setup compactly; additions and ordinary disclosure preserve all other card states. */
+  function compactEntriesForReview(): void {
+    setEntries((previous) =>
+      previous.length > 1
+        ? previous.map((entry) => ({ ...entry, expanded: false }))
+        : previous,
+    );
+  }
+
+  /** Remove only this search entry, preserving neighboring identity/values and focusing the nearest remaining header. */
+  function removeEntry(id: number): void {
+    if (disabled || entries.length <= 1) return;
+    const index = entries.findIndex((entry) => entry.id === id);
+    const remaining = entries.filter((entry) => entry.id !== id);
+    const next = remaining[Math.min(index, remaining.length - 1)];
+    invalidate();
+    setEntries(remaining);
+    if (next) entryFocus.current = { id: next.id, edit: false };
+    setSelectionNotice("Search location removed. Configured access and files are unchanged.");
+  }
+
+  /** Open/focus only the added entry; existing cards retain their expansion and source selections. */
+  function addEntry(): void {
+    if (disabled || entries.length >= 16) return;
+    invalidate();
+    const sourceId = status.sources.find((source) => !entries.some((entry) => entry.sourceId === source.id))?.id ?? status.sources[0]?.id ?? "";
+    const id = ++sequence.current;
+    setEntries((previous) => [...previous, { id, sourceId, relativePath: "", expanded: true }]);
+    entryFocus.current = { id, edit: true };
   }
 
   /** Restart only wizard selections; grants, availability and the source safety boundary remain owned by the runtime. */
@@ -272,12 +338,14 @@ export function SourceDiscoveryPanel({
   function resetSetup(): void {
     invalidate();
     setLocalChoice("");
+    entryFocus.current = null;
     const sourceId = admittedSource.current ?? status.sources[0]?.id ?? "";
     setEntries([
       {
         id: ++sequence.current,
         sourceId,
         relativePath: "",
+        expanded: true,
       },
     ]);
     setFile({
@@ -304,7 +372,7 @@ export function SourceDiscoveryPanel({
     }
   }
 
-  /** Append explicit Host additions when capacity allows; otherwise show a selection notice without starting discovery. */
+  /** Open/focus explicit Host additions when capacity allows; keep admission distinct from discovery and its 16-entry limit. */
   async function addLocation(selection: AddLocationRequest): Promise<void> {
     invalidate(true, true);
     if (step === "file-sessions") setStep("file");
@@ -313,18 +381,25 @@ export function SourceDiscoveryPanel({
     admittedSource.current = sourceId;
     setFile((previous) => ({ ...previous, sourceId, relativePath: "" }));
     if (sessionType === "Agent Host") {
-      if (entries.some((entry) => entry.sourceId === sourceId && !entry.relativePath)) return;
+      const existing = entries.find((entry) => entry.sourceId === sourceId && !entry.relativePath);
+      if (existing) {
+        setEntries((previous) => previous.map((entry) => entry.id === existing.id ? { ...entry, expanded: true } : entry));
+        entryFocus.current = { id: existing.id, edit: true };
+        return;
+      }
       const empty = entries.find((entry) => !entry.sourceId);
       if (empty) {
-        setEntries((previous) => previous.map((entry) => entry.id === empty.id ? { ...entry, sourceId, relativePath: "" } : entry));
+        setEntries((previous) => previous.map((entry) => entry.id === empty.id ? { ...entry, sourceId, relativePath: "", expanded: true } : entry));
+        entryFocus.current = { id: empty.id, edit: true };
       } else if (entries.length < 16) {
         const id = ++sequence.current;
-        setEntries((previous) => [...previous, { id, sourceId, relativePath: "" }]);
+        setEntries((previous) => [...previous, { id, sourceId, relativePath: "", expanded: true }]);
+        entryFocus.current = { id, edit: true };
       } else {
         setSelectionNotice("The location was added to configured access. A search can use up to 16 locations; remove a search location or change its Source choice to use the added location.");
       }
     } else {
-      setEntries([{ id: ++sequence.current, sourceId, relativePath: "" }]);
+      setEntries([{ id: ++sequence.current, sourceId, relativePath: "", expanded: true }]);
     }
   }
 
@@ -421,6 +496,7 @@ export function SourceDiscoveryPanel({
       unsure: "session",
     };
     if (step === "assistant") return;
+    if (step === "sessions") compactEntriesForReview();
     if (step === "sessions" || step === "file-sessions") invalidate(false);
     setStep(
       step === "unsupported"
@@ -489,6 +565,7 @@ export function SourceDiscoveryPanel({
         !ready ||
         !acknowledged ||
         unavailable ||
+        invalidSelection ||
         locationCheck === "failed")) ||
     (step === "sessions" &&
       !result?.sessions.find((session) => session.id === selectedSession)
@@ -796,98 +873,35 @@ export function SourceDiscoveryPanel({
               New locations last for this app run only. Nothing is searched automatically.
             </p>
             <ul className="wizard-searches">
-              {entries.map((item, index) => {
-                const source = status.sources.find(
-                  (source) => source.id === item.sourceId,
-                );
-                return (
-                  <li key={item.id}>
-                    <div className="wizard-location-heading">
-                      <div>
-                        <h4>Search location {index + 1}</h4>
-                      </div>
-                      <span
-                        className={`status-tag ${source?.available ? "" : "warning"}`}
-                      >
-                        {source?.available ? "Accessible" : "Unavailable"}
-                      </span>
-                    </div>
-                    <SourceChoice
-                      id={`wizard-folder-${item.id}`}
-                      label={`Source ${index + 1}`}
-                      sources={status.sources}
-                      value={item.sourceId}
-                      disabled={disabled}
-                      onChange={(sourceId) => updateEntry(item.id, { sourceId, relativePath: "" })}
-                    />
-                    {item.relativePath && (
-                      <p className="wizard-location-name">Selection within folder: {item.relativePath}</p>
-                    )}
-                    {source?.kind === "directory" && <details>
-                      <summary>
-                        Location and custom options
-                        <span className="sr-only">
-                          {" "}
-                          for search location {index + 1}
-                        </span>
-                      </summary>
-                          <label htmlFor={`wizard-subfolder-${item.id}`}>
-                            File or subfolder (optional)
-                          </label>
-                          <input
-                            id={`wizard-subfolder-${item.id}`}
-                            value={item.relativePath}
-                            disabled={disabled}
-                            onChange={(event) =>
-                              updateEntry(item.id, {
-                                relativePath: event.target.value,
-                              })
-                            }
-                          />
-                          <p>
-                            Leave blank to use the selected folder itself. Paths
-                            must stay inside it. For another location, use Add a file or folder above.
-                            For example, <code>profiles/example</code> selects one profile
-                            inside User, or <code>session-example/events.jsonl</code> selects
-                            one saved history file inside session-state.
-                          </p>
-                    </details>}
-                    <div>
-                      {entries.length > 1 && (
-                        <button
-                          type="button"
-                          disabled={disabled}
-                          onClick={() => {
-                            invalidate();
-                            setEntries((previous) =>
-                              previous.filter((entry) => entry.id !== item.id),
-                            );
-                          }}
-                        >
-                          Remove{" "}
-                          <span className="sr-only">
-                            {source?.path} {item.relativePath}{" "}
-                            Search location {index + 1}
-                          </span>
-                        </button>
-                      )}
-                    </div>
-                  </li>
-                );
-              })}
+              {entries.map((item, index) => (
+                <SearchLocation
+                  key={item.id}
+                  {...item}
+                  index={index}
+                  sources={status.sources}
+                  disabled={disabled}
+                  sole={entries.length === 1}
+                  onToggle={() => toggleEntry(item.id)}
+                  onChange={(patch) => updateEntry(item.id, patch)}
+                  onRemove={() => removeEntry(item.id)}
+                />
+              ))}
             </ul>
             <button
               type="button"
               disabled={disabled || entries.length >= 16 || noSources}
-              onClick={() => {
-                invalidate();
-                const sourceId = status.sources.find((source) => !entries.some((entry) => entry.sourceId === source.id))?.id ?? status.sources[0]?.id ?? "";
-                const id = ++sequence.current;
-                setEntries((previous) => [...previous, { id, sourceId, relativePath: "" }]);
-              }}
+              onClick={addEntry}
             >
               Add another search location
             </button>
+            <p id="wizard-search-limit" className="checked">
+              {entries.length} of 16 search locations.{" "}
+              {entries.length === 1
+                ? "Keep at least one location; change its selection instead of removing it."
+                : entries.length >= 16
+                  ? "Limit reached. Remove an entry to add another."
+                  : "Removing a search entry does not revoke access or delete files."}
+            </p>
             {startupGuidance}
             <label className="wizard-check">
               <input
@@ -911,6 +925,7 @@ export function SourceDiscoveryPanel({
               disabled={disabled}
               onClick={() => {
                 invalidate();
+                compactEntriesForReview();
                 setStep("access");
               }}
             >
