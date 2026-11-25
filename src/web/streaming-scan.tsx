@@ -19,21 +19,31 @@ interface ScanPanelProps {
   onReport: (selection: ScanReportSelection | null) => void;
 }
 
-/** A validated status confirmed cleanup, but its catalog cannot supply trustworthy session counts. */
-class CatalogReconciliationError extends Error {}
+/** Generation-bound cumulative counts and identities, without retaining replaced page payloads. */
+interface CatalogProgress {
+  id: string;
+  sessionIds: Set<string>;
+  direct: number;
+  associated: number;
+}
 
-/** Reject foreign/inconsistent catalog pages before they can supply selections or report membership witnesses. */
-function checkedCatalog(page: z.infer<typeof catalogPageSchema>, scan: ScanStatus, offset: number) {
-  const direct = page.sessions.reduce((sum, entry) => sum + entry.executions, 0);
-  const associated = page.sessions.reduce((sum, entry) => sum + entry.associatedExecutions, 0);
+/** Reject inconsistent pages and return cumulative progress; offset zero resets it and the final page must reconcile exactly. */
+function checkedCatalog(page: z.infer<typeof catalogPageSchema>, scan: ScanStatus, offset: number,
+  previous: CatalogProgress | null): CatalogProgress {
+  const prior = offset === 0 ? null : previous;
+  const sessionIds = new Set(prior?.sessionIds);
+  for (const entry of page.sessions) sessionIds.add(entry.id);
+  const direct = (prior?.direct ?? 0) + page.sessions.reduce((sum, entry) => sum + entry.executions, 0);
+  const associated = (prior?.associated ?? 0) + page.sessions.reduce((sum, entry) => sum + entry.associatedExecutions, 0);
   if (page.id !== scan.id || page.totalSessions !== scan.sessions || page.unassigned !== scan.unassigned ||
     page.offset !== offset || !scan.reconciliation ||
-    new Set(page.sessions.map((entry) => entry.id)).size !== page.sessions.length ||
+    offset !== (prior?.sessionIds.size ?? 0) || (prior !== null && prior.id !== scan.id) ||
+    sessionIds.size !== offset + page.sessions.length ||
     direct > scan.reconciliation.directExecutions || associated > scan.reconciliation.associatedExecutions ||
-    (page.offset === 0 && page.next === null &&
+    (page.next === null &&
       (direct !== scan.reconciliation.directExecutions || associated !== scan.reconciliation.associatedExecutions)))
-    throw new CatalogReconciliationError("Session page counts do not match this scan generation. Reconciliation unavailable; rescan explicitly.");
-  return page;
+    throw new Error("Session page counts do not match this scan generation. Reconciliation unavailable; rescan explicitly.");
+  return { id: page.id, sessionIds, direct, associated };
 }
 
 /**
@@ -53,6 +63,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const [to, setTo] = useState("");
   const generation = useRef(0);
   const requestIdentity = useRef<string | null>(null);
+  const catalogProgress = useRef<CatalogProgress | null>(null);
   const needsCatalog = catalog === null;
   const locked = disabled || working || reconciling || scan?.cleanupPending === true;
   const selectedSession = catalog?.sessions.find((entry) => entry.id === session);
@@ -71,6 +82,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       const publishable = snapshot !== null && ["complete", "partial"].includes(snapshot.phase);
       setScan(snapshot);
       if (!publishable) {
+        catalogProgress.current = null;
         setCatalog(null); setDetails(null); setSession("");
         onReport(null);
       }
@@ -80,15 +92,17 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       if (restoreCatalog && snapshot && publishable) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: snapshot.id, cursor: null });
         if (current !== generation.current) return;
-        setCatalog(checkedCatalog(page, snapshot, 0));
+        catalogProgress.current = checkedCatalog(page, snapshot, 0, catalogProgress.current);
+        setCatalog(page);
       }
       const pending = result.scan?.cleanupPending === true;
       setReconciling(pending); onBusy(pending);
     } catch (failure) {
       if (current === generation.current) {
+        catalogProgress.current = null;
         setScan(null); setCatalog(null); setDetails(null); setSession("");
         onReport(null);
-        const pending = failure instanceof CatalogReconciliationError ? observedCleanupPending : true;
+        const pending = observedCleanupPending;
         setReconciling(pending); onBusy(pending);
         setError(failure instanceof Error ? failure.message : "The source cleanup state could not be checked.");
       }
@@ -123,6 +137,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     const current = ++generation.current;
     const requestId = crypto.randomUUID();
     requestIdentity.current = requestId;
+    catalogProgress.current = null;
     let catalogLoaded = false;
     onStart();
     setWorking(true); onBusy(true); setError(""); setScan(null); setCatalog(null); setDetails(null); setSession("");
@@ -133,7 +148,10 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       setScan(result);
       if (["complete", "partial"].includes(result.phase)) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.id, cursor: null });
-        if (current === generation.current) { setCatalog(checkedCatalog(page, result, 0)); catalogLoaded = true; }
+        if (current === generation.current) {
+          catalogProgress.current = checkedCatalog(page, result, 0, catalogProgress.current);
+          setCatalog(page); catalogLoaded = true;
+        }
       }
     } catch (failure) {
       if (current === generation.current) setError(failure instanceof Error ? failure.message : "The source could not be scanned.");
@@ -152,6 +170,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       const result = await send("/api/scan/cancel", scanEnvelopeSchema, {});
       if (current !== generation.current) return;
       generation.current++;
+      catalogProgress.current = null;
       onReport(null);
       setWorking(false); setScan(result.scan); setCatalog(null); setDetails(null);
       setReconciling(result.scan?.cleanupPending === true);
@@ -166,11 +185,13 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   async function nextCatalog(): Promise<void> {
     if (!scan || !catalog?.next) return;
     const current = ++generation.current;
+    let catalogLoaded = false;
     setWorking(true); onBusy(true); setError("");
     try {
       const page = await send("/api/scan/catalog", catalogPageSchema, { id: scan.id, cursor: catalog.next });
       if (current !== generation.current) return;
-      setCatalog(checkedCatalog(page, scan, catalog.offset + catalog.sessions.length)); setSession(""); setDetails(null);
+      catalogProgress.current = checkedCatalog(page, scan, catalog.offset + catalog.sessions.length, catalogProgress.current);
+      setCatalog(page); setSession(""); setDetails(null); catalogLoaded = true;
       onReport(null);
     } catch (failure) {
       if (current === generation.current) {
@@ -181,6 +202,11 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       if (current === generation.current) {
         setWorking(false); setReconciling(true);
         await reconcile(current, false);
+        if (!catalogLoaded && current === generation.current) {
+          generation.current++;
+          catalogProgress.current = null;
+          setScan((snapshot) => snapshot && ["complete", "partial"].includes(snapshot.phase) ? null : snapshot);
+        }
       }
     }
   }

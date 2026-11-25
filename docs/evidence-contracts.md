@@ -603,7 +603,13 @@ session in this generation. `associatedExecutions` counts separately resolved
 parent-session relationships, excluding relationships to an event's own direct
 session. Associations overlap membership buckets and never become additive metrics.
 Catalog pages carry `totalSessions` and zero-based `offset`; their page length
-does not define the full session total.
+does not define the full session total. The browser retains cumulative counts
+and session identities, not previous page payloads: pages must be contiguous
+within the generation, and the final page's accumulated direct and association
+counts must equal the scan totals. A new first page resets this reconciliation.
+Rejected catalog counts or schemas clear cached coverage; confirmed cleanup
+completion permits an explicit new scan, while an unavailable cleanup status
+keeps controls locked.
 
 Physical execution accounting is independently retained per candidate identity:
 `executionRecords = trustedExecutionRecords + excludedExecutionRecords`, and

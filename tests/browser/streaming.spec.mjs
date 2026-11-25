@@ -239,14 +239,15 @@ test("session-first coverage and diagnostics reconcile mixed activity without ad
   }
 });
 
-for (const mismatch of ["catalog-generation", "report-membership", "report-scan-totals"]) {
+for (const mismatch of ["catalog-generation", "catalog-position-schema", "report-membership", "report-scan-totals"]) {
   test(`a ${mismatch} mismatch cannot publish session/report success`, async ({ page }) => {
     const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
     const { root, runtime } = await fixture(text);
-    await page.route(mismatch === "catalog-generation" ? "**/api/scan/catalog" : "**/api/scan/report", async (route) => {
+    await page.route(mismatch.startsWith("catalog-") ? "**/api/scan/catalog" : "**/api/scan/report", async (route) => {
       const response = await route.fetch();
       const body = await response.json();
       if (mismatch === "catalog-generation") body.id = "foreign-generation";
+      else if (mismatch === "catalog-position-schema") body.offset = 1;
       else if (mismatch === "report-membership") body.contributions.directEvents = 0;
       else {
         body.scanTotals.trustedExecutions++;
@@ -260,8 +261,9 @@ for (const mismatch of ["catalog-generation", "report-membership", "report-scan-
       await page.getByText("Advanced file tools", { exact: true }).click();
       const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
       await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
-      if (mismatch === "catalog-generation") {
-        await expect(panel.getByRole("alert")).toContainText("Reconciliation unavailable");
+      if (mismatch.startsWith("catalog-")) {
+        await expect(panel.getByRole("alert")).toContainText(
+          mismatch === "catalog-generation" ? "Reconciliation unavailable" : "The local service returned an invalid response.");
         await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
         await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
         await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
@@ -277,6 +279,51 @@ for (const mismatch of ["catalog-generation", "report-membership", "report-scan-
       await page.unrouteAll({ behavior: "wait" });
       await runtime.close();
       await rm(root, { recursive: true });
+    }
+  });
+}
+
+for (const mismatch of ["direct-overcount", "direct-undercount", "association-undercount"]) {
+  test(`cumulative catalog ${mismatch} clears coverage and permits an explicit rescan`, async ({ page }) => {
+    const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+      attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}`,
+        "copilot_chat.chat_session_id": `fictional-${index}`,
+        "copilot_chat.parent_chat_session_id": index === 0 ? undefined : "fictional-0" },
+    }));
+    const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    await page.route("**/api/scan/catalog", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (mismatch === "association-undercount") {
+        const associated = body.sessions.find((entry) => entry.associatedExecutions > 0);
+        if (associated) associated.associatedExecutions--;
+      } else if (body.offset > 0 && mismatch !== "association-undercount") {
+        body.sessions[0].executions = mismatch === "direct-overcount" ? 2 : 0;
+      }
+      await route.fulfill({ response, json: body });
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await expect(panel.getByRole("region", { name: "Report coverage" })).toContainText("Parent-session associations: 20");
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByRole("alert")).toContainText("Reconciliation unavailable");
+      await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
+      await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
+      await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+      await page.unrouteAll({ behavior: "wait" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByText("Showing 21–21 of 21 sessions", { exact: true })).toBeVisible();
+    } finally {
+      try { await page.unrouteAll({ behavior: "wait" }); }
+      finally { await runtime.close(); await rm(root, { recursive: true }); }
     }
   });
 }
