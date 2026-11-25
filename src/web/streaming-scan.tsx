@@ -207,10 +207,11 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     }
   }
 
-  /** Replace the page; rejected catalogs stay unavailable until an explicit rescan, while cleanup status remains observable. */
+  /** Replace the page; latch received rejection but recover transport uncertainty through status and a validated first page. */
   async function nextCatalog(): Promise<void> {
     if (!scan || !catalog?.next) return;
     let current = ++generation.current;
+    let restoreCatalog = false;
     setWorking(true); onBusy(true); setError("");
     try {
       const page = await readCatalog(send, scan.id, catalog.next);
@@ -220,13 +221,19 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       onReport(null);
     } catch (failure) {
       if (current === generation.current) {
-        current = rejectCatalog();
+        if (failure instanceof CatalogReconciliationError) current = rejectCatalog();
+        else {
+          current = ++generation.current;
+          catalogProgress.current = null;
+          setScan(null); setCatalog(null); setSession(""); setDetails(null); onReport(null);
+          restoreCatalog = true;
+        }
         setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
       }
     } finally {
       if (current === generation.current) {
         setWorking(false); setReconciling(true);
-        await reconcile(current, false);
+        await reconcile(current, restoreCatalog);
       }
     }
   }

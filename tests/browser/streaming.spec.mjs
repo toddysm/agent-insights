@@ -377,6 +377,42 @@ for (const invalid of ["schema", "counts", "recovery-counts"]) {
   });
 }
 
+test("a lost next-catalog response restores the validated first page without rescanning the source", async ({ page }) => {
+  const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+  const rows = Array.from({ length: 21 }, (_, index) => ({
+    ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+    attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}` },
+  }));
+  const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  let scans = 0, lost = false;
+  page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
+  await page.route("**/api/scan/catalog", async (route) => {
+    const response = await route.fetch();
+    if (route.request().postDataJSON().cursor !== null && !lost) {
+      lost = true;
+      await route.abort("failed");
+    } else await route.fulfill({ response });
+  });
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+    await panel.getByRole("button", { name: "Next session page" }).click();
+    await expect(panel.getByRole("alert")).toBeVisible();
+    await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("button", { name: "Next session page" })).toBeEnabled();
+    expect(scans).toBe(1);
+    await panel.getByRole("button", { name: "Next session page" }).click();
+    await expect(panel.getByText("Showing 21–21 of 21 sessions", { exact: true })).toBeVisible();
+    expect(scans).toBe(1);
+  } finally {
+    try { await page.unrouteAll({ behavior: "wait" }); }
+    finally { await runtime.close(); await rm(root, { recursive: true }); }
+  }
+});
+
 test("delayed status after a rejected catalog page cannot restore session controls while cleanup polling continues", async ({ page }) => {
   const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
   const rows = Array.from({ length: 21 }, (_, index) => ({
