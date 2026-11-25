@@ -63,6 +63,8 @@ interface Candidate {
   readonly version: string | null;
   readonly references: Reference[];
   conflict: boolean;
+  /** All physical execution occurrences sharing this identity, including records later excluded by a conflict. */
+  occurrences: number;
   /** Compact scans compare full normalized facts before discarding payloads. */
   signature?: string;
 }
@@ -680,6 +682,7 @@ function span(
     producer: reportedName(resource, "service.name", diagnostics, line, sourceImpact),
     version: reportedName(resource, "service.version", diagnostics, line, sourceImpact),
     conflict: false,
+    occurrences: 1,
   };
 }
 
@@ -1033,6 +1036,7 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
     if (operationConflicts.has(candidate.key)) candidate.conflict = true;
     const previous = candidates.get(candidate.key);
     if (previous) {
+      previous.occurrences++;
       if (
         previous.conflict ||
         candidate.conflict ||
@@ -1073,6 +1077,11 @@ async function read(input: ReaderInput, policy?: OtelScanPolicy): Promise<ReadVi
   const trusted = [...candidates.values()].filter(
     (candidate) => !candidate.conflict,
   );
+  policy?.onExecutionAccounting?.({
+    trustedRecords: trusted.reduce((sum, candidate) => sum + candidate.occurrences, 0),
+    excludedRecords: [...candidates.values()].filter((candidate) => candidate.conflict)
+      .reduce((sum, candidate) => sum + candidate.occurrences, 0),
+  });
   if (trusted.length === 0)
     diagnostics.add(
       "unsupported-schema",

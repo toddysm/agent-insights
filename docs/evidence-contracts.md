@@ -548,7 +548,11 @@ Invalid/expired or selection-mismatched cursors are controlled failures.
 `POST /api/scan/report` accepts only the current scan `id` and an explicitly
 selected `sessionId`. The [report contract](../src/metrics/report.ts) returns
 bounded numeric summaries, source identity, admitted byte boundary and prefix
-SHA-256, not an all-event view or an anchor array. It uses the existing recorded
+SHA-256 and the same generation's `scanTotals` reconciliation, not an all-event
+view or an anchor array. The browser retains the selected catalog entry's direct
+execution count as a local witness, never as a backend calculation input.
+Report publication must match that count and the current status reconciliation.
+It uses the existing recorded
 calculator over the bounded scan's whole-source correlated facts. At most 512
 retained execution identities across the source and 128 measurements are
 admitted to calculation/publication; crossing either ceiling is an explicit
@@ -592,6 +596,33 @@ counts account for the observed prefix. These physical counters remain available
 during scanning and after a budget stop makes trusted totals unavailable.
 Deduplicated trusted classification,
 conflicts and unassigned executions are separate quantities.
+
+Completed supported scan status includes validated `reconciliation`:
+`trustedExecutions = directExecutions + withoutDirectMembership` across every
+session in this generation. `associatedExecutions` counts separately resolved
+parent-session relationships, excluding relationships to an event's own direct
+session. Associations overlap membership buckets and never become additive metrics.
+Catalog pages carry `totalSessions` and zero-based `offset`; their page length
+does not define the full session total.
+
+Physical execution accounting is independently retained per candidate identity:
+`executionRecords = trustedExecutionRecords + excludedExecutionRecords`, and
+`trustedExecutionRecords = trustedExecutions + repeatedExecutionRecords`.
+Excluded execution records include *all* occurrences belonging to conflicted
+execution identities, not just the record that first revealed the conflict.
+The legacy `counts.duplicates` matches replays against the first candidate
+signature and can overlap excluded identities; it is not used in the disjoint
+reconciliation. `classification.conflictingSpans` measures identities, including
+execution/unclassified conflicts, not physical execution records.
+Unclassified input remains a separate physical category outside trusted totals.
+No session is invented for it.
+
+Publication validates physical categories, normalized classification and
+membership totals. A mismatch raises `SCAN_RECONCILIATION`; trusted totals and
+catalog/report authority are unavailable, not silently corrected. Status
+reconciliation is null while scanning and after invalidation, expiry, cancellation
+or failure. Physical counters remain diagnostic observations of the processed
+prefix, never substituted for trusted totals.
 
 See [resource limits, partial results and rescan costs](local-runtime.md#scan-large-jsonl-captures-in-place).
 

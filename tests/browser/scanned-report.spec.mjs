@@ -153,6 +153,8 @@ test("failed report cleanup exposes an explicit runtime cleanup retry before unl
           scan: {
             ...source.runtime.service.scanCatalog.status,
             phase: "cleanup-failed",
+            reconciliation: null,
+            sessions: null, unassigned: null, classification: null,
             cleanupPending: true,
             reason: "Synthetic descriptor cleanup remains unconfirmed.",
           },

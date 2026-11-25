@@ -42,7 +42,7 @@ import { SourceChoice } from "./source-choice.js";
 import { SessionReportPanel } from "./session-report.js";
 import { ScannedSessionReportPanel } from "./scanned-report.js";
 import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
-import type { ScanReportRequest } from "../metrics/report.js";
+import type { ScanReportSelection } from "../metrics/report.js";
 
 /**
  * Read bootstrap access from the initial URL fragment and remove that fragment from history.
@@ -189,7 +189,7 @@ function App(): ReactElement {
   const [readNotice, setReadNotice] = useState("");
   const [oversizedRead, setOversizedRead] = useState(false);
   const [view, setView] = useState<ReadView | null>(null);
-  const [scannedReport, setScannedReport] = useState<ScanReportRequest | null>(null);
+  const [scannedReport, setScannedReport] = useState<ScanReportSelection | null>(null);
   const [scannedReportAttempt, setScannedReportAttempt] = useState(0);
   const [sessionId, setSessionId] = useState("");
   const [scanReset, setScanReset] = useState(0);
@@ -234,7 +234,7 @@ function App(): ReactElement {
     run?.id !== startAttempt?.previousRunId;
 
   /** Reopening the same selection discards its old response/evidence state before calculation starts. */
-  const openScannedReport = useCallback((selection: ScanReportRequest | null): void => {
+  const openScannedReport = useCallback((selection: ScanReportSelection | null): void => {
     setScannedReport(selection);
     setScannedReportAttempt((previous) => previous + 1);
   }, []);

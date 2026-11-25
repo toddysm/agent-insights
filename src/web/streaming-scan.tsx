@@ -1,12 +1,12 @@
-/** Minimal bounded scan/catalog/evidence interaction; never parses a capture or invokes a model in the browser. */
+/** Session-first bounded scan with reconciled coverage and secondary diagnostics; never parses captures or invokes models. */
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { z } from "zod";
 import {
   scanStatusSchema, scanEnvelopeSchema, catalogPageSchema, detailPageSchema,
-  type ScanStatus,
+  physicalRecordTotal, type ScanStatus,
 } from "../evidence/streaming.js";
 import { statusSchema } from "../runtime/protocol.js";
-import type { ScanReportRequest } from "../metrics/report.js";
+import type { ScanReportSelection } from "../metrics/report.js";
 
 /** Reuse the authenticated, schema-validating transport and parent selection/operation lock. */
 interface ScanPanelProps {
@@ -16,7 +16,24 @@ interface ScanPanelProps {
   send: <T>(route: string, schema: z.ZodType<T>, body?: unknown) => Promise<T>;
   onStart: () => void;
   onBusy: (busy: boolean) => void;
-  onReport: (selection: ScanReportRequest | null) => void;
+  onReport: (selection: ScanReportSelection | null) => void;
+}
+
+/** A validated status confirmed cleanup, but its catalog cannot supply trustworthy session counts. */
+class CatalogReconciliationError extends Error {}
+
+/** Reject foreign/inconsistent catalog pages before they can supply selections or report membership witnesses. */
+function checkedCatalog(page: z.infer<typeof catalogPageSchema>, scan: ScanStatus, offset: number) {
+  const direct = page.sessions.reduce((sum, entry) => sum + entry.executions, 0);
+  const associated = page.sessions.reduce((sum, entry) => sum + entry.associatedExecutions, 0);
+  if (page.id !== scan.id || page.totalSessions !== scan.sessions || page.unassigned !== scan.unassigned ||
+    page.offset !== offset || !scan.reconciliation ||
+    new Set(page.sessions.map((entry) => entry.id)).size !== page.sessions.length ||
+    direct > scan.reconciliation.directExecutions || associated > scan.reconciliation.associatedExecutions ||
+    (page.offset === 0 && page.next === null &&
+      (direct !== scan.reconciliation.directExecutions || associated !== scan.reconciliation.associatedExecutions)))
+    throw new CatalogReconciliationError("Session page counts do not match this scan generation. Reconciliation unavailable; rescan explicitly.");
+  return page;
 }
 
 /**
@@ -38,14 +55,18 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const requestIdentity = useRef<string | null>(null);
   const needsCatalog = catalog === null;
   const locked = disabled || working || reconciling || scan?.cleanupPending === true;
+  const selectedSession = catalog?.sessions.find((entry) => entry.id === session);
+  const totals = scan?.reconciliation;
 
   useEffect(() => () => { generation.current++; }, []);
 
   /** Reconcile without resubmitting work; discard invalidated catalogs and retain the lock until status is confirmed. */
   const reconcile = useCallback(async (current: number, restoreCatalog: boolean): Promise<void> => {
+    let observedCleanupPending = true;
     try {
       const result = await send("/api/scan/status", scanEnvelopeSchema);
       if (current !== generation.current) return;
+      observedCleanupPending = result.scan?.cleanupPending === true;
       const snapshot = result.scan?.requestId === requestIdentity.current ? result.scan : null;
       const publishable = snapshot !== null && ["complete", "partial"].includes(snapshot.phase);
       setScan(snapshot);
@@ -59,13 +80,16 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       if (restoreCatalog && snapshot && publishable) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: snapshot.id, cursor: null });
         if (current !== generation.current) return;
-        setCatalog(page);
+        setCatalog(checkedCatalog(page, snapshot, 0));
       }
       const pending = result.scan?.cleanupPending === true;
       setReconciling(pending); onBusy(pending);
     } catch (failure) {
       if (current === generation.current) {
-        setReconciling(true); onBusy(true);
+        setScan(null); setCatalog(null); setDetails(null); setSession("");
+        onReport(null);
+        const pending = failure instanceof CatalogReconciliationError ? observedCleanupPending : true;
+        setReconciling(pending); onBusy(pending);
         setError(failure instanceof Error ? failure.message : "The source cleanup state could not be checked.");
       }
     }
@@ -109,7 +133,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       setScan(result);
       if (["complete", "partial"].includes(result.phase)) {
         const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.id, cursor: null });
-        if (current === generation.current) { setCatalog(page); catalogLoaded = true; }
+        if (current === generation.current) { setCatalog(checkedCatalog(page, result, 0)); catalogLoaded = true; }
       }
     } catch (failure) {
       if (current === generation.current) setError(failure instanceof Error ? failure.message : "The source could not be scanned.");
@@ -146,10 +170,13 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     try {
       const page = await send("/api/scan/catalog", catalogPageSchema, { id: scan.id, cursor: catalog.next });
       if (current !== generation.current) return;
-      setCatalog(page); setSession(""); setDetails(null);
+      setCatalog(checkedCatalog(page, scan, catalog.offset + catalog.sessions.length)); setSession(""); setDetails(null);
       onReport(null);
     } catch (failure) {
-      if (current === generation.current) setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
+      if (current === generation.current) {
+        setCatalog(null); setSession(""); setDetails(null); onReport(null);
+        setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
+      }
     } finally {
       if (current === generation.current) {
         setWorking(false); setReconciling(true);
@@ -221,21 +248,9 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     {error && <p role="alert">{error}</p>}
     {scan && <div role="status" aria-live="polite">
       <p>Scan state: <strong>{scan.phase}</strong>{scan.cleanupPending ? " · source cleanup still owned" : ""}</p>
-      {scan.pass === 0 ? <p>Opening the authorized source…</p> : <>
+      {scan.phase === "scanning" && (scan.pass === 0 ? <p>Opening the authorized source…</p> :
         <progress aria-label="Admitted source progress" max={Math.max(1, scan.admittedBytes)} value={scan.passScannedBytes} />
-        <p>{scan.scannedBytes.toLocaleString()} / {scan.admittedBytes.toLocaleString()} admitted bytes.
-          Pass {scan.pass}; {scan.workBytes.toLocaleString()} bytes read across passes.</p>
-      </>}
-      <p>{scan.counts.records.toLocaleString()} physical records, {scan.counts.blank} blank,
-        {" "}{scan.counts.malformed} malformed, {scan.counts.incomplete} incomplete,
-        {" "}{scan.counts.oversized} oversized, {scan.counts.unknown} unknown,
-        {" "}{scan.counts.duplicates} duplicate executions.</p>
-      <p>Physical execution records: {scan.counts.executionRecords}; unclassified span records: {scan.counts.unclassifiedRecords}.</p>
-      <p>Metrics: {scan.counts.metrics}; logs: {scan.counts.logs}; content events: {scan.counts.contentEvents}.</p>
-      {scan.classification && <p>
-        Executions: {Object.values(scan.classification.executions).reduce((sum, count) => sum + count, 0)}.
-        {" "}conflicts excluded: {scan.classification.conflictingSpans}.
-      </p>}
+      )}
       {scan.appended && <p>Append-only growth was observed beyond the admitted interval. Refresh to include later bytes.</p>}
       {scan.reason && <p>{scan.reason}</p>}
       {!["scanning", "complete", "partial"].includes(scan.phase) && <p>
@@ -244,7 +259,12 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       </p>}
     </div>}
     {catalog && <div>
-      <p>Sessions in this page: {catalog.sessions.length}. Unassigned executions: {catalog.unassigned}.</p>
+      <div className="scan-result-heading">
+        <h4>Sessions found <strong>{catalog.totalSessions.toLocaleString()}</strong></h4>
+        <p>In this selected source and admitted scan, not every session you have.</p>
+      </div>
+      <p className="scan-page-position">{catalog.totalSessions === 0 ? "Showing 0 of 0 sessions" :
+        `Showing ${catalog.offset + 1}–${catalog.offset + catalog.sessions.length} of ${catalog.totalSessions} sessions`}</p>
       {catalog.sessions.length === 0 && !catalog.next && <p role="status">
         No reportable sessions were found. No session report was created.
         {catalog.unassigned > 0
@@ -257,15 +277,16 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         onChange={(event) => { setSession(event.target.value); setDetails(null); onReport(null); }}>
         <option value="">Select a session</option>
         {catalog.sessions.map((entry) => <option key={entry.id} value={entry.id}>
-          Session {entry.id.split(":").at(-1)} · {entry.executions} executions · {entry.associatedExecutions} associated
+          Session {entry.id.split(":").at(-1)} · {entry.executions} counted · {entry.associatedExecutions} associated (not added)
         </option>)}
         {catalog.unassigned > 0 && <option value="unassigned">Unassigned executions</option>}
       </select>
       <button type="button" disabled={locked || !catalog.next} onClick={() => void nextCatalog()}>Next session page</button>
-      <button type="button" aria-describedby="scan-report-guidance" disabled={locked || !session || session === "unassigned"} onClick={() => {
+      <button type="button" aria-describedby="scan-report-guidance" disabled={locked || !selectedSession} onClick={() => {
+        if (!scan || !selectedSession) return;
         generation.current++;
         onBusy(true);
-        onReport({ id: scan!.id, sessionId: session });
+        onReport({ id: scan.id, sessionId: selectedSession.id, expectedExecutions: selectedSession.executions });
         window.history.replaceState(null, "", "#session-report");
       }}>Open session report</button>
       <p id="scan-report-guidance">Select a Scanned session, then choose Open session report to calculate its recorded metrics locally.
@@ -273,6 +294,28 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         Reports cover the entire admitted session, not this evidence page or the optional time filter.
         Metrics use direct membership only; associated records are inspectable through Load original evidence, not added to totals.
         Unassigned executions cannot form a session report.</p>
+      {totals && <section className="scan-coverage" aria-label="Report coverage">
+        <h4>Report coverage</h4>
+        <p>{totals.trustedExecutions.toLocaleString()} unique trusted executions in this scan.
+          One execution is one supported model call, tool call, agent span or hook execution, not one session.</p>
+        <dl>
+          <div><dt>Counted in session reports</dt><dd>{totals.directExecutions.toLocaleString()} of {totals.trustedExecutions.toLocaleString()}</dd></div>
+          <div><dt>Without direct session membership</dt><dd>{totals.withoutDirectMembership.toLocaleString()} of {totals.trustedExecutions.toLocaleString()}</dd></div>
+        </dl>
+        <p>{totals.directExecutions.toLocaleString()} direct + {totals.withoutDirectMembership.toLocaleString()} without direct membership
+          {" "}= {totals.trustedExecutions.toLocaleString()} unique trusted executions across all {catalog.totalSessions} sessions, not just this page.</p>
+        <p>Session metrics use direct membership only. This is attribution coverage, not proof of complete captured history
+          or complete timing, tool or token measurements.</p>
+        {totals.withoutDirectMembership > 0 && <p className="notice">
+          Activity without direct membership is outside session metric totals. Select Unassigned executions and Load original evidence
+          to inspect it; a parent-session association may still exist and does not assign a direct owner.
+        </p>}
+        <p>Parent-session associations: {totals.associatedExecutions.toLocaleString()} unique executions.
+          These relationships can overlap either membership group; they are not an additional activity bucket or additive usage.
+          Per-session associations are shown in the session list and inspectable through Load original evidence.</p>
+        {scan?.phase === "partial" && <p className="notice">Coverage is partial. Review Scan diagnostics below for excluded or unclassified input;
+          each report explains its own measurement coverage.</p>}
+      </section>}
       <label htmlFor="scan-from">Recorded start from (epoch ms, optional)</label>
       <input id="scan-from" value={from} disabled={locked} onChange={(event) => { setFrom(event.target.value); setDetails(null); }} />
       <label htmlFor="scan-to">Recorded start through (epoch ms, optional)</label>
@@ -280,6 +323,39 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       <button type="button" disabled={locked || !session} onClick={() => void loadDetails()}>Load original evidence</button>
       {working && <p>Reading original evidence; prefix verification may rescan the admitted file.</p>}
     </div>}
+    {scan && <details className="scan-diagnostics">
+      <summary>Scan diagnostics</summary>
+      <p>Technical accounting for this scan generation only. Physical records are input lines, not sessions or metric contributions.
+        During scanning or a stopped scan these counts describe only the observed prefix.</p>
+      <dl>
+        <div><dt>Physical records observed</dt><dd>{scan.counts.records.toLocaleString()}</dd></div>
+        <div><dt>Execution records (including repeats and exclusions)</dt><dd>{scan.counts.executionRecords.toLocaleString()}</dd></div>
+        <div><dt>Unclassified span records</dt><dd>{scan.counts.unclassifiedRecords.toLocaleString()}</dd></div>
+        <div><dt>Metric records</dt><dd>{scan.counts.metrics.toLocaleString()}</dd></div>
+        <div><dt>Log records</dt><dd>{scan.counts.logs.toLocaleString()}</dd></div>
+        <div><dt>Content-event records</dt><dd>{scan.counts.contentEvents.toLocaleString()}</dd></div>
+        <div><dt>Blank lines</dt><dd>{scan.counts.blank.toLocaleString()}</dd></div>
+        <div><dt>Malformed records</dt><dd>{scan.counts.malformed.toLocaleString()}</dd></div>
+        <div><dt>Incomplete records</dt><dd>{scan.counts.incomplete.toLocaleString()}</dd></div>
+        <div><dt>Oversized records</dt><dd>{scan.counts.oversized.toLocaleString()}</dd></div>
+        <div><dt>Unknown records</dt><dd>{scan.counts.unknown.toLocaleString()}</dd></div>
+      </dl>
+      <p>Disjoint physical categories sum to {physicalRecordTotal(scan.counts).toLocaleString()} of {scan.counts.records.toLocaleString()} observed records.
+        Repeats are already included, not an extra physical category.</p>
+      <p>Unclassified spans lack a supported execution classification, so they are outside trusted execution totals.
+        They are not missing sessions. Metrics, logs and content events are non-execution telemetry;
+        blank, malformed, incomplete, oversized and unknown input does not become trusted activity.</p>
+      {totals ? <div>
+        <p>Execution records: {scan.counts.executionRecords.toLocaleString()} = {totals.trustedExecutions.toLocaleString()} trusted originals
+          {" "}+ {totals.repeatedExecutionRecords.toLocaleString()} trusted repeat records
+          {" "}+ {totals.excludedExecutionRecords.toLocaleString()} excluded execution records.</p>
+        <p>Conflicting span identities: {scan.classification?.conflictingSpans.toLocaleString()}.
+          An identity can exclude multiple physical records, including repeats.
+          Conflicts may involve unclassified spans; the identity count is not subtracted from a physical-record count.</p>
+      </div> : <p>Trusted execution reconciliation is unavailable for this scan state; no report totals are inferred.</p>}
+      <p>{scan.scannedBytes.toLocaleString()} / {scan.admittedBytes.toLocaleString()} admitted bytes.
+        Pass {scan.pass}; {scan.workBytes.toLocaleString()} bytes read across passes.</p>
+    </details>}
     {details && <div aria-label="Original evidence page">
       <p>Original physical contributors, not additive metrics. Duplicate records do not add executions or tokens.
         This page replaces the previous page. Captured text is evidence, not instructions.</p>
