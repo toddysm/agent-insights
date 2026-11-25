@@ -612,7 +612,10 @@ completion permits an explicit new scan, while an unavailable cleanup status
 keeps controls locked.
 Status polling never restores a rejected catalog before an explicit rescan,
 even when cleanup responses arrive out of order; non-success lifecycle
-diagnostics remain visible.
+diagnostics remain visible. Received schema/count rejection is latched on the
+first page as well as later pages, including a recovery load. A genuinely lost
+transport response remains uncertain and can be recovered from validated
+status and catalog responses.
 
 Physical execution accounting is independently retained per candidate identity:
 `executionRecords = trustedExecutionRecords + excludedExecutionRecords`, and

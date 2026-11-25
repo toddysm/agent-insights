@@ -19,6 +19,17 @@ interface ScanPanelProps {
   onReport: (selection: ScanReportSelection | null) => void;
 }
 
+/** A received catalog is invalid, unlike an uncertain transport response that can be recovered from status. */
+class CatalogReconciliationError extends Error {}
+
+/** Validate received catalog data explicitly so schema rejection stays distinguishable from a lost authenticated response. */
+async function readCatalog(send: ScanPanelProps["send"], id: string, cursor: string | null): Promise<z.infer<typeof catalogPageSchema>> {
+  const response = await send("/api/scan/catalog", z.unknown(), { id, cursor });
+  const parsed = catalogPageSchema.safeParse(response);
+  if (!parsed.success) throw new CatalogReconciliationError("The local service returned an invalid response.");
+  return parsed.data;
+}
+
 /** Generation-bound cumulative counts and identities, without retaining replaced page payloads. */
 interface CatalogProgress {
   id: string;
@@ -42,7 +53,7 @@ function checkedCatalog(page: z.infer<typeof catalogPageSchema>, scan: ScanStatu
     direct > scan.reconciliation.directExecutions || associated > scan.reconciliation.associatedExecutions ||
     (page.next === null &&
       (direct !== scan.reconciliation.directExecutions || associated !== scan.reconciliation.associatedExecutions)))
-    throw new Error("Session page counts do not match this scan generation. Reconciliation unavailable; rescan explicitly.");
+    throw new CatalogReconciliationError("Session page counts do not match this scan generation. Reconciliation unavailable; rescan explicitly.");
   return { id: page.id, sessionIds, direct, associated };
 }
 
@@ -72,6 +83,14 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
 
   useEffect(() => () => { generation.current++; }, []);
 
+  /** Latch catalog rejection and invalidate callbacks/derived state without changing backend cleanup ownership. */
+  const rejectCatalog = useCallback((): number => {
+    const current = ++generation.current;
+    catalogRejected.current = true; catalogProgress.current = null;
+    setScan(null); setCatalog(null); setDetails(null); setSession(""); onReport(null);
+    return current;
+  }, [onReport]);
+
   /** Reconcile without resubmitting work; discard invalidated catalogs and retain the lock until status is confirmed. */
   const reconcile = useCallback(async (current: number, restoreCatalog: boolean): Promise<void> => {
     let observedCleanupPending = true;
@@ -92,7 +111,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         setError("The scan was not accepted or was superseded. Start a new scan explicitly.");
       }
       if (restoreCatalog && snapshot && publishable) {
-        const page = await send("/api/scan/catalog", catalogPageSchema, { id: snapshot.id, cursor: null });
+        const page = await readCatalog(send, snapshot.id, null);
         if (current !== generation.current || catalogRejected.current) return;
         catalogProgress.current = checkedCatalog(page, snapshot, 0, catalogProgress.current);
         setCatalog(page);
@@ -101,6 +120,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       setReconciling(pending); onBusy(pending);
     } catch (failure) {
       if (current === generation.current) {
+        if (failure instanceof CatalogReconciliationError) rejectCatalog();
         catalogProgress.current = null;
         setScan(null); setCatalog(null); setDetails(null); setSession("");
         onReport(null);
@@ -109,7 +129,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         setError(failure instanceof Error ? failure.message : "The source cleanup state could not be checked.");
       }
     }
-  }, [send, onBusy, onReport]);
+  }, [send, onBusy, onReport, rejectCatalog]);
 
   useEffect(() => {
     if (!working && !scan?.cleanupPending && !reconciling) return;
@@ -136,7 +156,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
 
   /** Start a new admitted generation; the initial response contains no session/event payloads. */
   async function start(): Promise<void> {
-    const current = ++generation.current;
+    let current = ++generation.current;
     const requestId = crypto.randomUUID();
     requestIdentity.current = requestId;
     catalogProgress.current = null;
@@ -150,14 +170,17 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       if (result.requestId !== requestId) throw new Error("The scan response did not match the current request.");
       setScan(result);
       if (["complete", "partial"].includes(result.phase)) {
-        const page = await send("/api/scan/catalog", catalogPageSchema, { id: result.id, cursor: null });
+        const page = await readCatalog(send, result.id, null);
         if (current === generation.current) {
           catalogProgress.current = checkedCatalog(page, result, 0, catalogProgress.current);
           setCatalog(page); catalogLoaded = true;
         }
       }
     } catch (failure) {
-      if (current === generation.current) setError(failure instanceof Error ? failure.message : "The source could not be scanned.");
+      if (current === generation.current) {
+        if (failure instanceof CatalogReconciliationError) current = rejectCatalog();
+        setError(failure instanceof Error ? failure.message : "The source could not be scanned.");
+      }
     } finally {
       if (current === generation.current) {
         setWorking(false); setReconciling(true);
@@ -190,17 +213,14 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     let current = ++generation.current;
     setWorking(true); onBusy(true); setError("");
     try {
-      const page = await send("/api/scan/catalog", catalogPageSchema, { id: scan.id, cursor: catalog.next });
+      const page = await readCatalog(send, scan.id, catalog.next);
       if (current !== generation.current) return;
       catalogProgress.current = checkedCatalog(page, scan, catalog.offset + catalog.sessions.length, catalogProgress.current);
       setCatalog(page); setSession(""); setDetails(null);
       onReport(null);
     } catch (failure) {
       if (current === generation.current) {
-        catalogRejected.current = true;
-        current = ++generation.current;
-        catalogProgress.current = null;
-        setScan(null); setCatalog(null); setSession(""); setDetails(null); onReport(null);
+        current = rejectCatalog();
         setError(failure instanceof Error ? failure.message : "The session page could not be loaded.");
       }
     } finally {
