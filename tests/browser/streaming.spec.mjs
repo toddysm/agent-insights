@@ -387,41 +387,57 @@ for (const invalid of ["schema", "counts", "json", "recovery-counts", "recovery-
   });
 }
 
-test("a lost next-catalog response restores the validated first page without rescanning the source", async ({ page }) => {
-  const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
-  const rows = Array.from({ length: 21 }, (_, index) => ({
-    ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
-    attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}` },
-  }));
-  const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
-  let scans = 0, lost = false;
-  page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
-  await page.route("**/api/scan/catalog", async (route) => {
-    const response = await route.fetch();
-    if (route.request().postDataJSON().cursor !== null && !lost) {
-      lost = true;
-      await route.abort("failed");
-    } else await route.fulfill({ response });
+for (const losses of [1, 2]) {
+  test(`next-catalog recovery restores the validated first page after ${losses} lost responses without rescanning the source`, async ({ page }) => {
+    const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+      attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}` },
+    }));
+    const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    let scans = 0, lost = 0, releaseRecovery;
+    const heldRecovery = new Promise((resolve) => { releaseRecovery = resolve; });
+    page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
+    await page.route("**/api/scan/catalog", async (route) => {
+      const response = await route.fetch();
+      const cursor = route.request().postDataJSON().cursor;
+      if ((cursor !== null || lost > 0) && lost < losses) {
+        lost++;
+        await route.abort("failed");
+      } else {
+        if (losses === 2 && lost === losses && cursor === null) await heldRecovery;
+        await route.fulfill({ response });
+      }
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByRole("alert")).toBeVisible();
+      if (losses === 2) {
+        await expect.poll(() => lost).toBe(losses);
+        await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+        await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+        await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+        releaseRecovery();
+      }
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await expect(panel.getByRole("button", { name: "Next session page" })).toBeEnabled();
+      expect(scans).toBe(1);
+      expect(lost).toBe(losses);
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByText("Showing 21–21 of 21 sessions", { exact: true })).toBeVisible();
+      expect(scans).toBe(1);
+    } finally {
+      releaseRecovery();
+      try { await page.unrouteAll({ behavior: "wait" }); }
+      finally { await runtime.close(); await rm(root, { recursive: true }); }
+    }
   });
-  try {
-    await page.goto(runtime.launchUrl);
-    await page.getByText("Advanced file tools", { exact: true }).click();
-    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
-    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
-    await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
-    await panel.getByRole("button", { name: "Next session page" }).click();
-    await expect(panel.getByRole("alert")).toBeVisible();
-    await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
-    await expect(panel.getByRole("button", { name: "Next session page" })).toBeEnabled();
-    expect(scans).toBe(1);
-    await panel.getByRole("button", { name: "Next session page" }).click();
-    await expect(panel.getByText("Showing 21–21 of 21 sessions", { exact: true })).toBeVisible();
-    expect(scans).toBe(1);
-  } finally {
-    try { await page.unrouteAll({ behavior: "wait" }); }
-    finally { await runtime.close(); await rm(root, { recursive: true }); }
-  }
-});
+}
 
 test("delayed status after a rejected catalog page cannot restore session controls while cleanup polling continues", async ({ page }) => {
   const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
@@ -617,16 +633,16 @@ test("a start request lost before admission cannot restore the previous scan cat
   }
 });
 
-for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
-  test(`a lost ${lostRoute} response restores the completed catalog without rescanning`, async ({ page }) => {
+for (const [lostRoute, losses] of [["/api/scan", 1], ["/api/scan/catalog", 1], ["/api/scan/catalog", 2]]) {
+  test(`${losses} lost ${lostRoute} responses restore the completed catalog without rescanning`, async ({ page }) => {
     const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
     const { root, runtime } = await fixture(text);
-    let lost = false;
+    let lost = 0;
     let scans = 0;
     page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
     await page.route(`**${lostRoute}`, async (route) => {
-      if (lost) { await route.continue(); return; }
-      lost = true;
+      if (lost === losses) { await route.continue(); return; }
+      lost++;
       await route.fetch();
       await route.abort("failed");
     });
@@ -640,7 +656,7 @@ for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
       await panel.getByRole("button", { name: "Load original evidence" }).click();
       await expect(panel.locator("article")).not.toHaveCount(0);
       expect(scans).toBe(1);
-      expect(lost).toBe(true);
+      expect(lost).toBe(losses);
     } finally {
       await runtime.close();
       await rm(root, { recursive: true });

@@ -85,6 +85,8 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   const catalogProgress = useRef<CatalogProgress | null>(null);
   const catalogRejected = useRef(false);
   const needsCatalog = catalog === null;
+  const recoveringCatalog = needsCatalog && scan !== null &&
+    ["complete", "partial"].includes(scan.phase);
   const locked = disabled || working || reconciling || scan?.cleanupPending === true;
   const selectedSession = catalog?.sessions.find((entry) => entry.id === session);
   const totals = scan?.reconciliation;
@@ -99,9 +101,10 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     return current;
   }, [onReport]);
 
-  /** Reconcile without resubmitting work; discard invalidated catalogs and retain the lock until status is confirmed. */
+  /** Reconcile without resubmitting work; retain admitted status for catalog retries independently of confirmed cleanup. */
   const reconcile = useCallback(async (current: number, restoreCatalog: boolean): Promise<void> => {
     let observedCleanupPending = true;
+    let recoverableScan: ScanStatus | null = null;
     try {
       const result = await send("/api/scan/status", scanEnvelopeSchema);
       if (current !== generation.current) return;
@@ -119,6 +122,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
         setError("The scan was not accepted or was superseded. Start a new scan explicitly.");
       }
       if (restoreCatalog && snapshot && publishable) {
+        recoverableScan = snapshot;
         const page = await readCatalog(send, snapshot.id, null);
         if (current !== generation.current || catalogRejected.current) return;
         catalogProgress.current = checkedCatalog(page, snapshot, 0, catalogProgress.current);
@@ -128,9 +132,10 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
       setReconciling(pending); onBusy(pending);
     } catch (failure) {
       if (current === generation.current) {
-        if (failure instanceof CatalogReconciliationError) rejectCatalog();
+        const rejected = failure instanceof CatalogReconciliationError;
+        if (rejected) rejectCatalog();
         catalogProgress.current = null;
-        setScan(null); setCatalog(null); setDetails(null); setSession("");
+        setScan(rejected ? null : recoverableScan); setCatalog(null); setDetails(null); setSession("");
         onReport(null);
         const pending = observedCleanupPending;
         setReconciling(pending); onBusy(pending);
@@ -140,7 +145,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
   }, [send, onBusy, onReport, rejectCatalog]);
 
   useEffect(() => {
-    if (!working && !scan?.cleanupPending && !reconciling) return;
+    if (!working && !scan?.cleanupPending && !reconciling && !recoveringCatalog) return;
     let stopped = false;
     let timer: ReturnType<typeof setTimeout>;
     /** Observe progress, not source content; failed polls are visible and do not resubmit work. */
@@ -160,7 +165,7 @@ export function StreamingScanPanel({ sourceId, relativePath, disabled, send, onS
     }
     void poll();
     return () => { stopped = true; clearTimeout(timer); };
-  }, [working, scan?.cleanupPending, reconciling, needsCatalog, reconcile, send]);
+  }, [working, scan?.cleanupPending, reconciling, recoveringCatalog, needsCatalog, reconcile, send]);
 
   /** Start a new admitted generation; the initial response contains no session/event payloads. */
   async function start(): Promise<void> {

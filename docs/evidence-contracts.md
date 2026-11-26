@@ -617,6 +617,11 @@ first page as well as later pages, including a recovery load. A genuinely lost
 transport response remains uncertain and can be recovered from validated
 status and catalog responses. A lost later-page response reopens the validated
 first page without scanning the source again.
+If catalog recovery itself loses another response after cleanup is confirmed,
+the admitted scan status remains available for polling retries without keeping
+source controls locked. Retries stop when the catalog is validated or received
+data is rejected, the scan expires/is invalidated, or the user leaves or starts
+another generation.
 Malformed JSON received in a successful catalog response is a typed
 `LOCAL_INVALID_JSON` diagnostic and latches catalog rejection like schema/count
 failure. An interrupted transport read remains uncertain rather than being
