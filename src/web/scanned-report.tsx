@@ -14,10 +14,11 @@ import {
   scanReportSchema,
   scanMetricPageSchema,
   type ScanReportRequest,
+  type ScanReportSelection,
   type ScanReport,
   type ScanMetricPage,
 } from "../metrics/report.js";
-import { scanEnvelopeSchema } from "../evidence/streaming.js";
+import { scanEnvelopeSchema, type ScanReconciliation } from "../evidence/streaming.js";
 import { statusSchema } from "../runtime/protocol.js";
 import { EvidenceDrawer, metricValue } from "./session-report.js";
 import { SourceCoverageDetails, DiagnosticMessage } from "./coverage-details.js";
@@ -30,7 +31,7 @@ import {
 
 /** Reuse the authenticated transport and application's source-operation lock. */
 interface Props {
-  readonly selection: ScanReportRequest;
+  readonly selection: ScanReportSelection;
   readonly send: <T>(
     route: string,
     schema: z.ZodType<T>,
@@ -77,7 +78,7 @@ function MetricEvidence({
   useEffect(() => {
     let active = true;
     void operate("/api/scan/metric", scanMetricPageSchema, {
-      ...selection,
+      id: selection.id, sessionId: selection.sessionId,
       metricId: measurement.id,
       cursor,
     })
@@ -212,6 +213,7 @@ export function ScannedSessionReportPanel({
   const heading = useRef<HTMLHeadingElement>(null);
   const mounted = useRef(true);
   const generation = useRef(0);
+  const scanTotals = useRef<ScanReconciliation | null>(null);
   useEffect(() => {
     mounted.current = true;
     return () => {
@@ -227,6 +229,7 @@ export function ScannedSessionReportPanel({
       const valid =
         scan?.id === selection.id &&
         ["complete", "partial"].includes(scan.phase);
+      scanTotals.current = valid ? scan.reconciliation : null;
       setCleanupFailed(scan?.phase === "cleanup-failed");
       if (!valid) {
         setInvalid(true);
@@ -291,7 +294,7 @@ export function ScannedSessionReportPanel({
 
   useEffect(() => {
     let active = true;
-    void operate("/api/scan/report", scanReportSchema, selection)
+    void operate("/api/scan/report", scanReportSchema, { id: selection.id, sessionId: selection.sessionId })
       .then((result) => {
         if (
           result.id !== selection.id ||
@@ -300,6 +303,10 @@ export function ScannedSessionReportPanel({
           throw new Error(
             "Report response belongs to a different generation or session.",
           );
+        if (result.contributions.directEvents !== selection.expectedExecutions ||
+          !scanTotals.current || Object.entries(result.scanTotals).some(([key, value]) =>
+            value !== scanTotals.current?.[key as keyof ScanReconciliation]))
+          throw new Error("Report counts do not reconcile with the selected session and current scan. Report unavailable; rescan explicitly.");
         if (active) {
           setReport(result);
           heading.current?.focus();
@@ -489,6 +496,9 @@ export function ScannedSessionReportPanel({
           <section aria-label="Session contributions">
             <h3>Direct versus associated evidence</h3>
             <p>{report.contributions.directEvents} direct records; {report.contributions.associatedEvents} associated records.</p>
+            <p>This session contributes {report.contributions.directEvents} of {report.scanTotals.directExecutions} executions counted
+              in session reports, from {report.scanTotals.trustedExecutions} unique trusted executions in this same scan.
+              {" "}{report.scanTotals.withoutDirectMembership} without direct membership are outside session metric totals.</p>
             <p>Measurements use direct membership only. Associated usage is not added; inspect it with Load original evidence in the scan controls. Agent cumulative usage is not model-call usage.</p>
           </section>
           <details>

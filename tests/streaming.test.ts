@@ -11,7 +11,7 @@ import test, { type TestContext } from "node:test";
 import { jsonLines } from "../src/evidence/readers/jsonl.js";
 import { scanVscodeOtel, vscodeOtelReader } from "../src/evidence/readers/vscode-otel.js";
 import { productionReaders } from "../src/evidence/readers/index.js";
-import { STREAM_LIMITS, ScanBudgetExceeded, type StreamLimits, type ScanCounts, type ScanRequest, type DetailRequest } from "../src/evidence/streaming.js";
+import { STREAM_LIMITS, ScanBudgetExceeded, scanStatusSchema, type StreamLimits, type ScanCounts, type ScanRequest, type DetailRequest } from "../src/evidence/streaming.js";
 import { SourceAccess } from "../src/runtime/sources.js";
 import { RuntimeService } from "../src/runtime/service.js";
 import { RuntimeError } from "../src/runtime/errors.js";
@@ -214,6 +214,10 @@ test("compact scans resolve out-of-order parent-only calls and preserve full-rea
   const { id } = status;
   assert.equal(status.phase, "partial");
   assert.equal(status.unassigned, 1);
+  assert.deepEqual(status.reconciliation, {
+    trustedExecutions: 2, directExecutions: 1, withoutDirectMembership: 1, associatedExecutions: 1,
+    trustedExecutionRecords: 3, repeatedExecutionRecords: 1, excludedExecutionRecords: 0,
+  });
   const catalog = service.scanCatalog.catalog(id, null);
   assert.equal(catalog.unassigned, 1);
   const session = catalog.sessions[0]!;
@@ -221,6 +225,7 @@ test("compact scans resolve out-of-order parent-only calls and preserve full-rea
   assert.equal(session.associatedExecutions, 1);
   const result = await report(service, id, session.id);
   assert.deepEqual(result.contributions, { directEvents: 1, associatedEvents: 1 });
+  assert.deepEqual(result.scanTotals, status.reconciliation);
   assert.equal(result.measurements.find((entry) => entry.id === "input")?.value, 7);
   const originals = (await details(service, id, session.id)).contributors;
   assert.deepEqual(originals.map((entry) => entry.line), [1, 2, 3]);
@@ -617,8 +622,15 @@ test("session catalog pages replace rather than split sessions; cursors reject r
   const result = await scan(service);
   const first = service.scanCatalog.catalog(result.id, null);
   assert.equal(first.sessions.length, 20);
+  assert.equal(first.offset, 0);
+  assert.equal(first.totalSessions, 25);
   assert.ok(first.next);
-  assert.equal(service.scanCatalog.catalog(result.id, first.next).sessions.length, 5);
+  const second = service.scanCatalog.catalog(result.id, first.next);
+  assert.equal(second.sessions.length, 5);
+  assert.equal(second.offset, 20);
+  assert.equal(second.totalSessions, 25);
+  assert.equal([...first.sessions, ...second.sessions].reduce((sum, session) => sum + session.executions, 0),
+    result.reconciliation?.directExecutions);
   assert.throws(() => service.scanCatalog.catalog("another-generation", first.next), RuntimeError);
   const newer = await scan(service);
   assert.throws(() => service.scanCatalog.catalog(newer.id, first.next), RuntimeError);
@@ -842,6 +854,80 @@ test("all physical record categories sum to admitted records independently of na
   const nonExecution = result.classification!.nonExecutionRecords;
   assert.equal(c.records, c.blank + c.malformed + c.incomplete + c.oversized + c.unknown +
     c.executionRecords + c.unclassifiedRecords + Object.values(nonExecution).reduce((sum, value) => sum + value, 0));
+});
+
+test("trusted originals/repeats and all conflicted occurrences reconcile independently of conflict identity counts", async (t) => {
+  const trusted = span(1);
+  const conflicting = span(2, { "gen_ai.input.messages": "first" });
+  const changed = span(2, { "gen_ai.input.messages": "second" });
+  const unclassified = span(3, { "gen_ai.operation.name": undefined });
+  for (const conflictRows of [[conflicting, conflicting, changed, conflicting], [changed, conflicting, conflicting, changed]]) {
+    const rows = [trusted, trusted, ...conflictRows, unclassified,
+      span(4, { "gen_ai.operation.name": "content_event" }), { scopeMetrics: [] },
+      { hrTime: [1760000000, 0], resource: {}, instrumentationScope: {} }, {}, "malformed"];
+    const text = rows.map((row) => typeof row === "string" ? row : JSON.stringify(row)).join("\n") + "\n\n";
+    const { service } = await fixture(t, text);
+    const status = await scan(service);
+    assert.equal(status.phase, "partial");
+    assert.equal(status.counts.records, 13);
+    assert.equal(status.counts.executionRecords, 6);
+    assert.equal(status.classification?.conflictingSpans, 1);
+    assert.equal(status.counts.unclassifiedRecords, 1);
+    assert.deepEqual(status.reconciliation, {
+      trustedExecutions: 1, directExecutions: 1, withoutDirectMembership: 0, associatedExecutions: 0,
+      trustedExecutionRecords: 2, repeatedExecutionRecords: 1, excludedExecutionRecords: 4,
+    });
+    assert.equal(scanStatusSchema.safeParse(status).success, true);
+    const session = service.scanCatalog.catalog(status.id, null).sessions[0]!;
+    const result = await report(service, status.id, session.id);
+    assert.equal(result.contributions.directEvents, 1);
+    assert.deepEqual(result.scanTotals, status.reconciliation);
+    assert.deepEqual((await metricPage(service, status.id, session.id, "input")).contributors.map((entry) => entry.line), [1, 2]);
+  }
+});
+
+test("execution/unclassified identity conflicts partition physical records regardless of observation order", async (t) => {
+  const classified = span(2);
+  const unclassified = span(2, { "gen_ai.operation.name": undefined });
+  for (const rows of [[classified, classified, unclassified], [unclassified, classified, classified]]) {
+    const { service } = await fixture(t, [...rows, span(1)].map((row) => JSON.stringify(row)).join("\n"));
+    const status = await scan(service);
+    assert.equal(status.classification?.conflictingSpans, 1);
+    assert.equal(status.counts.executionRecords, 3);
+    assert.equal(status.counts.unclassifiedRecords, 1);
+    assert.equal(status.reconciliation?.excludedExecutionRecords, 2);
+    assert.equal(status.reconciliation?.trustedExecutions, 1);
+  }
+});
+
+test("the reported membership arithmetic is valid in a matching synthetic generation, not a capture diagnosis", async (t) => {
+  const rows = Array.from({ length: 442 }, (_, index) => span(index + 1,
+    { "gen_ai.conversation.id": index < 30 ? `fictional-${index % 2}` : undefined }));
+  rows.push(...Array.from({ length: 4 }, (_, index) => span(500 + index, { "gen_ai.operation.name": undefined })));
+  const { service } = await fixture(t, rows.map((row) => JSON.stringify(row)).join("\n"));
+  const status = await scan(service);
+  assert.equal(status.sessions, 2);
+  assert.equal(status.unassigned, 412);
+  assert.equal(status.reconciliation?.trustedExecutions, 442);
+  assert.equal(status.reconciliation?.directExecutions, 30);
+  const page = service.scanCatalog.catalog(status.id, null);
+  assert.deepEqual(page.sessions.map((session) => session.executions), [15, 15]);
+  assert.equal(status.counts.unclassifiedRecords, 4);
+});
+
+test("publication and transport reject inconsistent accounting instead of publishing reportable success", async () => {
+  const scanner = new JsonlScan();
+  const selection: ScanRequest = { sourceId: "source-1", relativePath: "", format: "vscode-otel-jsonl" };
+  const view = await scanner.scan("mismatch", selection, memorySource(JSON.stringify(span())), new AbortController().signal);
+  assert.throws(() => scanner.publish({ ...view, events: [] }),
+    (error) => error instanceof RuntimeError && error.code === "SCAN_RECONCILIATION");
+  assert.throws(() => scanner.catalog("mismatch", null), RuntimeError);
+  scanner.fail(new RuntimeError("SCAN_RECONCILIATION", "Counts do not reconcile.", 409));
+  assert.equal(scanner.status?.sessions, null);
+  assert.equal(scanner.status?.reconciliation, null);
+  const valid = (await catalogFor(JSON.stringify(span()))).scanner.status!;
+  assert.equal(scanStatusSchema.safeParse({ ...valid, unassigned: 2 }).success, false);
+  assert.equal(scanStatusSchema.safeParse({ ...valid, counts: { ...valid.counts, records: 2 } }).success, false);
 });
 
 test("scan HTTP controls require launch access/origin and never return payloads before selection", async (t) => {

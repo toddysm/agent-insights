@@ -131,6 +131,10 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
     const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
     await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
     await expect(panel.getByText("complete", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Sessions found 23" })).toBeVisible();
+    await expect(panel.getByText("Showing 1–20 of 23 sessions", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("region", { name: "Report coverage" })).toContainText("23 direct + 0 without direct membership = 23");
+    await expect(panel.getByText("Physical records observed", { exact: true })).not.toBeVisible();
     await expect(panel.getByText("FICTIONAL_DETAIL_AFTER_SELECTION", { exact: false })).toHaveCount(0);
     await expect(panel.getByLabel("Scanned session").locator("option")).toHaveCount(21);
     await panel.getByLabel("Scanned session").selectOption({ index: 1 });
@@ -155,6 +159,8 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
     await page.screenshot({ path: testInfo.outputPath("bounded-evidence-mobile.png"), fullPage: true });
     await panel.getByRole("button", { name: "Next session page" }).click();
+    await expect(panel.getByText("Showing 21–23 of 23 sessions", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("heading", { name: "Sessions found 23" })).toBeVisible();
     await expect(panel.getByLabel("Scanned session").locator("option")).toHaveCount(4);
     await expect(panel.locator("article")).toHaveCount(0);
     expect(await readFile(file, "utf8")).toBe(text);
@@ -178,6 +184,312 @@ test("scan keeps payloads out of discovery, replaces pages, refreshes generation
   } finally {
     await runtime.close();
     await rm(root, { recursive: true });
+  }
+});
+
+test("session-first coverage and diagnostics reconcile mixed activity without adding associations or repeats", async ({ page }) => {
+  const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+  const parent = { ...raw, attributes: { ...raw.attributes, "copilot_chat.chat_session_id": "fictional-parent" } };
+  const other = { ...raw, spanId: "0000000000000002",
+    attributes: { ...raw.attributes, "gen_ai.conversation.id": "fictional-other" } };
+  const child = { ...raw, spanId: "0000000000000003",
+    attributes: { ...raw.attributes, "gen_ai.conversation.id": undefined,
+      "copilot_chat.parent_chat_session_id": "fictional-parent" } };
+  const conflicting = { ...raw, spanId: "0000000000000004" };
+  const changed = { ...conflicting, attributes: { ...raw.attributes, "gen_ai.input.messages": "FICTIONAL_CONFLICT" } };
+  const unclassified = { ...raw, spanId: "0000000000000005",
+    attributes: { ...raw.attributes, "gen_ai.operation.name": undefined } };
+  const text = [parent, other, child, child, conflicting, changed, unclassified, { scopeMetrics: [] },
+    { hrTime: [1760000000, 0], resource: {}, instrumentationScope: {} }, {}, "bad"]
+    .map((row) => typeof row === "string" ? row : JSON.stringify(row)).join("\n") + "\n\n";
+  const { root, runtime } = await fixture(text);
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByRole("heading", { name: "Sessions found 2" })).toBeVisible();
+    const coverage = panel.getByRole("region", { name: "Report coverage" });
+    await expect(coverage).toContainText("2 direct + 1 without direct membership = 3 unique trusted executions");
+    await expect(coverage).toContainText("Parent-session associations: 1 unique executions");
+    await expect(coverage).toContainText("Coverage is partial");
+    const diagnostics = panel.locator(".scan-diagnostics");
+    await expect(diagnostics).not.toHaveAttribute("open", "");
+    await diagnostics.getByText("Scan diagnostics", { exact: true }).focus();
+    await page.keyboard.press("Enter");
+    await expect(diagnostics).toHaveAttribute("open", "");
+    await expect(diagnostics).toContainText("Execution records: 6 = 3 trusted originals + 1 trusted repeat records + 2 excluded execution records");
+    await expect(diagnostics).toContainText("Disjoint physical categories sum to 12 of 12 observed records");
+    await expect(diagnostics).toContainText("Conflicting span identities: 1");
+    await expect(diagnostics).toContainText("They are not missing sessions");
+    await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    await panel.getByRole("button", { name: "Open session report" }).click();
+    const report = page.getByRole("region", { name: "Session report", exact: true });
+    await expect(report.getByRole("region", { name: "Session contributions" })).toContainText(
+      "This session contributes 1 of 2 executions counted in session reports, from 3 unique trusted executions in this same scan");
+    await panel.getByLabel("Scanned session").selectOption("unassigned");
+    await expect(panel.getByRole("button", { name: "Open session report" })).toBeDisabled();
+    await panel.getByRole("button", { name: "Load original evidence" }).click();
+    await expect(panel.getByLabel("Original evidence page").locator("article")).toHaveCount(2);
+    await page.setViewportSize({ width: 320, height: 800 });
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+  } finally {
+    await runtime.close();
+    await rm(root, { recursive: true });
+  }
+});
+
+for (const mismatch of ["catalog-generation", "catalog-position-schema", "report-membership", "report-scan-totals"]) {
+  test(`a ${mismatch} mismatch cannot publish session/report success`, async ({ page }) => {
+    const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
+    const { root, runtime } = await fixture(text);
+    await page.route(mismatch.startsWith("catalog-") ? "**/api/scan/catalog" : "**/api/scan/report", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (mismatch === "catalog-generation") body.id = "foreign-generation";
+      else if (mismatch === "catalog-position-schema") body.offset = 1;
+      else if (mismatch === "report-membership") body.contributions.directEvents = 0;
+      else {
+        body.scanTotals.trustedExecutions++;
+        body.scanTotals.withoutDirectMembership++;
+        body.scanTotals.trustedExecutionRecords++;
+      }
+      await route.fulfill({ response, json: body });
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      if (mismatch.startsWith("catalog-")) {
+        await expect(panel.getByRole("alert")).toContainText(
+          mismatch === "catalog-generation" ? "Reconciliation unavailable" : "The local service returned an invalid response.");
+        await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+      } else {
+        await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+        await panel.getByRole("button", { name: "Open session report" }).click();
+        const report = page.getByRole("region", { name: "Session report", exact: true });
+        await expect(report.getByRole("alert")).toContainText("Report counts do not reconcile");
+        await expect(report.getByRole("region", { name: "Session contributions" })).toHaveCount(0);
+        await expect(report.getByRole("button", { name: /^Recorded input tokens/ })).toHaveCount(0);
+      }
+    } finally {
+      await page.unrouteAll({ behavior: "wait" });
+      await runtime.close();
+      await rm(root, { recursive: true });
+    }
+  });
+}
+
+for (const mismatch of ["direct-overcount", "direct-undercount", "association-undercount", "malformed-json"]) {
+  test(`cumulative catalog ${mismatch} clears coverage and permits an explicit rescan`, async ({ page }) => {
+    const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+      attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}`,
+        "copilot_chat.chat_session_id": `fictional-${index}`,
+        "copilot_chat.parent_chat_session_id": index === 0 ? undefined : "fictional-0" },
+    }));
+    const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    await page.route("**/api/scan/catalog", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (mismatch === "malformed-json" && body.offset > 0) {
+        await route.fulfill({ response, body: "{" });
+        return;
+      }
+      if (mismatch === "association-undercount") {
+        const associated = body.sessions.find((entry) => entry.associatedExecutions > 0);
+        if (associated) associated.associatedExecutions--;
+      } else if (body.offset > 0 && mismatch !== "association-undercount") {
+        body.sessions[0].executions = mismatch === "direct-overcount" ? 2 : 0;
+      }
+      await route.fulfill({ response, json: body });
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await expect(panel.getByRole("region", { name: "Report coverage" })).toContainText("Parent-session associations: 20");
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByRole("alert")).toContainText(
+        mismatch === "malformed-json" ? "The local service returned an unreadable response." : "Reconciliation unavailable");
+      await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
+      await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
+      await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+      await page.unrouteAll({ behavior: "wait" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByText("Showing 21–21 of 21 sessions", { exact: true })).toBeVisible();
+    } finally {
+      try { await page.unrouteAll({ behavior: "wait" }); }
+      finally { await runtime.close(); await rm(root, { recursive: true }); }
+    }
+  });
+}
+
+for (const invalid of ["schema", "counts", "json", "recovery-counts", "recovery-json"]) {
+  test(`one received first-page ${invalid} failure requires an explicit rescan instead of automatic restoration`, async ({ page }) => {
+    const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+    const { root, runtime } = await fixture(JSON.stringify(raw) + "\n");
+    let catalogReads = 0;
+    let releaseRecovery;
+    const heldRecovery = new Promise((resolve) => { releaseRecovery = resolve; });
+    if (invalid.startsWith("recovery-")) {
+      await page.route("**/api/scan", async (route) => {
+        await route.fetch();
+        await route.abort("failed");
+      }, { times: 1 });
+    }
+    await page.route("**/api/scan/catalog", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (++catalogReads === 1) {
+        if (invalid.endsWith("json")) {
+          await route.fulfill({ response, body: "{" });
+          return;
+        }
+        if (invalid === "schema") body.offset = 1;
+        else body.sessions[0].executions = 0;
+      } else if (invalid.startsWith("recovery-")) await heldRecovery;
+      await route.fulfill({ response, json: body });
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByRole("alert")).toContainText(
+        invalid.endsWith("json") ? "The local service returned an unreadable response." :
+          invalid === "schema" ? "The local service returned an invalid response." : "Reconciliation unavailable");
+      await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+      await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
+      await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+      if (invalid.startsWith("recovery-")) {
+        releaseRecovery();
+        await page.unrouteAll({ behavior: "wait" });
+        await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+      } else expect(catalogReads).toBe(1);
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByRole("heading", { name: "Sessions found 1" })).toBeVisible();
+      if (!invalid.startsWith("recovery-")) expect(catalogReads).toBe(2);
+    } finally {
+      releaseRecovery();
+      try { await page.unrouteAll({ behavior: "wait" }); }
+      finally { await runtime.close(); await rm(root, { recursive: true }); }
+    }
+  });
+}
+
+for (const losses of [1, 2]) {
+  test(`next-catalog recovery restores the validated first page after ${losses} lost responses without rescanning the source`, async ({ page }) => {
+    const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+    const rows = Array.from({ length: 21 }, (_, index) => ({
+      ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+      attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}` },
+    }));
+    const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+    let scans = 0, lost = 0, releaseRecovery;
+    const heldRecovery = new Promise((resolve) => { releaseRecovery = resolve; });
+    page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
+    await page.route("**/api/scan/catalog", async (route) => {
+      const response = await route.fetch();
+      const cursor = route.request().postDataJSON().cursor;
+      if ((cursor !== null || lost > 0) && lost < losses) {
+        lost++;
+        await route.abort("failed");
+      } else {
+        if (losses === 2 && lost === losses && cursor === null) await heldRecovery;
+        await route.fulfill({ response });
+      }
+    });
+    try {
+      await page.goto(runtime.launchUrl);
+      await page.getByText("Advanced file tools", { exact: true }).click();
+      const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+      await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByRole("alert")).toBeVisible();
+      if (losses === 2) {
+        await expect.poll(() => lost).toBe(losses);
+        await expect(page.getByRole("button", { name: "Read source", exact: true })).toBeEnabled();
+        await expect(panel.getByRole("button", { name: "Rescan JSONL source" })).toBeEnabled();
+        await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+        releaseRecovery();
+      }
+      await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+      await expect(panel.getByRole("button", { name: "Next session page" })).toBeEnabled();
+      expect(scans).toBe(1);
+      expect(lost).toBe(losses);
+      await panel.getByRole("button", { name: "Next session page" }).click();
+      await expect(panel.getByText("Showing 21–21 of 21 sessions", { exact: true })).toBeVisible();
+      expect(scans).toBe(1);
+    } finally {
+      releaseRecovery();
+      try { await page.unrouteAll({ behavior: "wait" }); }
+      finally { await runtime.close(); await rm(root, { recursive: true }); }
+    }
+  });
+}
+
+test("delayed status after a rejected catalog page cannot restore session controls while cleanup polling continues", async ({ page }) => {
+  const raw = JSON.parse((await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8")).split("\n")[0]);
+  const rows = Array.from({ length: 21 }, (_, index) => ({
+    ...raw, spanId: (index + 1).toString(16).padStart(16, "0"),
+    attributes: { ...raw.attributes, "gen_ai.conversation.id": `fictional-${index}` },
+  }));
+  const { root, runtime } = await fixture(rows.map((row) => JSON.stringify(row)).join("\n") + "\n");
+  let paging = false, rejected = false, statusReads = 0, catalogReads = 0;
+  let allowPage, releaseStatus;
+  const progressObserved = new Promise((resolve) => { allowPage = resolve; });
+  const heldStatus = new Promise((resolve) => { releaseStatus = resolve; });
+  await page.route("**/api/scan/catalog", async (route) => {
+    catalogReads++;
+    const response = await route.fetch();
+    const body = await response.json();
+    if (body.offset > 0) {
+      paging = true;
+      await progressObserved;
+      body.sessions[0].executions = 2;
+      rejected = true;
+    }
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/scan/status", async (route) => {
+    const response = await route.fetch();
+    if (rejected && ++statusReads === 1) await heldStatus;
+    await route.fulfill({ response });
+    if (paging && !rejected) allowPage();
+  });
+  try {
+    await page.goto(runtime.launchUrl);
+    await page.getByText("Advanced file tools", { exact: true }).click();
+    const panel = page.getByRole("region", { name: "Bounded JSONL scan" });
+    await panel.getByRole("button", { name: "Scan JSONL source", exact: true }).click();
+    await expect(panel.getByText("Showing 1–20 of 21 sessions", { exact: true })).toBeVisible();
+    await panel.getByLabel("Scanned session").selectOption({ index: 1 });
+    await panel.getByRole("button", { name: "Next session page" }).click();
+    await expect.poll(() => statusReads).toBeGreaterThan(1);
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+    await expect(panel.getByRole("heading", { name: /^Sessions found/ })).toHaveCount(0);
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Open session report" })).toHaveCount(0);
+    expect(catalogReads).toBe(2);
+    releaseStatus();
+    await page.unrouteAll({ behavior: "wait" });
+    await expect(panel.getByLabel("Scanned session")).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Scan JSONL source", exact: true })).toBeEnabled();
+  } finally {
+    releaseStatus();
+    try { await page.unrouteAll({ behavior: "wait" }); }
+    finally { await runtime.close(); await rm(root, { recursive: true }); }
   }
 });
 
@@ -321,16 +633,16 @@ test("a start request lost before admission cannot restore the previous scan cat
   }
 });
 
-for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
-  test(`a lost ${lostRoute} response restores the completed catalog without rescanning`, async ({ page }) => {
+for (const [lostRoute, losses] of [["/api/scan", 1], ["/api/scan/catalog", 1], ["/api/scan/catalog", 2]]) {
+  test(`${losses} lost ${lostRoute} responses restore the completed catalog without rescanning`, async ({ page }) => {
     const text = await readFile(new URL("../fixtures/otel.jsonl", import.meta.url), "utf8");
     const { root, runtime } = await fixture(text);
-    let lost = false;
+    let lost = 0;
     let scans = 0;
     page.on("request", (request) => { if (request.url().endsWith("/api/scan")) scans++; });
     await page.route(`**${lostRoute}`, async (route) => {
-      if (lost) { await route.continue(); return; }
-      lost = true;
+      if (lost === losses) { await route.continue(); return; }
+      lost++;
       await route.fetch();
       await route.abort("failed");
     });
@@ -344,7 +656,7 @@ for (const lostRoute of ["/api/scan", "/api/scan/catalog"]) {
       await panel.getByRole("button", { name: "Load original evidence" }).click();
       await expect(panel.locator("article")).not.toHaveCount(0);
       expect(scans).toBe(1);
-      expect(lost).toBe(true);
+      expect(lost).toBe(losses);
     } finally {
       await runtime.close();
       await rm(root, { recursive: true });
@@ -395,7 +707,7 @@ test("expired catalog pagination clears cached sessions and evidence before allo
     const response = await route.fetch();
     const body = await response.json();
     if (expired) body.scan = { ...body.scan, phase: "budget-exceeded", reason: "The scan exceeded its lifetime budget.",
-      sessions: null, unassigned: null, classification: null, cleanupPending: false };
+      sessions: null, unassigned: null, classification: null, reconciliation: null, cleanupPending: false };
     await route.fulfill({ response, json: body });
   });
   try {
@@ -429,7 +741,7 @@ test("an expired status after a lost scan response does not restore a catalog or
     const response = await route.fetch();
     const body = await response.json();
     body.scan = { ...body.scan, phase: "budget-exceeded", reason: "The scan exceeded its lifetime budget.",
-      sessions: null, unassigned: null, classification: null, cleanupPending: false };
+      sessions: null, unassigned: null, classification: null, reconciliation: null, cleanupPending: false };
     await route.fulfill({ response, json: body });
   });
   await page.route("**/api/scan/catalog", async (route) => { catalogRequests++; await route.continue(); });
@@ -498,7 +810,8 @@ test("failed detail responses reconcile cleanup before unlocking even when a pro
         await route.fulfill({ response });
       } else {
         const body = await response.json();
-        if (!recovered) body.scan = { ...body.scan, phase: "cleanup-failed", cleanupPending: true };
+        if (!recovered) body.scan = { ...body.scan, phase: "cleanup-failed", cleanupPending: true,
+          reconciliation: null, sessions: null, unassigned: null, classification: null };
         await route.fulfill({ response, json: body });
       }
     });

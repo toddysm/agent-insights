@@ -11,7 +11,7 @@ import {
   sourceSchema,
   diagnosticSummarySchema,
 } from "../evidence/contracts.js";
-import { STREAM_LIMITS, detailPageSchema } from "../evidence/streaming.js";
+import { STREAM_LIMITS, detailPageSchema, scanReconciliationSchema } from "../evidence/streaming.js";
 
 /** A report always names the exact current read and a session within it. */
 export const reportRequestSchema = z.strictObject({
@@ -79,6 +79,8 @@ export const scanReportRequestSchema = z.strictObject({
   sessionId: z.string().min(1).max(128),
 });
 export type ScanReportRequest = z.infer<typeof scanReportRequestSchema>;
+/** Browser-only catalog witness; never sent as a backend control or used to calculate metrics. */
+export type ScanReportSelection = ScanReportRequest & { readonly expectedExecutions: number };
 
 /** Server-owned measurement IDs bind original-contributor cursors to their exact calculation scope. */
 export const scanMetricRequestSchema = scanReportRequestSchema.extend({
@@ -98,6 +100,8 @@ export const scanReportSchema = z.strictObject({
   id: z.string(),
   sessionId: z.string(),
   contributions: contributionsSchema,
+  /** Same admitted generation as id; counts explain report inclusion, not dimensional capture completeness. */
+  scanTotals: scanReconciliationSchema,
   source: sourceSchema,
   admittedBytes: z.number().int().nonnegative(),
   prefixSha256: z.string().regex(/^[a-f0-9]{64}$/),
@@ -138,7 +142,10 @@ export const scanReportSchema = z.strictObject({
         ),
     )
     .max(STREAM_LIMITS.reportMeasurements),
-});
+}).refine((report) =>
+  report.contributions.directEvents <= report.scanTotals.directExecutions &&
+  report.contributions.associatedEvents <= report.scanTotals.associatedExecutions,
+  "Report contributions must belong to the reconciled scan totals.");
 export type ScanReport = z.infer<typeof scanReportSchema>;
 
 /** One replace-only physical page; replay occurrences never add again to the report totals. */

@@ -11,7 +11,7 @@ import { associatedWithSession } from "../evidence/relationships.js";
 import { jsonLines } from "../evidence/readers/jsonl.js";
 import { scanVscodeOtel, vscodeOtelReader, vscodeOtelRecordKey } from "../evidence/readers/vscode-otel.js";
 import {
-  STREAM_LIMITS, ScanBudgetExceeded, catalogPageSchema, detailPageSchema,
+  STREAM_LIMITS, ScanBudgetExceeded, catalogPageSchema, detailPageSchema, scanStatusSchema, scanReconciliationSchema,
   type DetailRequest, type ScanRequest, type ScanStatus, type StreamLimits,
 } from "../evidence/streaming.js";
 import { RuntimeError, cancelledRead } from "./errors.js";
@@ -34,6 +34,7 @@ export class JsonlScan {
   private digest: string | null = null;
   private readonly secret = randomBytes(32);
   private started = 0;
+  private executionAccounting: { trustedRecords: number; excludedRecords: number } | null = null;
 
   /** Production uses fixed ceilings; lower code-owned ceilings make boundary/one-over tests inexpensive. */
   constructor(private readonly limits: StreamLimits = STREAM_LIMITS) {
@@ -47,6 +48,7 @@ export class JsonlScan {
   prepare(id: string, selection: ScanRequest): void {
     this.started = performance.now();
     this.view = null;
+    this.executionAccounting = null;
     this.selectionValue = { ...selection };
     this.statusValue = {
       id, requestId: selection.requestId ?? null, sourceId: selection.sourceId, phase: "scanning", reason: "Opening the authorized original source.",
@@ -54,7 +56,7 @@ export class JsonlScan {
       sourceBytes: 0, admittedBytes: 0, scannedBytes: 0,
       workBytes: 0, pass: 0, passScannedBytes: 0, appended: false, cleanupPending: true,
       counts: { records: 0, blank: 0, malformed: 0, incomplete: 0, oversized: 0, unknown: 0, duplicates: 0, executionRecords: 0, unclassifiedRecords: 0, metrics: 0, logs: 0, contentEvents: 0 },
-      classification: null, sessions: null, unassigned: null,
+      classification: null, sessions: null, unassigned: null, reconciliation: null,
     };
   }
 
@@ -66,7 +68,8 @@ export class JsonlScan {
       this.fail(new ScanBudgetExceeded("lifetime"));
       this.statusValue.cleanupPending = cleanupPending;
     }
-    return this.statusValue ? { ...this.statusValue, counts: { ...this.statusValue.counts } } : null;
+    return this.statusValue ? { ...this.statusValue, counts: { ...this.statusValue.counts },
+      reconciliation: this.statusValue.reconciliation ? { ...this.statusValue.reconciliation } : null } : null;
   }
 
   /** Drop catalog authority immediately; cancellation acknowledgement does not assert cleanup. */
@@ -76,7 +79,8 @@ export class JsonlScan {
     this.digest = null;
     this.identity = null;
     if (this.statusValue && this.statusValue.phase !== "cleanup-failed")
-      this.statusValue = { ...this.statusValue, phase: "cancelled", reason: "The generation was cancelled or replaced." };
+      this.statusValue = { ...this.statusValue, phase: "cancelled", reason: "The generation was cancelled or replaced.",
+        sessions: null, unassigned: null, classification: null, reconciliation: null };
   }
 
   /** Reconcile confirmed cleanup after cancellation/retry without restoring an old catalog. */
@@ -104,6 +108,8 @@ export class JsonlScan {
     this.statusValue.sessions = null;
     this.statusValue.unassigned = null;
     this.statusValue.classification = null;
+    this.statusValue.reconciliation = null;
+    this.executionAccounting = null;
   }
 
   /** Apply monotonic lifetime and cumulative physical-read budgets on every chunk/record/page. */
@@ -166,13 +172,14 @@ export class JsonlScan {
   async scan(id: string, selection: ScanRequest, source: StreamedSource, signal: AbortSignal): Promise<ReadView> {
     if (this.statusValue?.id !== id) this.prepare(id, selection);
     this.identity = source.identity;
+    this.executionAccounting = null;
     this.statusValue = {
       id, requestId: selection.requestId ?? null, sourceId: selection.sourceId, phase: "scanning", reason: null,
       startedAtMs: source.startedAtMs, finishedAtMs: null, inputStartedAtMs: source.startedAtMs, inputFinishedAtMs: null,
       sourceBytes: source.boundary, admittedBytes: source.boundary, scannedBytes: 0,
       workBytes: 0, pass: 1, passScannedBytes: 0, appended: false, cleanupPending: true,
       counts: { records: 0, blank: 0, malformed: 0, incomplete: 0, oversized: 0, unknown: 0, duplicates: 0, executionRecords: 0, unclassifiedRecords: 0, metrics: 0, logs: 0, contentEvents: 0 },
-      classification: null, sessions: null, unassigned: null,
+      classification: null, sessions: null, unassigned: null, reconciliation: null,
     };
     const status = this.statusValue;
     const hash = createHash("sha256");
@@ -188,6 +195,7 @@ export class JsonlScan {
         this.check(signal);
         status.scannedBytes = line.byteOffset + line.byteLength + (line.terminated ? 1 : 0);
       },
+      onExecutionAccounting: (accounting) => { this.executionAccounting = accounting; },
     });
     const digest = hash.digest("hex");
     const final = await this.verifyPrefix(source, signal, digest);
@@ -198,12 +206,11 @@ export class JsonlScan {
     return view;
   }
 
-  /** Publish after source cleanup/ownership confirmation; informational notices do not make a scan partial. */
+  /** Publish only reconciled full-generation totals after cleanup; mismatches reject rather than manufacture coverage. */
   publish(view: ReadView): ScanStatus {
     const status = this.statusValue;
     if (!status || status.id !== view.id || status.phase !== "scanning")
       throw new RuntimeError("SCAN_STALE", "This scan generation is no longer current.", 409);
-    this.view = view;
     status.finishedAtMs = Date.now();
     status.cleanupPending = false;
     status.scannedBytes = status.admittedBytes;
@@ -215,6 +222,41 @@ export class JsonlScan {
     status.reason = !view.events.length
       ? "No supported execution spans in this interval; telemetry counts are separate. Timing/tools/tokens are unavailable, not zero."
       : limited ? "Coverage is partial; malformed, excluded, incomplete or unassigned evidence is not complete-session coverage." : null;
+    if (["complete", "partial"].includes(status.phase)) {
+      const memberships = new Map(view.sessions.map((session) => [session.id, 0]));
+      let associatedExecutions = 0;
+      for (const event of view.events) {
+        if (event.sessionId !== null) {
+          const count = memberships.get(event.sessionId);
+          if (count === undefined)
+            throw new RuntimeError("SCAN_RECONCILIATION", "Execution membership names a session outside this scan; totals are unavailable.", 409);
+          memberships.set(event.sessionId, count + 1);
+        }
+        if (event.kind !== "message" && event.parentChat?.status === "resolved" &&
+          event.parentChat.sessionId !== event.sessionId) {
+          if (!event.parentChat.sessionId || !memberships.has(event.parentChat.sessionId))
+            throw new RuntimeError("SCAN_RECONCILIATION", "An associated session is outside this scan; totals are unavailable.", 409);
+          associatedExecutions++;
+        }
+      }
+      if (!this.executionAccounting)
+        throw new RuntimeError("SCAN_RECONCILIATION", "Physical execution accounting is unavailable; rescan before reporting.", 409);
+      const totals = scanReconciliationSchema.safeParse({
+        trustedExecutions: view.events.length,
+        directExecutions: [...memberships.values()].reduce((sum, count) => sum + count, 0),
+        withoutDirectMembership: status.unassigned,
+        associatedExecutions,
+        trustedExecutionRecords: this.executionAccounting.trustedRecords,
+        repeatedExecutionRecords: this.executionAccounting.trustedRecords - view.events.length,
+        excludedExecutionRecords: this.executionAccounting.excludedRecords,
+      });
+      if (!totals.success)
+        throw new RuntimeError("SCAN_RECONCILIATION", "Execution counts do not reconcile; totals are unavailable.", 409);
+      status.reconciliation = totals.data;
+      if (!scanStatusSchema.safeParse(status).success)
+        throw new RuntimeError("SCAN_RECONCILIATION", "Physical and session counts do not reconcile; totals are unavailable.", 409);
+    }
+    this.view = view;
     return this.status!;
   }
 
@@ -274,6 +316,7 @@ export class JsonlScan {
         executions: view.events.filter((event) => event.sessionId === session.id).length,
         associatedExecutions: view.events.filter((event) => associatedWithSession(event, session.id)).length })),
       unassigned: status.unassigned,
+      totalSessions: view.sessions.length, offset,
       next: offset + entries.length < view.sessions.length ? this.encode("catalog", offset + entries.length) : null,
     });
   }
@@ -290,13 +333,16 @@ export class JsonlScan {
     this.current(id).status.cleanupPending = true;
   }
 
-  /** Bound calculator amplification separately from scan metadata; never truncate a measurement list. */
+  /** Bound calculator amplification and verify direct membership against the scan; never truncate or substitute counts. */
   private calculate(request: ScanReportRequest) {
-    const { view } = this.current(request.id);
+    const { view, status } = this.current(request.id);
     if (!view.sessions.some((session) => session.id === request.sessionId))
       throw new RuntimeError("SCAN_SELECTION", "Select a session in the current scan.", 400);
     if (view.events.length > this.limits.reportEvents) throw new ScanBudgetExceeded("report");
     const report = recordedReport(view, { readId: request.id, sessionId: request.sessionId });
+    if (!status.reconciliation ||
+      report.contributions.directEvents !== view.events.filter((event) => event.sessionId === request.sessionId).length)
+      throw new RuntimeError("SCAN_RECONCILIATION", "Report membership does not reconcile with this scan; report unavailable.", 409);
     if (report.measurements.length > this.limits.reportMeasurements) throw new ScanBudgetExceeded("report");
     return report;
   }
@@ -334,6 +380,7 @@ export class JsonlScan {
     const result = scanReportSchema.parse({
       id: request.id, sessionId: request.sessionId, source: view.sources[0],
       contributions: report.contributions,
+      scanTotals: status.reconciliation,
       admittedBytes: status.admittedBytes, prefixSha256: digest, observedAtMs: Date.now(),
       appended: status.appended, issues: view.issues.map((issue) => issue.message),
       diagnostics: view.issues.map((issue) => ({

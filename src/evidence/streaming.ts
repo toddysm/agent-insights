@@ -53,9 +53,34 @@ export interface OtelScanPolicy {
   readonly maxReferences: number;
   readonly maxRecordBytes: number;
   readonly onLine: (line: { byteOffset: number; byteLength: number; terminated: boolean }) => void;
+  /** Final physical execution occurrences partitioned by trusted versus excluded identity, including replays. */
+  readonly onExecutionAccounting?: (accounting: { trustedRecords: number; excludedRecords: number }) => void;
 }
 
 const integer = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+
+/** Full-generation execution accounting; associations overlap membership groups and are never additive usage. */
+export const scanReconciliationSchema = z.strictObject({
+  trustedExecutions: integer,
+  directExecutions: integer,
+  withoutDirectMembership: integer,
+  associatedExecutions: integer,
+  trustedExecutionRecords: integer,
+  repeatedExecutionRecords: integer,
+  excludedExecutionRecords: integer,
+}).refine((value) =>
+  value.trustedExecutions === value.directExecutions + value.withoutDirectMembership &&
+  value.trustedExecutionRecords === value.trustedExecutions + value.repeatedExecutionRecords &&
+  value.associatedExecutions <= value.trustedExecutions,
+  "Execution membership and trusted physical occurrences must reconcile.");
+/** Only validated completed-generation totals may be used by catalogs and reports. */
+export type ScanReconciliation = z.infer<typeof scanReconciliationSchema>;
+
+/** Count disjoint observed physical categories; replay counts are already included in execution records. */
+export function physicalRecordTotal(counts: ScanCounts): number {
+  return counts.blank + counts.malformed + counts.incomplete + counts.oversized + counts.unknown +
+    counts.executionRecords + counts.unclassifiedRecords + counts.metrics + counts.logs + counts.contentEvents;
+}
 
 /** One current generation's status; null totals mean unavailable, never measured zero. */
 export const scanStatusSchema = z.strictObject({
@@ -85,6 +110,21 @@ export const scanStatusSchema = z.strictObject({
   classification: classificationSchema.nullable(),
   sessions: integer.nullable(),
   unassigned: integer.nullable(),
+  reconciliation: scanReconciliationSchema.nullable(),
+}).superRefine((status, context) => {
+  const totals = status.reconciliation;
+  if (["complete", "partial"].includes(status.phase) &&
+    (!totals || status.sessions === null || status.unassigned === null || !status.classification)) {
+    context.addIssue({ code: "custom", message: "Completed scan reconciliation is unavailable." });
+  }
+  if (totals && (
+    !["complete", "partial"].includes(status.phase) ||
+    physicalRecordTotal(status.counts) !== status.counts.records ||
+    totals.trustedExecutionRecords + totals.excludedExecutionRecords !== status.counts.executionRecords ||
+    totals.withoutDirectMembership !== status.unassigned ||
+    !status.classification ||
+    Object.values(status.classification.executions).reduce((sum, count) => sum + count, 0) !== totals.trustedExecutions
+  )) context.addIssue({ code: "custom", message: "Scan counts do not reconcile for this generation." });
 });
 /** Validated status transported without captured identifiers or payloads. */
 export type ScanStatus = z.infer<typeof scanStatusSchema>;
@@ -120,8 +160,12 @@ export const catalogPageSchema = z.strictObject({
   id: z.string(),
   sessions: z.array(z.strictObject({ id: z.string(), executions: integer, associatedExecutions: integer })).max(STREAM_LIMITS.pageRecords),
   unassigned: integer,
+  totalSessions: integer,
+  offset: integer,
   next: z.string().nullable(),
-});
+}).refine((page) => page.offset + page.sessions.length <= page.totalSessions &&
+  (page.next !== null) === (page.offset + page.sessions.length < page.totalSessions),
+  "Catalog page position must agree with its full session total.");
 
 /** Original physical contributors; duplicates are shown as evidence, never additional metric contributors. */
 export const detailPageSchema = z.strictObject({

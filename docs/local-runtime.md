@@ -197,7 +197,44 @@ admits the original descriptor's starting byte length, reads 64 KiB chunks and
 finishes at that boundary rather than chasing an active writer.
 It does not invoke a model or transmit source content.
 
-The interface shows physical-record/category counts and per-pass byte progress.
+**Sessions found** is the full session total for the selected source's admitted
+scan. **Showing X–Y of N sessions** describes the current catalog page, not
+the total activity you have in other sources or later appends.
+
+**Report coverage** reconciles unique trusted executions across all catalog
+pages: **Counted in session reports** (direct session membership) plus
+**Without direct session membership** equals the scan's trusted execution total.
+One execution is a supported model call, tool call, agent span or hook execution,
+not a session. The denominator is this scan's trusted executions, not all input
+lines or all activity the producer ever recorded. This is attribution coverage;
+each report separately describes timing, tool and token availability.
+
+Parent-session associations overlap these membership groups. They can link
+activity owned directly by another session, or activity without a direct owner.
+They never add activity or usage to a session's metrics. Session choices show
+their direct counts and separate associations. **Unassigned executions** remains
+the original-evidence selection for activity without direct membership; it does
+not become a synthetic session report.
+
+Expand **Scan diagnostics** for physical-record categories, execution
+originals/repeats/exclusions, conflict identity counts and per-pass byte progress.
+The physical categories sum to observed input records; repeats are not an extra
+category. For execution records, trusted originals plus trusted repeat records
+plus excluded execution records sum to the physical execution-record count.
+Every execution occurrence belonging to a conflicted identity is excluded,
+including its repeats. Conflicting *identities* are shown separately, not
+subtracted from physical records. Unclassified spans are outside trusted execution
+totals, not missing sessions. Metrics, logs and content-event records are
+non-execution telemetry; unsupported/unreadable categories are not report activity.
+
+The selected report shows its direct count as a share of all executions counted
+in session reports in the same scan. Catalog, scan and report disagreements
+produce visible reconciliation errors, not guessed totals. The browser rejects
+report counts that disagree with the selected catalog session or current scan.
+For example, 442 trusted executions minus 412 without direct membership is 30
+direct executions **only when those totals share the same scan generation and
+scope**. This arithmetic alone does not diagnose a producer or missing-session problem.
+
 **complete** means complete for the admitted interval, not proof of complete
 session capture. **partial**, **cancelled**, **source-changed**, **budget-exceeded**,
 **format-unsupported**, **failed** and **cleanup-failed** are distinct outcomes.
